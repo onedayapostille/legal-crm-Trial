@@ -112,7 +112,7 @@ function Router() {
 
       {/* Admin */}
       <Route path="/user-management">
-        <ProtectedRoute>
+        <ProtectedRoute permission="users:manage">
           <DashboardLayout><UserManagement /></DashboardLayout>
         </ProtectedRoute>
       </Route>

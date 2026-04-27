@@ -2,7 +2,7 @@
 -- Generated for Drizzle ORM / postgres.js
 
 DO $$ BEGIN
-  CREATE TYPE "user_role" AS ENUM('user', 'admin', 'viewer');
+  CREATE TYPE "user_role" AS ENUM('admin', 'manager', 'lawyer', 'staff', 'viewer');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
@@ -34,7 +34,7 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
-  CREATE TYPE "audit_action" AS ENUM('created', 'updated', 'deleted', 'status_changed', 'assigned');
+  CREATE TYPE "audit_action" AS ENUM('created', 'updated', 'deleted', 'status_changed', 'role_changed', 'password_reset', 'assigned');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ─── Users ────────────────────────────────────────────────────────────────────
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS "users" (
   "email"          VARCHAR(320) NOT NULL UNIQUE,
   "name"           TEXT,
   "password_hash"  TEXT,
-  "role"           "user_role"   NOT NULL DEFAULT 'user',
+  "role"           "user_role"   NOT NULL DEFAULT 'staff',
   "status"         "user_status" NOT NULL DEFAULT 'active',
   "created_at"     TIMESTAMP NOT NULL DEFAULT NOW(),
   "updated_at"     TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -270,3 +270,6 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status     ON "tasks"("status");
 CREATE INDEX IF NOT EXISTS idx_tasks_due        ON "tasks"("due_date");
 CREATE INDEX IF NOT EXISTS idx_activity_entity  ON "activity_logs"("entity_type", "entity_id");
 CREATE INDEX IF NOT EXISTS idx_audit_entity     ON "audit_logs"("entity_type", "entity_id");
+CREATE INDEX IF NOT EXISTS idx_users_email      ON "users"("email");
+CREATE INDEX IF NOT EXISTS idx_users_role       ON "users"("role");
+CREATE INDEX IF NOT EXISTS idx_users_status     ON "users"("status");

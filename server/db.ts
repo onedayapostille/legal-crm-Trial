@@ -4,13 +4,14 @@ import postgres from "postgres";
 import fs from "fs";
 import path from "path";
 import {
-  users, companies, leads, matters, tasks, notes, payments,
+  users, companies, leads, matters, tasks, notes, documents, payments,
   activityLogs, auditLogs, chatSubmissions,
   type InsertUser, type InsertLead, type InsertMatter,
   type InsertTask, type InsertNote, type InsertPayment,
   type InsertCompany, type InsertActivityLog, type InsertChatSubmission,
 } from "../drizzle/schema";
 import { hashPassword } from "./_core/auth";
+import type { UserRole, UserStatus } from "../shared/const";
 
 // ─── DB Connection ────────────────────────────────────────────────────────────
 
@@ -60,6 +61,10 @@ function sanitizeOptionalInput(data: Record<string, unknown>) {
   ) as Record<string, unknown>;
 }
 
+export function normalizeEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
 export function getDb() {
   if (!_db) {
     const url = process.env.DATABASE_URL;
@@ -87,41 +92,47 @@ export function getRawClient() {
 
 export async function runMigrations() {
   const client = getRawClient();
-  // Try several possible locations for the migration file
   const candidates = [
-    path.resolve(process.cwd(), "drizzle/migrations/0000_initial_schema.sql"),
-    path.resolve(process.cwd(), "drizzle", "migrations", "0000_initial_schema.sql"),
-    path.resolve(import.meta.dirname ?? __dirname, "../../drizzle/migrations/0000_initial_schema.sql"),
+    path.resolve(process.cwd(), "drizzle/migrations"),
+    path.resolve(process.cwd(), "drizzle", "migrations"),
+    path.resolve(import.meta.dirname ?? __dirname, "../../drizzle/migrations"),
   ];
 
-  let sqlContent: string | null = null;
+  let migrationsDir: string | null = null;
   for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      sqlContent = fs.readFileSync(candidate, "utf-8");
-      console.log(`[DB] Running migration from: ${candidate}`);
+    if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+      migrationsDir = candidate;
       break;
     }
   }
 
-  if (!sqlContent) {
-    console.warn("[DB] Migration file not found — skipping (tables may already exist)");
+  if (!migrationsDir) {
+    console.warn("[DB] Migration directory not found - skipping (tables may already exist)");
     return;
   }
 
-  try {
-    await client.unsafe(sqlContent);
-    console.log("[DB] Migration applied successfully");
-  } catch (err: any) {
-    // Ignore "already exists" errors — migration is idempotent
-    if (err?.message?.includes("already exists")) {
-      console.log("[DB] Tables already exist — migration skipped");
-    } else {
-      throw err;
+  const migrationFiles = fs
+    .readdirSync(migrationsDir)
+    .filter(file => file.endsWith(".sql"))
+    .sort();
+
+  for (const file of migrationFiles) {
+    const fullPath = path.resolve(migrationsDir, file);
+    const sqlContent = fs.readFileSync(fullPath, "utf-8");
+    console.log(`[DB] Running migration from: ${fullPath}`);
+
+    try {
+      await client.unsafe(sqlContent);
+      console.log(`[DB] Migration applied: ${file}`);
+    } catch (err: any) {
+      if (err?.message?.includes("already exists")) {
+        console.log(`[DB] Migration skipped (already exists): ${file}`);
+      } else {
+        throw err;
+      }
     }
   }
 }
-
-// ─── Users ────────────────────────────────────────────────────────────────────
 
 export async function getUserById(id: number) {
   const db = getDb();
@@ -131,7 +142,7 @@ export async function getUserById(id: number) {
 
 export async function getUserByEmail(email: string) {
   const db = getDb();
-  const result = await db.select().from(users).where(eq(users.email, email.toLowerCase())).limit(1);
+  const result = await db.select().from(users).where(eq(users.email, normalizeEmail(email))).limit(1);
   return result[0] ?? null;
 }
 
@@ -142,22 +153,30 @@ export async function getAllUsers() {
 
 export async function createUser(data: InsertUser) {
   const db = getDb();
-  const [user] = await db.insert(users).values(data).returning();
+  const [user] = await db.insert(users).values({
+    ...data,
+    email: normalizeEmail(data.email),
+  }).returning();
   return user;
 }
 
 export async function updateUser(id: number, data: Partial<InsertUser>) {
   const db = getDb();
-  const [user] = await db.update(users).set({ ...data, updatedAt: new Date() }).where(eq(users.id, id)).returning();
+  const nextData = {
+    ...data,
+    ...(data.email ? { email: normalizeEmail(data.email) } : {}),
+    updatedAt: new Date(),
+  };
+  const [user] = await db.update(users).set(nextData).where(eq(users.id, id)).returning();
   return user;
 }
 
-export async function updateUserRole(userId: number, role: "user" | "admin" | "viewer") {
+export async function updateUserRole(userId: number, role: UserRole) {
   const db = getDb();
   await db.update(users).set({ role, updatedAt: new Date() }).where(eq(users.id, userId));
 }
 
-export async function updateUserStatus(userId: number, status: "active" | "inactive" | "suspended") {
+export async function updateUserStatus(userId: number, status: UserStatus) {
   const db = getDb();
   await db.update(users).set({ status, updatedAt: new Date() }).where(eq(users.id, userId));
 }
@@ -173,15 +192,54 @@ export async function ensureAdminExists() {
   const existing = await db.select({ count: count() }).from(users);
   if ((existing[0]?.count ?? 0) > 0) return;
 
-  const hash = await hashPassword("Admin1234!");
+  const email = process.env.ADMIN_EMAIL;
+  const password = process.env.ADMIN_PASSWORD;
+  const name = process.env.ADMIN_NAME || "System Administrator";
+
+  if (!email || !password) {
+    console.warn("[DB] No users exist. Set ADMIN_EMAIL and ADMIN_PASSWORD, then run the seed script or restart.");
+    return;
+  }
+
+  const hash = await hashPassword(password);
   await db.insert(users).values({
-    email: "admin@legalcrm.com",
-    name: "Admin User",
+    email: normalizeEmail(email),
+    name,
     passwordHash: hash,
     role: "admin",
     status: "active",
   });
-  console.log("[DB] Default admin created: admin@legalcrm.com / Admin1234!");
+  console.log(`[DB] Initial admin created for ${normalizeEmail(email)}`);
+}
+
+export async function countActiveAdmins(excludeUserId?: number) {
+  const db = getDb();
+  const conditions = [
+    eq(users.role, "admin"),
+    eq(users.status, "active"),
+  ];
+  if (excludeUserId) conditions.push(ne(users.id, excludeUserId));
+  const [row] = await db.select({ count: count() }).from(users).where(and(...conditions));
+  return Number(row?.count ?? 0);
+}
+
+export async function deleteUser(id: number) {
+  const db = getDb();
+  await db.transaction(async tx => {
+    await tx.update(companies).set({ createdBy: null }).where(eq(companies.createdBy, id));
+    await tx.update(leads).set({ createdBy: null }).where(eq(leads.createdBy, id));
+    await tx.update(leads).set({ assignedTo: null }).where(eq(leads.assignedTo, id));
+    await tx.update(matters).set({ createdBy: null }).where(eq(matters.createdBy, id));
+    await tx.update(matters).set({ assignedTo: null }).where(eq(matters.assignedTo, id));
+    await tx.update(tasks).set({ createdBy: null }).where(eq(tasks.createdBy, id));
+    await tx.update(tasks).set({ assignedTo: null }).where(eq(tasks.assignedTo, id));
+    await tx.update(notes).set({ createdBy: null }).where(eq(notes.createdBy, id));
+    await tx.update(documents).set({ uploadedBy: null }).where(eq(documents.uploadedBy, id));
+    await tx.update(activityLogs).set({ performedBy: null }).where(eq(activityLogs.performedBy, id));
+    await tx.update(auditLogs).set({ userId: null }).where(eq(auditLogs.userId, id));
+    await tx.update(chatSubmissions).set({ assignedTo: null }).where(eq(chatSubmissions.assignedTo, id));
+    await tx.delete(users).where(eq(users.id, id));
+  });
 }
 
 // ─── Companies ────────────────────────────────────────────────────────────────
@@ -559,7 +617,7 @@ export async function createAuditLog(data: {
   entityType?: string;
   entityId: number;
   userId: number;
-  action: "created" | "updated" | "deleted" | "status_changed" | "assigned";
+  action: "created" | "updated" | "deleted" | "status_changed" | "role_changed" | "password_reset" | "assigned";
   fieldName?: string;
   oldValue?: string;
   newValue?: string;
@@ -610,3 +668,4 @@ export async function getUserActivityStats(userId: number) {
     .where(eq(leads.createdBy, userId));
   return { leadsCreated: Number(leadCount?.count ?? 0) };
 }
+

@@ -17,7 +17,7 @@ if (!process.env.DATABASE_URL && process.env.POSTGRES_PASSWORD) {
                        process.env.POSTGRES_HOSTNAME ??
                        process.env.PGHOST            ??
                        process.env.DB_HOST;
-  const host         = explicitHost ?? "legal-crm1-4279634f.dublyo.co";
+  const host         = explicitHost ?? "localhost";
   const port         = process.env.POSTGRES_PORT ?? "5432";
   const db           = process.env.POSTGRES_DB   ?? "app";
   const sslParam     = "";

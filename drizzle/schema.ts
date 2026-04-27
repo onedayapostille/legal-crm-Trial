@@ -14,7 +14,7 @@ import {
 
 // ─── Enums ───────────────────────────────────────────────────────────────────
 
-export const userRoleEnum = pgEnum("user_role", ["user", "admin", "viewer"]);
+export const userRoleEnum = pgEnum("user_role", ["admin", "manager", "lawyer", "staff", "viewer"]);
 export const userStatusEnum = pgEnum("user_status", ["active", "inactive", "suspended"]);
 
 export const leadStatusEnum = pgEnum("lead_status", [
@@ -63,6 +63,8 @@ export const auditActionEnum = pgEnum("audit_action", [
   "updated",
   "deleted",
   "status_changed",
+  "role_changed",
+  "password_reset",
   "assigned",
 ]);
 
@@ -73,7 +75,7 @@ export const users = pgTable("users", {
   email: varchar("email", { length: 320 }).notNull().unique(),
   name: text("name"),
   passwordHash: text("password_hash"),
-  role: userRoleEnum("role").default("user").notNull(),
+  role: userRoleEnum("role").default("staff").notNull(),
   status: userStatusEnum("status").default("active").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),

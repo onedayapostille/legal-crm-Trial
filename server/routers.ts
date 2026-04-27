@@ -1,8 +1,11 @@
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, router, protectedProcedure, adminProcedure } from "./_core/trpc";
+import { publicProcedure, router, protectedProcedure, adminProcedure, permissionProcedure } from "./_core/trpc";
 import { AUTH_COOKIE, createSessionToken, verifyPassword, hashPassword, isSecureRequest } from "./_core/auth";
+import { TRPCError } from "@trpc/server";
+import type { Request } from "express";
 import { z } from "zod";
 import * as db from "./db";
+import { USER_ROLES, USER_STATUSES, type UserRole, type UserStatus } from "../shared/const";
 
 function formatDbError(err: any) {
   const messages = [err?.message, err?.cause?.message]
@@ -12,17 +15,57 @@ function formatDbError(err: any) {
   return messages.join(" | ") || String(err);
 }
 
+const roleSchema = z.enum(USER_ROLES);
+const statusSchema = z.enum(USER_STATUSES);
+
+const passwordSchema = z.string()
+  .min(8, "Password must be at least 8 characters")
+  .regex(/[A-Za-z]/, "Password must include at least one letter")
+  .regex(/[0-9]/, "Password must include at least one number");
+
+const emailSchema = z.string().trim().email("Enter a valid email address").transform(value => db.normalizeEmail(value));
+
+function safeUser<T extends { passwordHash?: string | null }>(user: T) {
+  const { passwordHash: _ph, ...safe } = user;
+  return safe;
+}
+
+function getCookieOptions(ctx: { req: Request }) {
+  const secureCookie = isSecureRequest(ctx.req);
+  return {
+    httpOnly: true,
+    path: "/",
+    sameSite: secureCookie ? "none" as const : "lax" as const,
+    secure: secureCookie,
+    maxAge: 30 * 24 * 60 * 60 * 1000,
+  };
+}
+
+async function assertCanRemoveActiveAdmin(targetUserId: number) {
+  const target = await db.getUserById(targetUserId);
+  if (!target) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+  }
+  if (target.role === "admin" && target.status === "active") {
+    const remainingActiveAdmins = await db.countActiveAdmins(targetUserId);
+    if (remainingActiveAdmins < 1) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "At least one active admin must remain" });
+    }
+  }
+  return target;
+}
+
 export const appRouter = router({
   system: systemRouter,
 
   // ─── Auth ─────────────────────────────────────────────────────────────────
 
   auth: router({
-    me: publicProcedure.query(opts => opts.ctx.user),
+    me: publicProcedure.query(opts => opts.ctx.user ? safeUser(opts.ctx.user) : null),
 
     login: publicProcedure
       .input(z.object({
-        email: z.string().email(),
+        email: emailSchema,
         password: z.string().min(1),
       }))
       .mutation(async ({ input, ctx }) => {
@@ -47,32 +90,25 @@ export const appRouter = router({
 
         await db.updateLastLogin(user.id);
         const token = await createSessionToken(user.id, user.email);
-        const secureCookie = isSecureRequest(ctx.req);
+        const cookieOptions = getCookieOptions(ctx);
 
-        ctx.res.cookie(AUTH_COOKIE, token, {
-          httpOnly: true,
-          path: "/",
-          sameSite: "lax",
-          secure: secureCookie,
-          maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-        });
+        ctx.res.cookie(AUTH_COOKIE, token, cookieOptions);
         console.log("[Auth] Login success:", {
           email: user.email,
-          secureCookie,
+          secureCookie: cookieOptions.secure,
           protocol: ctx.req.protocol,
           forwardedProto: ctx.req.headers["x-forwarded-proto"] ?? null,
         });
-
-        const { passwordHash: _ph, ...safeUser } = user;
-        return { success: true, user: safeUser };
+        return { success: true, user: safeUser(user) };
       }),
 
     logout: publicProcedure.mutation(({ ctx }) => {
       ctx.res.clearCookie(AUTH_COOKIE, {
         httpOnly: true,
         path: "/",
-        sameSite: "lax",
+        sameSite: isSecureRequest(ctx.req) ? "none" : "lax",
         secure: isSecureRequest(ctx.req),
+        maxAge: -1,
       });
       return { success: true };
     }),
@@ -81,11 +117,11 @@ export const appRouter = router({
   // ─── Dashboard ────────────────────────────────────────────────────────────
 
   dashboard: router({
-    stats: protectedProcedure.query(async () => {
+    stats: permissionProcedure("dashboard:view").query(async () => {
       return db.getDashboardStats();
     }),
 
-    recentActivity: protectedProcedure
+    recentActivity: permissionProcedure("dashboard:view")
       .input(z.object({ limit: z.number().optional() }))
       .query(async ({ input }) => {
         return db.getRecentActivity(input.limit ?? 20);
@@ -95,13 +131,13 @@ export const appRouter = router({
   // ─── Leads ────────────────────────────────────────────────────────────────
 
   leads: router({
-    list: protectedProcedure.query(async () => db.getAllLeads()),
+    list: permissionProcedure("leads:manage").query(async () => db.getAllLeads()),
 
-    get: protectedProcedure
+    get: permissionProcedure("leads:manage")
       .input(z.object({ id: z.number() }))
       .query(async ({ input }) => db.getLeadById(input.id)),
 
-    create: protectedProcedure
+    create: permissionProcedure("leads:manage")
       .input(z.object({
         dateOfEnquiry: z.string(),
         clientName: z.string().min(1),
@@ -133,10 +169,10 @@ export const appRouter = router({
         internalNotes: z.string().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        return db.createLead(input, ctx.user.id);
+        return db.createLead(input, ctx.user!.id);
       }),
 
-    update: protectedProcedure
+    update: permissionProcedure("leads:manage")
       .input(z.object({
         id: z.number(),
         dateOfEnquiry: z.string().optional(),
@@ -185,28 +221,28 @@ export const appRouter = router({
         return db.updateLead(id, data);
       }),
 
-    delete: protectedProcedure
+    delete: permissionProcedure("leads:manage")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await db.deleteLead(input.id);
         return { success: true };
       }),
 
-    statusSummary: protectedProcedure.query(async () => db.getLeadStatusSummary()),
-    kpiMetrics: protectedProcedure.query(async () => db.getLeadKpiMetrics()),
-    pipelineForecast: protectedProcedure.query(async () => db.getPipelineForecast()),
+    statusSummary: permissionProcedure("analytics:view").query(async () => db.getLeadStatusSummary()),
+    kpiMetrics: permissionProcedure("analytics:view").query(async () => db.getLeadKpiMetrics()),
+    pipelineForecast: permissionProcedure("analytics:view").query(async () => db.getPipelineForecast()),
   }),
 
   // ─── Matters ──────────────────────────────────────────────────────────────
 
   matters: router({
-    list: protectedProcedure.query(async () => db.getAllMatters()),
+    list: permissionProcedure("matters:manage").query(async () => db.getAllMatters()),
 
-    get: protectedProcedure
+    get: permissionProcedure("matters:manage")
       .input(z.object({ id: z.number() }))
       .query(async ({ input }) => db.getMatterById(input.id)),
 
-    create: protectedProcedure
+    create: permissionProcedure("matters:manage")
       .input(z.object({
         title: z.string().min(1),
         description: z.string().optional(),
@@ -224,10 +260,10 @@ export const appRouter = router({
         billingType: z.string().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        return db.createMatter(input, ctx.user.id);
+        return db.createMatter(input, ctx.user!.id);
       }),
 
-    update: protectedProcedure
+    update: permissionProcedure("matters:manage")
       .input(z.object({
         id: z.number(),
         title: z.string().optional(),
@@ -252,7 +288,7 @@ export const appRouter = router({
         return db.updateMatter(id, data);
       }),
 
-    delete: protectedProcedure
+    delete: permissionProcedure("matters:manage")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await db.deleteMatter(input.id);
@@ -263,7 +299,7 @@ export const appRouter = router({
   // ─── Tasks ────────────────────────────────────────────────────────────────
 
   tasks: router({
-    list: protectedProcedure
+    list: permissionProcedure("tasks:manage")
       .input(z.object({
         matterId: z.number().optional(),
         assignedTo: z.number().optional(),
@@ -271,11 +307,11 @@ export const appRouter = router({
       }).optional())
       .query(async ({ input }) => db.getAllTasks(input ?? {})),
 
-    get: protectedProcedure
+    get: permissionProcedure("tasks:manage")
       .input(z.object({ id: z.number() }))
       .query(async ({ input }) => db.getTaskById(input.id)),
 
-    create: protectedProcedure
+    create: permissionProcedure("tasks:manage")
       .input(z.object({
         title: z.string().min(1),
         description: z.string().optional(),
@@ -287,10 +323,10 @@ export const appRouter = router({
         dueDate: z.string().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        return db.createTask(input, ctx.user.id);
+        return db.createTask(input, ctx.user!.id);
       }),
 
-    update: protectedProcedure
+    update: permissionProcedure("tasks:manage")
       .input(z.object({
         id: z.number(),
         title: z.string().optional(),
@@ -306,7 +342,7 @@ export const appRouter = router({
         return db.updateTask(id, data);
       }),
 
-    delete: protectedProcedure
+    delete: permissionProcedure("tasks:manage")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await db.deleteTask(input.id);
@@ -345,13 +381,13 @@ export const appRouter = router({
   // ─── Payments ─────────────────────────────────────────────────────────────
 
   payments: router({
-    list: protectedProcedure.query(async () => db.getAllPayments()),
+    list: permissionProcedure("payments:view").query(async () => db.getAllPayments()),
 
-    getByLead: protectedProcedure
+    getByLead: permissionProcedure("payments:view")
       .input(z.object({ leadId: z.number() }))
       .query(async ({ input }) => db.getPaymentByLeadId(input.leadId)),
 
-    create: protectedProcedure
+    create: permissionProcedure("payments:view")
       .input(z.object({
         leadId: z.number(),
         matterCode: z.string(),
@@ -370,7 +406,7 @@ export const appRouter = router({
       }))
       .mutation(async ({ input }) => db.createPayment(input)),
 
-    update: protectedProcedure
+    update: permissionProcedure("payments:view")
       .input(z.object({
         id: z.number(),
         paymentTerms: z.string().optional(),
@@ -431,27 +467,197 @@ export const appRouter = router({
   // ─── Users ────────────────────────────────────────────────────────────────
 
   users: router({
-    list: protectedProcedure.query(async () => {
+    list: adminProcedure.query(async () => {
       const all = await db.getAllUsers();
-      return all.map(({ passwordHash: _ph, ...u }) => u);
+      return all.map(safeUser);
+    }),
+
+    create: adminProcedure
+      .input(z.object({
+        name: z.string().trim().min(1, "Name is required").max(120),
+        email: emailSchema,
+        password: passwordSchema,
+        role: roleSchema.default("staff"),
+        status: statusSchema.default("active"),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const existing = await db.getUserByEmail(input.email);
+        if (existing) {
+          throw new TRPCError({ code: "CONFLICT", message: "A user with this email already exists" });
+        }
+
+        const passwordHash = await hashPassword(input.password);
+        const user = await db.createUser({
+          name: input.name,
+          email: input.email,
+          passwordHash,
+          role: input.role,
+          status: input.status,
+        });
+
+        await db.createAuditLog({
+          entityType: "user",
+          entityId: user.id,
+          userId: ctx.user.id,
+          action: "created",
+          description: `User ${user.email} created`,
+        });
+
+        return safeUser(user);
+      }),
+
+    update: adminProcedure
+      .input(z.object({
+        userId: z.number(),
+        name: z.string().trim().min(1, "Name is required").max(120),
+        email: emailSchema,
+        role: roleSchema,
+        status: statusSchema,
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const target = await db.getUserById(input.userId);
+        if (!target) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+        }
+
+        const emailOwner = await db.getUserByEmail(input.email);
+        if (emailOwner && emailOwner.id !== input.userId) {
+          throw new TRPCError({ code: "CONFLICT", message: "A user with this email already exists" });
+        }
+
+        if (
+          target.role === "admin" &&
+          target.status === "active" &&
+          (input.role !== "admin" || input.status !== "active")
+        ) {
+          await assertCanRemoveActiveAdmin(input.userId);
+        }
+
+        if (input.userId === ctx.user.id && (input.role !== "admin" || input.status !== "active")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot remove your own active admin access" });
+        }
+
+        const updated = await db.updateUser(input.userId, {
+          name: input.name,
+          email: input.email,
+          role: input.role,
+          status: input.status,
+        });
+
+        if (target.role !== input.role) {
+          await db.createAuditLog({
+            entityType: "user",
+            entityId: input.userId,
+            userId: ctx.user.id,
+            action: "role_changed",
+            fieldName: "role",
+            oldValue: target.role,
+            newValue: input.role,
+            description: `Role changed for ${input.email}`,
+          });
+        }
+
+        if (target.status !== input.status) {
+          await db.createAuditLog({
+            entityType: "user",
+            entityId: input.userId,
+            userId: ctx.user.id,
+            action: "status_changed",
+            fieldName: "status",
+            oldValue: target.status,
+            newValue: input.status,
+            description: `Status changed for ${input.email}`,
+          });
+        }
+
+        return safeUser(updated);
     }),
 
     updateRole: adminProcedure
-      .input(z.object({ userId: z.number(), role: z.enum(["user", "admin", "viewer"]) }))
-      .mutation(async ({ input }) => {
+      .input(z.object({ userId: z.number(), role: roleSchema }))
+      .mutation(async ({ input, ctx }) => {
+        const target = await assertCanRemoveActiveAdmin(input.userId);
+        if (input.userId === ctx.user.id && input.role !== "admin") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot remove your own admin role" });
+        }
         await db.updateUserRole(input.userId, input.role);
+        if (target.role !== input.role) {
+          await db.createAuditLog({
+            entityType: "user",
+            entityId: input.userId,
+            userId: ctx.user.id,
+            action: "role_changed",
+            fieldName: "role",
+            oldValue: target.role,
+            newValue: input.role,
+            description: `Role changed for ${target.email}`,
+          });
+        }
         return { success: true };
       }),
 
     updateStatus: adminProcedure
-      .input(z.object({ userId: z.number(), status: z.enum(["active", "inactive", "suspended"]) }))
-      .mutation(async ({ input }) => {
+      .input(z.object({ userId: z.number(), status: statusSchema }))
+      .mutation(async ({ input, ctx }) => {
+        const target = await assertCanRemoveActiveAdmin(input.userId);
+        if (input.userId === ctx.user.id && input.status !== "active") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot deactivate your own account" });
+        }
         await db.updateUserStatus(input.userId, input.status);
+        if (target.status !== input.status) {
+          await db.createAuditLog({
+            entityType: "user",
+            entityId: input.userId,
+            userId: ctx.user.id,
+            action: "status_changed",
+            fieldName: "status",
+            oldValue: target.status,
+            newValue: input.status,
+            description: `Status changed for ${target.email}`,
+          });
+        }
+        return { success: true };
+      }),
+
+    resetPassword: adminProcedure
+      .input(z.object({ userId: z.number(), password: passwordSchema }))
+      .mutation(async ({ input, ctx }) => {
+        const target = await db.getUserById(input.userId);
+        if (!target) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+        }
+        const passwordHash = await hashPassword(input.password);
+        await db.updateUser(input.userId, { passwordHash });
+        await db.createAuditLog({
+          entityType: "user",
+          entityId: input.userId,
+          userId: ctx.user.id,
+          action: "password_reset",
+          description: `Password reset for ${target.email}`,
+        });
+        return { success: true };
+      }),
+
+    delete: adminProcedure
+      .input(z.object({ userId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        if (input.userId === ctx.user.id) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot delete your own account" });
+        }
+        const target = await assertCanRemoveActiveAdmin(input.userId);
+        await db.deleteUser(input.userId);
+        await db.createAuditLog({
+          entityType: "user",
+          entityId: input.userId,
+          userId: ctx.user.id,
+          action: "deleted",
+          description: `User ${target.email} deleted`,
+        });
         return { success: true };
       }),
 
     updatePassword: protectedProcedure
-      .input(z.object({ currentPassword: z.string(), newPassword: z.string().min(8) }))
+      .input(z.object({ currentPassword: z.string(), newPassword: passwordSchema }))
       .mutation(async ({ input, ctx }) => {
         const user = await db.getUserById(ctx.user.id);
         if (!user?.passwordHash) throw new Error("No password set");
@@ -459,6 +665,13 @@ export const appRouter = router({
         if (!valid) throw new Error("Current password is incorrect");
         const hash = await hashPassword(input.newPassword);
         await db.updateUser(ctx.user.id, { passwordHash: hash });
+        await db.createAuditLog({
+          entityType: "user",
+          entityId: ctx.user.id,
+          userId: ctx.user.id,
+          action: "password_reset",
+          description: "Own password changed",
+        });
         return { success: true };
       }),
 

@@ -27,18 +27,19 @@ import {
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
+import { hasPermission } from "@shared/const";
 
 const menuItems = [
-  { icon: Home,          label: "Dashboard",       path: "/dashboard" },
-  { icon: Users,         label: "Leads",           path: "/leads" },
-  { icon: Briefcase,     label: "Matters",         path: "/matters" },
-  { icon: CheckSquare,   label: "Tasks",           path: "/tasks" },
-  { icon: FileText,      label: "Enquiry Log",     path: "/enquiries" },
-  { icon: BarChart3,     label: "Status Tracker",  path: "/status-tracker" },
-  { icon: LayoutDashboard, label: "KPI Dashboard", path: "/kpi-dashboard" },
-  { icon: DollarSign,    label: "Payment Tracker", path: "/payment-tracker" },
-  { icon: TrendingUp,    label: "Pipeline",        path: "/pipeline-forecast" },
-  { icon: UserCog,       label: "User Management", path: "/user-management" },
+  { icon: Home,          label: "Dashboard",       path: "/dashboard", permission: "dashboard:view" },
+  { icon: Users,         label: "Leads",           path: "/leads", permission: "leads:manage" },
+  { icon: Briefcase,     label: "Matters",         path: "/matters", permission: "matters:manage" },
+  { icon: CheckSquare,   label: "Tasks",           path: "/tasks", permission: "tasks:manage" },
+  { icon: FileText,      label: "Enquiry Log",     path: "/enquiries", permission: "leads:manage" },
+  { icon: BarChart3,     label: "Status Tracker",  path: "/status-tracker", permission: "analytics:view" },
+  { icon: LayoutDashboard, label: "KPI Dashboard", path: "/kpi-dashboard", permission: "analytics:view" },
+  { icon: DollarSign,    label: "Payment Tracker", path: "/payment-tracker", permission: "payments:view" },
+  { icon: TrendingUp,    label: "Pipeline",        path: "/pipeline-forecast", permission: "analytics:view" },
+  { icon: UserCog,       label: "User Management", path: "/user-management", permission: "users:manage" },
 ];
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
@@ -96,7 +97,8 @@ function DashboardLayoutContent({
   const isCollapsed = state === "collapsed";
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
-  const activeMenuItem = menuItems.find(item => item.path === location);
+  const visibleMenuItems = menuItems.filter(item => hasPermission(user?.role, item.permission));
+  const activeMenuItem = visibleMenuItems.find(item => item.path === location);
   const isMobile = useIsMobile();
 
   useEffect(() => {
@@ -164,7 +166,7 @@ function DashboardLayoutContent({
 
           <SidebarContent className="gap-0">
             <SidebarMenu className="px-2 py-1">
-              {menuItems.map(item => {
+              {visibleMenuItems.map(item => {
                 const isActive = location === item.path;
                 return (
                   <SidebarMenuItem key={item.path}>

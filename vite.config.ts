@@ -5,6 +5,7 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  envPrefix: ["VITE_", "API_"],
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "client", "src"),
@@ -22,8 +23,7 @@ export default defineConfig({
   server: {
     host: true,
     allowedHosts: [
-      ".dublyo.co",
-      ".dublyo.com",
+      ".alghazzawi.com",
       ".manuspre.computer",
       ".manus.computer",
       ".manus-asia.computer",

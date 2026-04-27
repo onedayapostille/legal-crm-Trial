@@ -1,207 +1,100 @@
-# Client Enquiry CRM System
+# Legal CRM
 
-A web-based Customer Relationship Management system designed for legal practices to manage client enquiries from initial contact through conversion and payment tracking.
+Production-ready CRM for legal practice enquiry intake, matters, tasks, payments, analytics, and team access control.
 
-## Live Demo
-
-**Production URL:** https://legal-crm-production.up.railway.app
-
----
-
-## Features
-
-- **Enquiry Management** - Track client enquiries with auto-generated IDs (ENQ-0001)
-- **Status Tracking** - Monitor enquiry distribution with visual indicators
-- **KPI Dashboard** - View conversion rates, revenue metrics, and performance analytics
-- **Payment Tracker** - Manage payment milestones (retainer, mid-payment, final)
-- **Pipeline Forecast** - Weighted revenue projections by status probability
-- **User Management** - Role-based access control (Admin/User)
-- **Audit Logging** - Track all changes for compliance
-
----
-
-## Tech Stack
+## Stack
 
 | Layer | Technology |
-|-------|------------|
-| **Runtime** | Node.js, TypeScript 5.9 |
-| **Backend** | Express.js, tRPC 11.6 |
-| **Frontend** | React 19, Vite 7 |
-| **Database** | MySQL 2, Drizzle ORM |
-| **UI** | TailwindCSS 4.1, Radix UI, Shadcn/ui |
-| **Validation** | Zod |
+| --- | --- |
+| Runtime | Node.js, TypeScript |
+| Backend | Express, tRPC |
+| Frontend | React, Vite |
+| Database | PostgreSQL, Drizzle ORM |
+| Auth | Email/password, signed JWT httpOnly cookie |
+| UI | TailwindCSS, Radix UI |
 
----
+## Authentication
 
-## Project Structure
+Users sign in with email and password only. Passwords are salted and hashed with Node `scrypt`. Session tokens are signed with `JWT_SECRET` or `AUTH_SECRET` and stored in an httpOnly cookie.
 
+Supported roles:
+
+- Admin: full access, including user management
+- Manager: operational access to leads, matters, tasks, analytics, and payments
+- Lawyer: leads, matters, tasks, and analytics
+- Staff: leads, tasks, and analytics
+- Viewer: dashboard and analytics only
+
+Inactive and suspended users cannot sign in or use protected APIs.
+
+## Initial Admin
+
+No default credentials are shown in the UI. To create the first administrator, set these environment variables and run the seed script:
+
+```bash
+ADMIN_EMAIL=admin@your-domain.com
+ADMIN_PASSWORD=Use-A-Strong-Password-123
+ADMIN_NAME="System Administrator"
+pnpm db:seed
 ```
-legal-crm/
-├── server/              # Express + tRPC API
-│   ├── _core/           # Core server functionality
-│   ├── routers.ts       # API routes
-│   └── db.ts            # Database functions
-├── client/src/          # React frontend
-│   ├── pages/           # Page components
-│   ├── components/      # Reusable UI components
-│   └── lib/             # Utilities
-├── shared/              # Shared types & constants
-└── drizzle/             # Database schema & migrations
-```
 
----
+The seed script creates an admin only when the users table is empty. After the first admin exists, create and manage users from `/user-management`.
 
 ## Environment Variables
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `DATABASE_URL` | MySQL connection string | Yes |
-| `NODE_ENV` | `production` or `development` | Yes |
-| `JWT_SECRET` | Secret key for session tokens | Yes |
-| `PORT` | Server port (default: 3000) | No |
-
----
-
-## Deployment
-
-### Railway (Recommended)
-
-1. **Create Project**
-   - Connect your GitHub repository
-   - Add a MySQL database service
-
-2. **Set Environment Variables** (in legal-crm service):
-   ```
-   DATABASE_URL=${{MySQL.MYSQL_URL}}
-   NODE_ENV=production
-   JWT_SECRET=your-secret-key
-   ```
-
-3. **Configure Build & Start Commands**:
-   - Build Command: `pnpm install && pnpm build`
-   - Start Command: `pnpm db:push && pnpm start`
-
-4. **Generate Domain**:
-   - Settings → Networking → Generate Domain
-
-### Custom Domain
-
-1. In Railway, add custom domain (e.g., `crm.yourdomain.com`)
-2. Add CNAME record in your DNS:
-   - Type: `CNAME`
-   - Name: `crm`
-   - Value: `your-app.up.railway.app`
-
----
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `DATABASE_URL` | Yes | PostgreSQL connection string |
+| `JWT_SECRET` or `AUTH_SECRET` | Yes | Long random session signing secret |
+| `APP_URL` | Yes | Public deployed app URL, for example `https://crm.alghazzawi.com` |
+| `API_BASE_URL` | No | API origin if frontend and backend are split; blank for same-origin |
+| `ADMIN_EMAIL` | First setup only | Initial admin email |
+| `ADMIN_PASSWORD` | First setup only | Initial admin password |
+| `ADMIN_NAME` | No | Initial admin display name |
+| `PORT` | No | Defaults to `3000` |
 
 ## Local Development
 
 ```bash
-# Install dependencies
 pnpm install
-
-# Set up environment
 cp .env.example .env
-# Edit .env with your DATABASE_URL
-
-# Push database schema
-pnpm db:push
-
-# Start development server
+pnpm db:migrate
+pnpm db:seed
 pnpm dev
 ```
 
----
-
-## Recent Changes (v1.1)
-
-### Standalone Deployment Support
-
-The application has been updated to run independently without the Manus OAuth platform:
-
-1. **Removed Manus OAuth Dependency**
-   - App no longer requires Manus OAuth authentication
-   - Works on any hosting platform (Railway, Render, VPS, etc.)
-
-2. **Default Admin User**
-   - Auto-creates an admin user on first run
-   - Email: `admin@legalcrm.local`
-   - Role: `admin`
-
-3. **Simplified Authentication**
-   - No login required - direct dashboard access
-   - All users authenticated as default admin
-   - Ready for future multi-user auth implementation
-
-### Files Changed
-
-| File | Change |
-|------|--------|
-| `server/_core/context.ts` | Uses default user instead of OAuth SDK |
-| `server/db.ts` | Added `getOrCreateDefaultUser()` function |
-| `client/src/const.ts` | `getLoginUrl()` redirects to dashboard |
-| `client/src/pages/Home.tsx` | Removed sign-in buttons |
-| `client/src/components/DashboardLayout.tsx` | Removed auth check gate |
-
----
-
-## Database Schema
-
-### Tables
-
-- **users** - User accounts with roles and status
-- **enquiries** - Client enquiries (40+ fields)
-- **payments** - Payment milestones for converted clients
-- **audit_logs** - Change tracking for compliance
-
-### Auto-Generated IDs
-
-- Enquiry ID: `ENQ-0001`, `ENQ-0002`, etc.
-- Matter Code: `MAT-2025-001` (generated on conversion)
-
----
-
-## API Endpoints (tRPC)
-
-| Router | Procedures |
-|--------|------------|
-| `auth` | `me`, `logout` |
-| `enquiries` | `list`, `get`, `create`, `update`, `delete`, `statusSummary`, `kpiMetrics`, `pipelineForecast` |
-| `payments` | `list`, `getByEnquiry`, `create`, `update` |
-| `users` | `list`, `updateRole`, `updateStatus`, `activityStats` |
-| `auditLogs` | `byEnquiry`, `list` |
-
----
-
-## Scripts
+## Production Build
 
 ```bash
-pnpm dev        # Start development server
-pnpm build      # Build for production
-pnpm start      # Start production server
-pnpm db:push    # Push schema to database
-pnpm test       # Run tests
-pnpm check      # TypeScript type check
+pnpm install --frozen-lockfile
+pnpm build
+pnpm db:migrate
+pnpm db:seed
+pnpm start
 ```
 
----
+## User Management
 
-## Future Enhancements
+Admins can:
 
-- [ ] Multi-user authentication (email/password or OAuth)
-- [ ] User registration and invitation system
-- [ ] Email notifications for enquiry updates
-- [ ] Document upload and management
-- [ ] Reporting and export features
+- Add users with any valid email domain
+- Edit name, email, role, and status
+- Reset passwords
+- Delete users
+- Suspend or deactivate accounts
 
----
+Server-side safeguards prevent duplicate emails, self deletion, self deactivation, self admin removal, and deletion or demotion of the last active admin.
 
-## License
+## Audit Logs
 
-MIT
+The system records user management events in `audit_logs`:
 
----
+- user created
+- user deleted
+- role changed
+- status changed
+- password reset
 
-## Support
+## Routing
 
-For issues and feature requests, please open an issue on GitHub.
+The production server serves the React app with SPA fallback, so refreshed routes such as `/login`, `/dashboard`, and `/user-management` work directly.

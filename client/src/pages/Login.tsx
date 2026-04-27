@@ -25,7 +25,7 @@ export default function Login() {
 
   const loginMutation = trpc.auth.login.useMutation({
     onSuccess: (data) => {
-      utils.auth.me.setData(undefined, { ...data.user, passwordHash: null });
+      utils.auth.me.setData(undefined, data.user);
       navigate("/dashboard");
     },
     onError: (err) => {
@@ -75,7 +75,7 @@ export default function Login() {
                   id="email"
                   type="email"
                   autoComplete="email"
-                  placeholder="admin@legalcrm.com"
+                  placeholder="name@company.com"
                   className="bg-slate-700/50 border-slate-600 text-white placeholder:text-slate-500 focus:border-blue-500"
                   {...register("email")}
                 />
@@ -122,11 +122,6 @@ export default function Login() {
               </Button>
             </form>
 
-            <div className="mt-6 pt-5 border-t border-slate-700">
-              <p className="text-xs text-slate-500 text-center">
-                Default credentials: <span className="text-slate-400 font-mono">admin@legalcrm.com</span> / <span className="text-slate-400 font-mono">Admin1234!</span>
-              </p>
-            </div>
           </CardContent>
         </Card>
 
