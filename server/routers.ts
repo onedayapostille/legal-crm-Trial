@@ -690,6 +690,294 @@ export const appRouter = router({
       }),
   }),
 
+  // ─── Clients ──────────────────────────────────────────────────────────────
+
+  clients: router({
+    list: permissionProcedure("clients:view").input(z.object({
+      clientStatus: z.string().optional(),
+      city: z.string().optional(),
+      matterType: z.string().optional(),
+      search: z.string().optional(),
+    }).optional()).query(async ({ input }) => db.getAllClients(input ?? {})),
+
+    get: permissionProcedure("clients:view")
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => db.getClientById(input.id)),
+
+    create: permissionProcedure("clients:manage")
+      .input(z.object({
+        clientName: z.string().min(1),
+        clientStatus: z.enum(["Existing Client", "Leads", "Rejected"]).default("Leads"),
+        clientNumber: z.string().optional(),
+        fileNumber: z.string().optional(),
+        city: z.enum(["Riyadh", "Dammam", "Jeddah"]).optional(),
+        matterType: z.enum(["Corporate", "Litigation"]).optional(),
+      }))
+      .mutation(async ({ input, ctx }) => db.createClient(input as any, ctx.user!.id)),
+
+    update: permissionProcedure("clients:manage")
+      .input(z.object({
+        id: z.number(),
+        clientName: z.string().optional(),
+        clientStatus: z.enum(["Existing Client", "Leads", "Rejected"]).optional(),
+        clientNumber: z.string().optional(),
+        fileNumber: z.string().optional(),
+        city: z.enum(["Riyadh", "Dammam", "Jeddah"]).optional(),
+        matterType: z.enum(["Corporate", "Litigation"]).optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const { id, ...data } = input;
+        return db.updateClient(id, data as any, ctx.user!.id);
+      }),
+
+    delete: permissionProcedure("clients:manage")
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await db.deleteClient(input.id);
+        return { success: true };
+      }),
+
+    statusCounts: permissionProcedure("dashboard:view").query(async () => db.getClientStatusCounts()),
+
+    dashboardStats: permissionProcedure("dashboard:view").query(async () => db.getClientDashboardStats()),
+
+    // Lead details sub-resource
+    getLeadDetail: permissionProcedure("clients:view")
+      .input(z.object({ clientId: z.number() }))
+      .query(async ({ input }) => db.getClientLeadDetail(input.clientId)),
+
+    upsertLeadDetail: permissionProcedure("clients:manage")
+      .input(z.object({
+        clientId: z.number(),
+        clientSource: z.string().optional(),
+        nextActionDate: z.string().optional(),
+        nextActionDate2: z.string().optional(),
+        nextActionOwner: z.string().optional(),
+        nextAction: z.string().optional(),
+        priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
+        leadStatus: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const { clientId, ...data } = input;
+        return db.upsertClientLeadDetail(clientId, data as any);
+      }),
+
+    // Rejected details sub-resource
+    getRejectedDetail: permissionProcedure("clients:view")
+      .input(z.object({ clientId: z.number() }))
+      .query(async ({ input }) => db.getRejectedClientDetail(input.clientId)),
+
+    upsertRejectedDetail: permissionProcedure("clients:manage")
+      .input(z.object({
+        clientId: z.number(),
+        rejectionReasonSource: z.enum(["Client", "Us"]).optional(),
+        rejectionNotes: z.string().optional(),
+        rejectedBy: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const { clientId, ...data } = input;
+        return db.upsertRejectedClient(clientId, data as any);
+      }),
+  }),
+
+  // ─── Client Matters ────────────────────────────────────────────────────────
+
+  clientMatters: router({
+    list: permissionProcedure("clients:view")
+      .input(z.object({ clientId: z.number() }))
+      .query(async ({ input }) => db.getClientMatters(input.clientId)),
+
+    get: permissionProcedure("clients:view")
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => db.getClientMatterById(input.id)),
+
+    create: permissionProcedure("clients:manage")
+      .input(z.object({
+        clientId: z.number(),
+        originalSerial: z.string().optional(),
+        matterReference: z.string().optional(),
+        matterType: z.string().optional(),
+        leadPartner: z.string().optional(),
+        leadPartnerFullName: z.string().optional(),
+        supportLead: z.string().optional(),
+        attorneyHead: z.string().optional(),
+        attorney1: z.string().optional(),
+        attorney2: z.string().optional(),
+        attorney3: z.string().optional(),
+        attorneyFullName: z.string().optional(),
+        matterStatus: z.string().optional(),
+        balanceWorkLeft: z.string().optional(),
+        achievementPercentage: z.string().optional(),
+        achievementStatus: z.string().optional(),
+        priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
+      }))
+      .mutation(async ({ input, ctx }) => db.createClientMatter(input as any, ctx.user!.id)),
+
+    update: permissionProcedure("clients:manage")
+      .input(z.object({
+        id: z.number(),
+        originalSerial: z.string().optional(),
+        matterReference: z.string().optional(),
+        matterType: z.string().optional(),
+        leadPartner: z.string().optional(),
+        leadPartnerFullName: z.string().optional(),
+        supportLead: z.string().optional(),
+        attorneyHead: z.string().optional(),
+        attorney1: z.string().optional(),
+        attorney2: z.string().optional(),
+        attorney3: z.string().optional(),
+        attorneyFullName: z.string().optional(),
+        matterStatus: z.string().optional(),
+        balanceWorkLeft: z.string().optional(),
+        achievementPercentage: z.string().optional(),
+        achievementStatus: z.string().optional(),
+        priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const { id, ...data } = input;
+        return db.updateClientMatter(id, data as any, ctx.user!.id);
+      }),
+
+    delete: permissionProcedure("clients:manage")
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await db.deleteClientMatter(input.id);
+        return { success: true };
+      }),
+  }),
+
+  // ─── Financial Records ─────────────────────────────────────────────────────
+
+  financial: router({
+    list: permissionProcedure("financial:view")
+      .input(z.object({
+        clientId: z.number().optional(),
+        collectionStatus: z.string().optional(),
+      }).optional())
+      .query(async ({ input }) => db.getFinancialRecords(input ?? {})),
+
+    get: permissionProcedure("financial:view")
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => db.getFinancialRecordById(input.id)),
+
+    create: permissionProcedure("financial:manage")
+      .input(z.object({
+        clientId: z.number(),
+        clientMatterId: z.number().optional(),
+        feeType: z.enum(["Billable Hours", "Fixed / Project-Based Fees", "Retainers", "Success Fees", "Advisory / Special Mandates", "Blended"]).optional(),
+        agreedFees: z.string().optional(),
+        discountApproval: z.enum(["N/A", "P&L Head Lawyers", "CEO", "Board"]).optional(),
+        discountPercentage: z.string().optional(),
+        discountAmount: z.string().optional(),
+        netFees: z.string().optional(),
+        billedAmount: z.string().optional(),
+        revenue: z.string().optional(),
+        collectedAmount: z.string().optional(),
+        remainingAdvanced: z.string().optional(),
+        outstandingAmount: z.string().optional(),
+        collectionStatus: z.enum(["Not Billed", "Partially Billed", "Billed", "Partially Collected", "Fully Collected", "Overdue"]).optional(),
+        billingDate: z.string().optional(),
+        paymentDate: z.string().optional(),
+        invoiceNumber: z.string().optional(),
+        responsibleLawyer: z.string().optional(),
+        financeNotes: z.string().optional(),
+      }))
+      .mutation(async ({ input, ctx }) => db.createFinancialRecord(input as any, ctx.user!.id)),
+
+    update: permissionProcedure("financial:manage")
+      .input(z.object({
+        id: z.number(),
+        feeType: z.enum(["Billable Hours", "Fixed / Project-Based Fees", "Retainers", "Success Fees", "Advisory / Special Mandates", "Blended"]).optional(),
+        agreedFees: z.string().optional(),
+        discountApproval: z.enum(["N/A", "P&L Head Lawyers", "CEO", "Board"]).optional(),
+        discountPercentage: z.string().optional(),
+        discountAmount: z.string().optional(),
+        netFees: z.string().optional(),
+        billedAmount: z.string().optional(),
+        revenue: z.string().optional(),
+        collectedAmount: z.string().optional(),
+        remainingAdvanced: z.string().optional(),
+        outstandingAmount: z.string().optional(),
+        collectionStatus: z.enum(["Not Billed", "Partially Billed", "Billed", "Partially Collected", "Fully Collected", "Overdue"]).optional(),
+        billingDate: z.string().optional(),
+        paymentDate: z.string().optional(),
+        invoiceNumber: z.string().optional(),
+        responsibleLawyer: z.string().optional(),
+        financeNotes: z.string().optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const { id, ...data } = input;
+        return db.updateFinancialRecord(id, data as any, ctx.user!.id);
+      }),
+
+    delete: permissionProcedure("financial:manage")
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await db.deleteFinancialRecord(input.id);
+        return { success: true };
+      }),
+
+    summary: permissionProcedure("financial:view").query(async () => db.getFinancialSummary()),
+  }),
+
+  // ─── Client Action Logs ────────────────────────────────────────────────────
+
+  clientActions: router({
+    list: permissionProcedure("actions:manage")
+      .input(z.object({ clientId: z.number().optional() }).optional())
+      .query(async ({ input }) => db.getClientActionLogs(input?.clientId)),
+
+    create: permissionProcedure("actions:manage")
+      .input(z.object({
+        clientId: z.number(),
+        clientMatterId: z.number().optional(),
+        actionOwner: z.string().optional(),
+        nextStep: z.string().optional(),
+        actionDate: z.string().optional(),
+        actionType: z.string().optional(),
+        actionDetails: z.string().optional(),
+      }))
+      .mutation(async ({ input, ctx }) => db.createClientActionLog(input as any, ctx.user!.id)),
+
+    update: permissionProcedure("actions:manage")
+      .input(z.object({
+        id: z.number(),
+        actionOwner: z.string().optional(),
+        nextStep: z.string().optional(),
+        actionDate: z.string().optional(),
+        actionType: z.string().optional(),
+        actionDetails: z.string().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const { id, ...data } = input;
+        return db.updateClientActionLog(id, data as any);
+      }),
+
+    delete: permissionProcedure("actions:manage")
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await db.deleteClientActionLog(input.id);
+        return { success: true };
+      }),
+  }),
+
+  // ─── Excel Import ──────────────────────────────────────────────────────────
+
+  import: router({
+    clients: permissionProcedure("clients:manage")
+      .input(z.object({
+        rows: z.array(z.object({
+          clientNumber: z.string().optional(),
+          fileNumber: z.string().optional(),
+          clientName: z.string().optional(),
+          clientStatus: z.string().optional(),
+          city: z.string().optional(),
+          matterType: z.string().optional(),
+        })),
+      }))
+      .mutation(async ({ input, ctx }) => db.importClients(input.rows, ctx.user!.id)),
+  }),
+
   // ─── Contact / Chat Submissions ───────────────────────────────────────────
 
   chat: router({
