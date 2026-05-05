@@ -14,7 +14,7 @@ import {
 
 // ─── Enums ───────────────────────────────────────────────────────────────────
 
-export const userRoleEnum = pgEnum("user_role", ["admin", "manager", "lawyer", "staff", "viewer"]);
+export const userRoleEnum = pgEnum("user_role", ["admin", "manager", "partner", "lawyer", "finance", "staff", "viewer"]);
 export const userStatusEnum = pgEnum("user_status", ["active", "inactive", "suspended"]);
 
 export const leadStatusEnum = pgEnum("lead_status", [
@@ -358,3 +358,175 @@ export const chatSubmissions = pgTable("chat_submissions", {
 
 export type ChatSubmission = typeof chatSubmissions.$inferSelect;
 export type InsertChatSubmission = typeof chatSubmissions.$inferInsert;
+
+// ─── AlGhazzawi Clients Module ────────────────────────────────────────────────
+
+export const clientStatusEnum = pgEnum("client_status", [
+  "Existing Client",
+  "Leads",
+  "Rejected",
+]);
+
+export const cityEnum = pgEnum("city", ["Riyadh", "Dammam", "Jeddah"]);
+
+export const clientMatterTypeEnum = pgEnum("client_matter_type", [
+  "Corporate",
+  "Litigation",
+]);
+
+export const feeTypeEnum = pgEnum("fee_type", [
+  "Billable Hours",
+  "Fixed / Project-Based Fees",
+  "Retainers",
+  "Success Fees",
+  "Advisory / Special Mandates",
+  "Blended",
+]);
+
+export const discountApprovalEnum = pgEnum("discount_approval", [
+  "N/A",
+  "P&L Head Lawyers",
+  "CEO",
+  "Board",
+]);
+
+export const collectionStatusEnum = pgEnum("collection_status", [
+  "Not Billed",
+  "Partially Billed",
+  "Billed",
+  "Partially Collected",
+  "Fully Collected",
+  "Overdue",
+]);
+
+export const rejectionReasonEnum = pgEnum("rejection_reason", ["Client", "Us"]);
+
+// ─── Clients (master entity replacing Excel Client List) ──────────────────────
+
+export const clients = pgTable("clients", {
+  id: serial("id").primaryKey(),
+  clientNumber: varchar("client_number", { length: 50 }).unique(),
+  fileNumber: varchar("file_number", { length: 50 }).unique(),
+  clientName: varchar("client_name", { length: 255 }).notNull(),
+  clientStatus: clientStatusEnum("client_status").notNull().default("Leads"),
+  city: cityEnum("city"),
+  matterType: clientMatterTypeEnum("matter_type"),
+  createdBy: integer("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export type Client = typeof clients.$inferSelect;
+export type InsertClient = typeof clients.$inferInsert;
+
+// ─── Client Matters (rich matter records linked to clients) ───────────────────
+
+export const clientMatters = pgTable("client_matters", {
+  id: serial("id").primaryKey(),
+  clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+  originalSerial: varchar("original_serial", { length: 50 }),
+  matterReference: varchar("matter_reference", { length: 100 }),
+  matterType: varchar("matter_type", { length: 100 }),
+  leadPartner: varchar("lead_partner", { length: 100 }),
+  leadPartnerFullName: varchar("lead_partner_full_name", { length: 255 }),
+  supportLead: varchar("support_lead", { length: 100 }),
+  attorneyHead: varchar("attorney_head", { length: 100 }),
+  attorney1: varchar("attorney_1", { length: 100 }),
+  attorney2: varchar("attorney_2", { length: 100 }),
+  attorney3: varchar("attorney_3", { length: 100 }),
+  attorneyFullName: varchar("attorney_full_name", { length: 255 }),
+  matterStatus: varchar("matter_status", { length: 50 }),
+  balanceWorkLeft: decimal("balance_work_left", { precision: 5, scale: 2 }),
+  achievementPercentage: decimal("achievement_percentage", { precision: 5, scale: 2 }),
+  achievementStatus: varchar("achievement_status", { length: 50 }),
+  priority: priorityEnum("priority").default("medium"),
+  createdBy: integer("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export type ClientMatter = typeof clientMatters.$inferSelect;
+export type InsertClientMatter = typeof clientMatters.$inferInsert;
+
+// ─── Client Lead Details (pipeline data for Leads-status clients) ─────────────
+
+export const clientLeadDetails = pgTable("client_lead_details", {
+  id: serial("id").primaryKey(),
+  clientId: integer("client_id").notNull().unique().references(() => clients.id, { onDelete: "cascade" }),
+  clientSource: varchar("client_source", { length: 255 }),
+  nextActionDate: date("next_action_date"),
+  nextActionDate2: date("next_action_date_2"),
+  nextActionOwner: varchar("next_action_owner", { length: 255 }),
+  nextAction: text("next_action"),
+  priority: priorityEnum("priority").default("medium"),
+  leadStatus: varchar("lead_status", { length: 100 }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export type ClientLeadDetail = typeof clientLeadDetails.$inferSelect;
+export type InsertClientLeadDetail = typeof clientLeadDetails.$inferInsert;
+
+// ─── Rejected Clients ─────────────────────────────────────────────────────────
+
+export const rejectedClients = pgTable("rejected_clients", {
+  id: serial("id").primaryKey(),
+  clientId: integer("client_id").notNull().unique().references(() => clients.id, { onDelete: "cascade" }),
+  rejectionReasonSource: rejectionReasonEnum("rejection_reason_source"),
+  rejectionNotes: text("rejection_notes"),
+  rejectedBy: varchar("rejected_by", { length: 255 }),
+  rejectedAt: timestamp("rejected_at").defaultNow(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export type RejectedClient = typeof rejectedClients.$inferSelect;
+export type InsertRejectedClient = typeof rejectedClients.$inferInsert;
+
+// ─── Financial Records ────────────────────────────────────────────────────────
+
+export const financialRecords = pgTable("financial_records", {
+  id: serial("id").primaryKey(),
+  clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+  clientMatterId: integer("client_matter_id").references(() => clientMatters.id),
+  feeType: feeTypeEnum("fee_type"),
+  agreedFees: decimal("agreed_fees", { precision: 15, scale: 2 }),
+  discountApproval: discountApprovalEnum("discount_approval").default("N/A"),
+  discountPercentage: decimal("discount_percentage", { precision: 5, scale: 2 }),
+  discountAmount: decimal("discount_amount", { precision: 15, scale: 2 }),
+  netFees: decimal("net_fees", { precision: 15, scale: 2 }),
+  billedAmount: decimal("billed_amount", { precision: 15, scale: 2 }),
+  revenue: decimal("revenue", { precision: 15, scale: 2 }),
+  collectedAmount: decimal("collected_amount", { precision: 15, scale: 2 }),
+  remainingAdvanced: decimal("remaining_advanced", { precision: 15, scale: 2 }),
+  outstandingAmount: decimal("outstanding_amount", { precision: 15, scale: 2 }),
+  collectionStatus: collectionStatusEnum("collection_status").default("Not Billed"),
+  billingDate: date("billing_date"),
+  paymentDate: date("payment_date"),
+  invoiceNumber: varchar("invoice_number", { length: 100 }),
+  responsibleLawyer: varchar("responsible_lawyer", { length: 255 }),
+  financeNotes: text("finance_notes"),
+  createdBy: integer("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export type FinancialRecord = typeof financialRecords.$inferSelect;
+export type InsertFinancialRecord = typeof financialRecords.$inferInsert;
+
+// ─── Client Action Log ────────────────────────────────────────────────────────
+
+export const clientActionLogs = pgTable("client_action_logs", {
+  id: serial("id").primaryKey(),
+  clientId: integer("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
+  clientMatterId: integer("client_matter_id").references(() => clientMatters.id),
+  actionOwner: varchar("action_owner", { length: 255 }),
+  nextStep: text("next_step"),
+  actionDate: date("action_date"),
+  actionType: varchar("action_type", { length: 100 }),
+  actionDetails: text("action_details"),
+  createdBy: integer("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export type ClientActionLog = typeof clientActionLogs.$inferSelect;
+export type InsertClientActionLog = typeof clientActionLogs.$inferInsert;

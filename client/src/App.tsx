@@ -20,6 +20,16 @@ import MatterList from "@/pages/MatterList";
 import TaskList from "@/pages/TaskList";
 import TaskForm from "@/pages/TaskForm";
 import DashboardLayout from "./components/DashboardLayout";
+// AlGhazzawi Clients Module
+import ClientList from "@/pages/ClientList";
+import ClientForm from "@/pages/ClientForm";
+import ClientDetail from "@/pages/ClientDetail";
+import ClientsExisting from "@/pages/ClientsExisting";
+import ClientsLeads from "@/pages/ClientsLeads";
+import ClientsRejected from "@/pages/ClientsRejected";
+import FinancialRecords from "@/pages/FinancialRecords";
+import ClientActionLog from "@/pages/ClientActionLog";
+import ImportPage from "@/pages/ImportPage";
 
 function Router() {
   return (
@@ -114,6 +124,55 @@ function Router() {
       <Route path="/user-management">
         <ProtectedRoute permission="users:manage">
           <DashboardLayout><UserManagement /></DashboardLayout>
+        </ProtectedRoute>
+      </Route>
+
+      {/* ── AlGhazzawi Clients Module ── */}
+      <Route path="/clients">
+        <ProtectedRoute permission="clients:view">
+          <ClientList />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/clients/new">
+        <ProtectedRoute permission="clients:manage">
+          <ClientForm />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/clients/existing">
+        <ProtectedRoute permission="clients:view">
+          <ClientsExisting />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/clients/leads">
+        <ProtectedRoute permission="clients:view">
+          <ClientsLeads />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/clients/rejected">
+        <ProtectedRoute permission="clients:view">
+          <ClientsRejected />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/clients/:id">
+        {(params) => (
+          <ProtectedRoute permission="clients:view">
+            <ClientDetail id={parseInt(params.id)} />
+          </ProtectedRoute>
+        )}
+      </Route>
+      <Route path="/financial">
+        <ProtectedRoute permission="financial:view">
+          <FinancialRecords />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/client-actions">
+        <ProtectedRoute permission="actions:manage">
+          <ClientActionLog />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/import">
+        <ProtectedRoute permission="clients:manage">
+          <ImportPage />
         </ProtectedRoute>
       </Route>
 

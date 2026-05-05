@@ -1,13 +1,16 @@
 import { Link } from "wouter";
 import {
   Users, Briefcase, CheckSquare, TrendingUp, DollarSign,
-  ArrowRight, Plus, Clock, AlertCircle
+  ArrowRight, Plus, Clock, AlertCircle, Building2, UserCheck,
+  UserX, Calendar, AlertTriangle,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import DashboardLayout from "@/components/DashboardLayout";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { hasPermission } from "@shared/const";
 
 function StatCard({
   title, value, subtitle, icon: Icon, color, href
@@ -44,11 +47,20 @@ export default function Dashboard() {
   const { data: recentActivity } = trpc.dashboard.recentActivity.useQuery({ limit: 8 });
   const { data: leads } = trpc.leads.list.useQuery();
   const { data: tasks } = trpc.tasks.list.useQuery({});
+  const { user } = useAuth();
+
+  // AlGhazzawi client stats
+  const canViewClients = hasPermission(user?.role, "clients:view");
+  const canViewFinancial = hasPermission(user?.role, "financial:view");
+  const { data: clientStats } = trpc.clients.dashboardStats.useQuery(undefined, { enabled: canViewClients });
+  const { data: financialSummary } = trpc.financial.summary.useQuery(undefined, { enabled: canViewFinancial });
 
   const pendingTasks = tasks?.filter(t => t.status !== "done") ?? [];
   const overdueTasks = pendingTasks.filter(t => t.dueDate && new Date(t.dueDate) < new Date());
   const recentLeads = (leads ?? []).slice(0, 5);
 
+  const formatSAR = (n: number) =>
+    `SAR ${new Intl.NumberFormat("en-US", { minimumFractionDigits: 0 }).format(n)}`;
   const formatCurrency = (n: number) =>
     new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 0 }).format(n);
 
@@ -64,8 +76,15 @@ export default function Dashboard() {
             </p>
           </div>
           <div className="flex gap-2">
+            {canViewClients && (
+              <Link href="/clients/new">
+                <Button size="sm">
+                  <Plus className="h-4 w-4 mr-1" /> New Client
+                </Button>
+              </Link>
+            )}
             <Link href="/leads/new">
-              <Button size="sm">
+              <Button size="sm" variant="outline">
                 <Plus className="h-4 w-4 mr-1" /> New Lead
               </Button>
             </Link>
@@ -118,6 +137,87 @@ export default function Dashboard() {
               color="bg-purple-500"
             />
           </div>
+        )}
+
+        {/* AlGhazzawi Client Registry Cards */}
+        {canViewClients && clientStats && (
+          <>
+            <div>
+              <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+                Client Registry
+              </h2>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <StatCard
+                  title="Total Clients"
+                  value={clientStats.total}
+                  icon={Building2}
+                  color="bg-slate-600"
+                  href="/clients"
+                />
+                <StatCard
+                  title="Existing Clients"
+                  value={clientStats.existing}
+                  icon={UserCheck}
+                  color="bg-green-600"
+                  href="/clients/existing"
+                />
+                <StatCard
+                  title="Leads Pipeline"
+                  value={clientStats.leads}
+                  icon={Users}
+                  color="bg-blue-600"
+                  href="/clients/leads"
+                />
+                <StatCard
+                  title="Rejected"
+                  value={clientStats.rejected}
+                  icon={UserX}
+                  color="bg-red-500"
+                  href="/clients/rejected"
+                />
+              </div>
+            </div>
+
+            {canViewFinancial && financialSummary && (
+              <div>
+                <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+                  Financial Overview
+                </h2>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <StatCard
+                    title="Total Revenue"
+                    value={formatSAR(financialSummary.totalRevenue)}
+                    icon={DollarSign}
+                    color="bg-emerald-600"
+                    href="/financial"
+                  />
+                  <StatCard
+                    title="Outstanding Amount"
+                    value={formatSAR(financialSummary.totalOutstanding)}
+                    icon={Clock}
+                    color="bg-orange-500"
+                    href="/financial"
+                  />
+                  <StatCard
+                    title="Overdue Collections"
+                    value={financialSummary.overdueCount}
+                    icon={AlertTriangle}
+                    color="bg-red-600"
+                    href="/financial"
+                  />
+                </div>
+              </div>
+            )}
+
+            <StatCard
+              title="Actions Due This Week"
+              value={clientStats.actionsThisWeek}
+              subtitle="Client action log items"
+              icon={Calendar}
+              color="bg-violet-600"
+              href="/client-actions"
+            />
+          </>
         )}
 
         {/* Revenue card */}

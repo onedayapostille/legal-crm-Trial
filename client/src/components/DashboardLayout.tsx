@@ -22,7 +22,8 @@ import {
 import { useIsMobile } from "@/hooks/useMobile";
 import {
   LayoutDashboard, LogOut, PanelLeft, Users, FileText, BarChart3,
-  DollarSign, TrendingUp, UserCog, Briefcase, CheckSquare, Home
+  DollarSign, TrendingUp, UserCog, Briefcase, CheckSquare, Home,
+  Building2, UserCheck, UserX, Calendar, Upload,
 } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
@@ -30,16 +31,22 @@ import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
 import { hasPermission } from "@shared/const";
 
 const menuItems = [
-  { icon: Home,          label: "Dashboard",       path: "/dashboard", permission: "dashboard:view" },
-  { icon: Users,         label: "Leads",           path: "/leads", permission: "leads:manage" },
-  { icon: Briefcase,     label: "Matters",         path: "/matters", permission: "matters:manage" },
-  { icon: CheckSquare,   label: "Tasks",           path: "/tasks", permission: "tasks:manage" },
-  { icon: FileText,      label: "Enquiry Log",     path: "/enquiries", permission: "leads:manage" },
-  { icon: BarChart3,     label: "Status Tracker",  path: "/status-tracker", permission: "analytics:view" },
-  { icon: LayoutDashboard, label: "KPI Dashboard", path: "/kpi-dashboard", permission: "analytics:view" },
-  { icon: DollarSign,    label: "Payment Tracker", path: "/payment-tracker", permission: "payments:view" },
-  { icon: TrendingUp,    label: "Pipeline",        path: "/pipeline-forecast", permission: "analytics:view" },
-  { icon: UserCog,       label: "User Management", path: "/user-management", permission: "users:manage" },
+  { icon: Home,          label: "Dashboard",         path: "/dashboard",         permission: "dashboard:view" },
+  // ── Clients Module ──
+  { icon: Building2,     label: "All Clients",        path: "/clients",           permission: "clients:view" },
+  { icon: UserCheck,     label: "Existing Clients",   path: "/clients/existing",  permission: "clients:view" },
+  { icon: Users,         label: "Leads Pipeline",     path: "/clients/leads",     permission: "clients:view" },
+  { icon: UserX,         label: "Rejected Clients",   path: "/clients/rejected",  permission: "clients:view" },
+  { icon: Calendar,      label: "Action Log",         path: "/client-actions",    permission: "actions:manage" },
+  { icon: DollarSign,    label: "Financial Records",  path: "/financial",         permission: "financial:view" },
+  { icon: Upload,        label: "Import Clients",     path: "/import",            permission: "clients:manage" },
+  // ── Legacy / Other ──
+  { icon: Briefcase,     label: "Matters",            path: "/matters",           permission: "matters:manage" },
+  { icon: CheckSquare,   label: "Tasks",              path: "/tasks",             permission: "tasks:manage" },
+  { icon: BarChart3,     label: "Status Tracker",     path: "/status-tracker",    permission: "analytics:view" },
+  { icon: LayoutDashboard, label: "KPI Dashboard",   path: "/kpi-dashboard",     permission: "analytics:view" },
+  { icon: TrendingUp,    label: "Pipeline",           path: "/pipeline-forecast", permission: "analytics:view" },
+  { icon: UserCog,       label: "User Management",   path: "/user-management",   permission: "users:manage" },
 ];
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";

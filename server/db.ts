@@ -1,4 +1,4 @@
-import { and, count, desc, eq, ne, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, lte, ne, or, sql, ilike } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import fs from "fs";
@@ -6,9 +6,13 @@ import path from "path";
 import {
   users, companies, leads, matters, tasks, notes, documents, payments,
   activityLogs, auditLogs, chatSubmissions,
+  clients, clientMatters, clientLeadDetails, rejectedClients,
+  financialRecords, clientActionLogs,
   type InsertUser, type InsertLead, type InsertMatter,
   type InsertTask, type InsertNote, type InsertPayment,
   type InsertCompany, type InsertActivityLog, type InsertChatSubmission,
+  type InsertClient, type InsertClientMatter, type InsertClientLeadDetail,
+  type InsertRejectedClient, type InsertFinancialRecord, type InsertClientActionLog,
 } from "../drizzle/schema";
 import { hashPassword } from "./_core/auth";
 import type { UserRole, UserStatus } from "../shared/const";
@@ -667,5 +671,489 @@ export async function getUserActivityStats(userId: number) {
     .from(leads)
     .where(eq(leads.createdBy, userId));
   return { leadsCreated: Number(leadCount?.count ?? 0) };
+}
+
+// ─── Clients ──────────────────────────────────────────────────────────────────
+
+export async function getAllClients(filters?: {
+  clientStatus?: string;
+  city?: string;
+  matterType?: string;
+  search?: string;
+}) {
+  const db = getDb();
+  const conditions = [];
+
+  if (filters?.clientStatus) {
+    conditions.push(eq(clients.clientStatus, filters.clientStatus as any));
+  }
+  if (filters?.city) {
+    conditions.push(eq(clients.city, filters.city as any));
+  }
+  if (filters?.matterType) {
+    conditions.push(eq(clients.matterType, filters.matterType as any));
+  }
+  if (filters?.search) {
+    const term = `%${filters.search}%`;
+    conditions.push(
+      or(
+        ilike(clients.clientName, term),
+        ilike(clients.clientNumber, term),
+        ilike(clients.fileNumber, term),
+      )
+    );
+  }
+
+  const query = db.select().from(clients).orderBy(desc(clients.createdAt));
+  if (conditions.length > 0) {
+    return query.where(and(...conditions));
+  }
+  return query;
+}
+
+export async function getClientById(id: number) {
+  const db = getDb();
+  const result = await db.select().from(clients).where(eq(clients.id, id)).limit(1);
+  return result[0] ?? null;
+}
+
+export async function createClient(data: InsertClient, userId: number) {
+  const db = getDb();
+  const [client] = await db
+    .insert(clients)
+    .values({ ...data, createdBy: userId })
+    .returning();
+  await createAuditLog({
+    entityType: "client",
+    entityId: client.id,
+    userId,
+    action: "created",
+    description: `Client ${client.clientName} created with status ${client.clientStatus}`,
+  });
+  return client;
+}
+
+export async function updateClient(id: number, data: Partial<InsertClient>, userId: number) {
+  const db = getDb();
+  const existing = await getClientById(id);
+  const [client] = await db
+    .update(clients)
+    .set({ ...data, updatedAt: new Date() })
+    .where(eq(clients.id, id))
+    .returning();
+
+  if (existing && data.clientStatus && existing.clientStatus !== data.clientStatus) {
+    await createAuditLog({
+      entityType: "client",
+      entityId: id,
+      userId,
+      action: "status_changed",
+      fieldName: "clientStatus",
+      oldValue: existing.clientStatus,
+      newValue: data.clientStatus,
+      description: `Client ${existing.clientName} status changed from ${existing.clientStatus} to ${data.clientStatus}`,
+    });
+  } else if (existing) {
+    await createAuditLog({
+      entityType: "client",
+      entityId: id,
+      userId,
+      action: "updated",
+      description: `Client ${existing.clientName} updated`,
+    });
+  }
+  return client;
+}
+
+export async function deleteClient(id: number) {
+  const db = getDb();
+  await db.delete(clients).where(eq(clients.id, id));
+}
+
+export async function getClientStatusCounts() {
+  const db = getDb();
+  const rows = await db
+    .select({ status: clients.clientStatus, count: count() })
+    .from(clients)
+    .groupBy(clients.clientStatus);
+  const result = { existing: 0, leads: 0, rejected: 0, total: 0 };
+  for (const row of rows) {
+    const n = Number(row.count);
+    result.total += n;
+    if (row.status === "Existing Client") result.existing = n;
+    else if (row.status === "Leads") result.leads = n;
+    else if (row.status === "Rejected") result.rejected = n;
+  }
+  return result;
+}
+
+// ─── Client Matters ───────────────────────────────────────────────────────────
+
+export async function getClientMatters(clientId: number) {
+  const db = getDb();
+  return db
+    .select()
+    .from(clientMatters)
+    .where(eq(clientMatters.clientId, clientId))
+    .orderBy(desc(clientMatters.createdAt));
+}
+
+export async function getClientMatterById(id: number) {
+  const db = getDb();
+  const result = await db.select().from(clientMatters).where(eq(clientMatters.id, id)).limit(1);
+  return result[0] ?? null;
+}
+
+export async function createClientMatter(data: InsertClientMatter, userId: number) {
+  const db = getDb();
+  const [matter] = await db
+    .insert(clientMatters)
+    .values({ ...data, createdBy: userId })
+    .returning();
+  return matter;
+}
+
+export async function updateClientMatter(id: number, data: Partial<InsertClientMatter>, userId: number) {
+  const db = getDb();
+  const [matter] = await db
+    .update(clientMatters)
+    .set({ ...data, updatedAt: new Date() })
+    .where(eq(clientMatters.id, id))
+    .returning();
+  await createAuditLog({
+    entityType: "client_matter",
+    entityId: id,
+    userId,
+    action: "updated",
+    description: `Client matter ${matter?.matterReference ?? id} updated`,
+  });
+  return matter;
+}
+
+export async function deleteClientMatter(id: number) {
+  const db = getDb();
+  await db.delete(clientMatters).where(eq(clientMatters.id, id));
+}
+
+// ─── Client Lead Details ──────────────────────────────────────────────────────
+
+export async function getClientLeadDetail(clientId: number) {
+  const db = getDb();
+  const result = await db
+    .select()
+    .from(clientLeadDetails)
+    .where(eq(clientLeadDetails.clientId, clientId))
+    .limit(1);
+  return result[0] ?? null;
+}
+
+export async function upsertClientLeadDetail(clientId: number, data: Partial<InsertClientLeadDetail>) {
+  const db = getDb();
+  const existing = await getClientLeadDetail(clientId);
+  if (existing) {
+    const [updated] = await db
+      .update(clientLeadDetails)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(clientLeadDetails.clientId, clientId))
+      .returning();
+    return updated;
+  }
+  const [created] = await db
+    .insert(clientLeadDetails)
+    .values({ ...data, clientId } as InsertClientLeadDetail)
+    .returning();
+  return created;
+}
+
+export async function getLeadsWithActionsDueThisWeek() {
+  const db = getDb();
+  const today = new Date();
+  const weekEnd = new Date();
+  weekEnd.setDate(today.getDate() + 7);
+  const todayStr = today.toISOString().split("T")[0];
+  const weekEndStr = weekEnd.toISOString().split("T")[0];
+  return db
+    .select()
+    .from(clientLeadDetails)
+    .where(
+      and(
+        gte(clientLeadDetails.nextActionDate, todayStr),
+        lte(clientLeadDetails.nextActionDate, weekEndStr),
+      )
+    );
+}
+
+// ─── Rejected Clients ─────────────────────────────────────────────────────────
+
+export async function getRejectedClientDetail(clientId: number) {
+  const db = getDb();
+  const result = await db
+    .select()
+    .from(rejectedClients)
+    .where(eq(rejectedClients.clientId, clientId))
+    .limit(1);
+  return result[0] ?? null;
+}
+
+export async function upsertRejectedClient(clientId: number, data: Partial<InsertRejectedClient>) {
+  const db = getDb();
+  const existing = await getRejectedClientDetail(clientId);
+  if (existing) {
+    const [updated] = await db
+      .update(rejectedClients)
+      .set(data)
+      .where(eq(rejectedClients.clientId, clientId))
+      .returning();
+    return updated;
+  }
+  const [created] = await db
+    .insert(rejectedClients)
+    .values({ ...data, clientId } as InsertRejectedClient)
+    .returning();
+  return created;
+}
+
+// ─── Financial Records ────────────────────────────────────────────────────────
+
+export async function getFinancialRecords(filters?: { clientId?: number; collectionStatus?: string }) {
+  const db = getDb();
+  const conditions = [];
+  if (filters?.clientId) conditions.push(eq(financialRecords.clientId, filters.clientId));
+  if (filters?.collectionStatus) {
+    conditions.push(eq(financialRecords.collectionStatus, filters.collectionStatus as any));
+  }
+  const query = db.select().from(financialRecords).orderBy(desc(financialRecords.createdAt));
+  return conditions.length > 0 ? query.where(and(...conditions)) : query;
+}
+
+export async function getFinancialRecordById(id: number) {
+  const db = getDb();
+  const result = await db.select().from(financialRecords).where(eq(financialRecords.id, id)).limit(1);
+  return result[0] ?? null;
+}
+
+export async function createFinancialRecord(data: InsertFinancialRecord, userId: number) {
+  const db = getDb();
+  const [record] = await db
+    .insert(financialRecords)
+    .values({ ...data, createdBy: userId })
+    .returning();
+  await createAuditLog({
+    entityType: "financial_record",
+    entityId: record.id,
+    userId,
+    action: "created",
+    description: `Financial record created for client ${data.clientId}`,
+  });
+  return record;
+}
+
+export async function updateFinancialRecord(id: number, data: Partial<InsertFinancialRecord>, userId: number) {
+  const db = getDb();
+  const [record] = await db
+    .update(financialRecords)
+    .set({ ...data, updatedAt: new Date() })
+    .where(eq(financialRecords.id, id))
+    .returning();
+  await createAuditLog({
+    entityType: "financial_record",
+    entityId: id,
+    userId,
+    action: "updated",
+    description: `Financial record ${id} updated`,
+  });
+  return record;
+}
+
+export async function deleteFinancialRecord(id: number) {
+  const db = getDb();
+  await db.delete(financialRecords).where(eq(financialRecords.id, id));
+}
+
+export async function getFinancialSummary() {
+  const db = getDb();
+  const [row] = await db
+    .select({
+      totalRevenue: sql<string>`COALESCE(SUM(${financialRecords.revenue}), 0)`,
+      totalOutstanding: sql<string>`COALESCE(SUM(${financialRecords.outstandingAmount}), 0)`,
+      overdueCount: sql<number>`COUNT(*) FILTER (WHERE ${financialRecords.collectionStatus} = 'Overdue')`,
+    })
+    .from(financialRecords);
+  return {
+    totalRevenue: Number(row?.totalRevenue ?? 0),
+    totalOutstanding: Number(row?.totalOutstanding ?? 0),
+    overdueCount: Number(row?.overdueCount ?? 0),
+  };
+}
+
+// ─── Client Action Logs ───────────────────────────────────────────────────────
+
+export async function getClientActionLogs(clientId?: number) {
+  const db = getDb();
+  const query = db.select().from(clientActionLogs).orderBy(desc(clientActionLogs.createdAt));
+  if (clientId) return query.where(eq(clientActionLogs.clientId, clientId));
+  return query;
+}
+
+export async function createClientActionLog(data: InsertClientActionLog, userId: number) {
+  const db = getDb();
+  const [log] = await db
+    .insert(clientActionLogs)
+    .values({ ...data, createdBy: userId })
+    .returning();
+  return log;
+}
+
+export async function updateClientActionLog(id: number, data: Partial<InsertClientActionLog>) {
+  const db = getDb();
+  const [log] = await db
+    .update(clientActionLogs)
+    .set(data)
+    .where(eq(clientActionLogs.id, id))
+    .returning();
+  return log;
+}
+
+export async function deleteClientActionLog(id: number) {
+  const db = getDb();
+  await db.delete(clientActionLogs).where(eq(clientActionLogs.id, id));
+}
+
+export async function getActionsThisWeek() {
+  const db = getDb();
+  const today = new Date();
+  const weekEnd = new Date();
+  weekEnd.setDate(today.getDate() + 7);
+  const todayStr = today.toISOString().split("T")[0];
+  const weekEndStr = weekEnd.toISOString().split("T")[0];
+  const [row] = await db
+    .select({ count: count() })
+    .from(clientActionLogs)
+    .where(
+      and(
+        gte(clientActionLogs.actionDate, todayStr),
+        lte(clientActionLogs.actionDate, weekEndStr),
+      )
+    );
+  return Number(row?.count ?? 0);
+}
+
+// ─── Client Import (with validation) ─────────────────────────────────────────
+
+type ImportRow = {
+  clientNumber?: string;
+  fileNumber?: string;
+  clientName?: string;
+  clientStatus?: string;
+  city?: string;
+  matterType?: string;
+};
+
+const VALID_STATUSES = ["Existing Client", "Leads", "Rejected"];
+const VALID_CITIES = ["Riyadh", "Dammam", "Jeddah"];
+const VALID_MATTER_TYPES = ["Corporate", "Litigation"];
+
+export async function importClients(rows: ImportRow[], userId: number) {
+  const db = getDb();
+
+  const errors: Array<{ row: number; field: string; issue: string }> = [];
+  const valid: InsertClient[] = [];
+  const skipped: number[] = [];
+
+  // Pre-load existing client/file numbers for dup detection
+  const existingClients = await getAllClients();
+  const existingNames = new Set(existingClients.map(c => c.clientName.toLowerCase()));
+  const existingFileNums = new Set(existingClients.map(c => c.fileNumber?.toLowerCase()).filter(Boolean));
+  const existingClientNums = new Set(existingClients.map(c => c.clientNumber?.toLowerCase()).filter(Boolean));
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const rowNum = i + 2; // 1-indexed + header row
+    let hasError = false;
+
+    // Clean #REF! values
+    const clean = (v?: string) => {
+      if (!v || v.trim() === "" || v.includes("#REF!") || v.includes("#N/A") || v.includes("#VALUE!")) return undefined;
+      return v.trim();
+    };
+
+    const clientName = clean(row.clientName);
+    const clientStatus = clean(row.clientStatus);
+    const city = clean(row.city);
+    const matterType = clean(row.matterType);
+    const clientNumber = clean(row.clientNumber);
+    const fileNumber = clean(row.fileNumber);
+
+    if (!clientName) {
+      errors.push({ row: rowNum, field: "clientName", issue: "Missing client name" });
+      hasError = true;
+    }
+    if (!clientStatus) {
+      errors.push({ row: rowNum, field: "clientStatus", issue: "Missing client status" });
+      hasError = true;
+    } else if (!VALID_STATUSES.includes(clientStatus)) {
+      errors.push({ row: rowNum, field: "clientStatus", issue: `Invalid status "${clientStatus}". Must be one of: ${VALID_STATUSES.join(", ")}` });
+      hasError = true;
+    }
+    if (city && !VALID_CITIES.includes(city)) {
+      errors.push({ row: rowNum, field: "city", issue: `Invalid city "${city}". Must be one of: ${VALID_CITIES.join(", ")}` });
+      hasError = true;
+    }
+    if (matterType && !VALID_MATTER_TYPES.includes(matterType)) {
+      errors.push({ row: rowNum, field: "matterType", issue: `Invalid matter type "${matterType}". Must be one of: ${VALID_MATTER_TYPES.join(", ")}` });
+      hasError = true;
+    }
+    if (clientName && existingNames.has(clientName.toLowerCase())) {
+      errors.push({ row: rowNum, field: "clientName", issue: `Duplicate client name "${clientName}"` });
+      hasError = true;
+    }
+    if (fileNumber && existingFileNums.has(fileNumber.toLowerCase())) {
+      errors.push({ row: rowNum, field: "fileNumber", issue: `Duplicate file number "${fileNumber}"` });
+      hasError = true;
+    }
+    if (clientNumber && existingClientNums.has(clientNumber.toLowerCase())) {
+      errors.push({ row: rowNum, field: "clientNumber", issue: `Duplicate client number "${clientNumber}"` });
+      hasError = true;
+    }
+
+    if (hasError) {
+      skipped.push(rowNum);
+      continue;
+    }
+
+    valid.push({
+      clientName: clientName!,
+      clientStatus: clientStatus! as any,
+      city: city as any,
+      matterType: matterType as any,
+      clientNumber,
+      fileNumber,
+      createdBy: userId,
+    });
+
+    // Track in-batch duplicates
+    if (clientName) existingNames.add(clientName.toLowerCase());
+    if (fileNumber) existingFileNums.add(fileNumber.toLowerCase());
+    if (clientNumber) existingClientNums.add(clientNumber.toLowerCase());
+  }
+
+  let imported = 0;
+  if (valid.length > 0) {
+    const inserted = await db.insert(clients).values(valid).returning();
+    imported = inserted.length;
+  }
+
+  return { imported, skipped: skipped.length, errors };
+}
+
+// ─── Enhanced Dashboard Stats ─────────────────────────────────────────────────
+
+export async function getClientDashboardStats() {
+  const [clientCounts, financialSummary, actionsThisWeek] = await Promise.all([
+    getClientStatusCounts(),
+    getFinancialSummary(),
+    getActionsThisWeek(),
+  ]);
+  return { ...clientCounts, ...financialSummary, actionsThisWeek };
 }
 
