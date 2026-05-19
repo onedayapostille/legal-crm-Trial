@@ -65,6 +65,75 @@ function sanitizeOptionalInput(data: Record<string, unknown>) {
   ) as Record<string, unknown>;
 }
 
+// Trim strings, drop empty / "0" placeholders for optional varchar fields, and
+// validate numeric strings. Returns a fresh object safe to spread into a Drizzle
+// insert/update for client_matters.
+function sanitizeClientMatterInput(data: Record<string, unknown>) {
+  const out: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(data)) {
+    if (raw === null || raw === undefined) continue;
+    if (typeof raw === "string") {
+      const trimmed = raw.trim();
+      if (trimmed === "") continue;
+      // numeric fields: must parse as a finite number
+      if (key === "balanceWorkLeft" || key === "achievementPercentage") {
+        const n = Number(trimmed);
+        if (!Number.isFinite(n)) {
+          throw new Error(`Invalid number for ${key}: "${trimmed}"`);
+        }
+        out[key] = String(n);
+        continue;
+      }
+      out[key] = trimmed;
+    } else {
+      out[key] = raw;
+    }
+  }
+  return out;
+}
+
+// Compute discount fields symmetrically: given agreedFees and one of
+// (discountPercentage, discountAmount), derive the other and netFees.
+// Caller wins if both are explicitly supplied and consistent; otherwise the
+// authoritative side is whichever the caller provided.
+export function computeDiscountFields(data: Record<string, unknown>) {
+  const out = { ...data };
+  const agreed = toNum(out.agreedFees);
+  const pctRaw = out.discountPercentage;
+  const amtRaw = out.discountAmount;
+  const pct = toNum(pctRaw);
+  const amt = toNum(amtRaw);
+
+  if (agreed !== null && agreed > 0) {
+    if (amt === null && pct !== null) {
+      out.discountAmount = round2(agreed * (pct / 100));
+    } else if (pct === null && amt !== null) {
+      out.discountPercentage = round2((amt / agreed) * 100);
+    }
+  }
+
+  const finalAmt = toNum(out.discountAmount) ?? 0;
+  if (agreed !== null && (toNum(out.netFees) === null || pctRaw !== undefined || amtRaw !== undefined || data.agreedFees !== undefined)) {
+    out.netFees = round2(agreed - finalAmt);
+  }
+
+  // Drizzle decimal columns expect string values.
+  for (const k of ["discountAmount", "discountPercentage", "netFees"] as const) {
+    if (typeof out[k] === "number") out[k] = String(out[k]);
+  }
+  return out;
+}
+
+function toNum(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function round2(n: number) {
+  return Math.round(n * 100) / 100;
+}
+
 export function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
@@ -804,20 +873,22 @@ export async function getClientMatterById(id: number) {
   return result[0] ?? null;
 }
 
-export async function createClientMatter(data: InsertClientMatter, userId: number) {
+export async function createClientMatter(data: Record<string, unknown>, userId: number) {
   const db = getDb();
+  const clean = sanitizeClientMatterInput(data) as Partial<InsertClientMatter>;
   const [matter] = await db
     .insert(clientMatters)
-    .values({ ...data, createdBy: userId })
+    .values({ ...clean, clientId: (data as any).clientId, createdBy: userId } as InsertClientMatter)
     .returning();
   return matter;
 }
 
-export async function updateClientMatter(id: number, data: Partial<InsertClientMatter>, userId: number) {
+export async function updateClientMatter(id: number, data: Record<string, unknown>, userId: number) {
   const db = getDb();
+  const clean = sanitizeClientMatterInput(data) as Partial<InsertClientMatter>;
   const [matter] = await db
     .update(clientMatters)
-    .set({ ...data, updatedAt: new Date() })
+    .set({ ...clean, updatedAt: new Date() })
     .where(eq(clientMatters.id, id))
     .returning();
   await createAuditLog({
@@ -934,9 +1005,10 @@ export async function getFinancialRecordById(id: number) {
 
 export async function createFinancialRecord(data: InsertFinancialRecord, userId: number) {
   const db = getDb();
+  const computed = computeDiscountFields(data as Record<string, unknown>) as InsertFinancialRecord;
   const [record] = await db
     .insert(financialRecords)
-    .values({ ...data, createdBy: userId })
+    .values({ ...computed, createdBy: userId })
     .returning();
   await createAuditLog({
     entityType: "financial_record",
@@ -950,9 +1022,15 @@ export async function createFinancialRecord(data: InsertFinancialRecord, userId:
 
 export async function updateFinancialRecord(id: number, data: Partial<InsertFinancialRecord>, userId: number) {
   const db = getDb();
+  // Re-derive discount fields whenever inputs change. Pull the existing row so
+  // that updating only one side of the (pct, amount) pair still reconciles
+  // against the persisted agreedFees.
+  const existing = await getFinancialRecordById(id);
+  const merged = { ...(existing ?? {}), ...data };
+  const computed = computeDiscountFields(merged as Record<string, unknown>) as Partial<InsertFinancialRecord>;
   const [record] = await db
     .update(financialRecords)
-    .set({ ...data, updatedAt: new Date() })
+    .set({ ...computed, updatedAt: new Date() })
     .where(eq(financialRecords.id, id))
     .returning();
   await createAuditLog({
@@ -1001,17 +1079,74 @@ export async function createClientActionLog(data: InsertClientActionLog, userId:
     .insert(clientActionLogs)
     .values({ ...data, createdBy: userId })
     .returning();
+  await syncTaskFromActionLog(log, userId);
   return log;
 }
 
-export async function updateClientActionLog(id: number, data: Partial<InsertClientActionLog>) {
+export async function updateClientActionLog(id: number, data: Partial<InsertClientActionLog>, userId?: number) {
   const db = getDb();
   const [log] = await db
     .update(clientActionLogs)
     .set(data)
     .where(eq(clientActionLogs.id, id))
     .returning();
+  if (log) await syncTaskFromActionLog(log, userId ?? log.createdBy ?? null);
   return log;
+}
+
+// When an action log carries a nextStep (the user's "what to do next"),
+// upsert a linked row in `tasks` so the Tasks module reflects pending work.
+// The link is the one-to-one column tasks.client_action_log_id.
+async function syncTaskFromActionLog(
+  log: { id: number; clientId: number; clientMatterId: number | null; nextStep: string | null; actionDate: string | null; actionOwner: string | null; actionType: string | null },
+  userId: number | null
+) {
+  const db = getDb();
+  const hasNext = typeof log.nextStep === "string" && log.nextStep.trim() !== "";
+
+  const existing = await db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.clientActionLogId, log.id))
+    .limit(1);
+  const existingTask = existing[0];
+
+  if (!hasNext) {
+    if (existingTask) {
+      await db.delete(tasks).where(eq(tasks.id, existingTask.id));
+    }
+    return;
+  }
+
+  const title = (log.nextStep ?? "").trim().slice(0, 500);
+  const description = log.actionType ? `${log.actionType}: ${log.nextStep}` : log.nextStep;
+  const values = {
+    title,
+    description: description ?? null,
+    clientId: log.clientId,
+    clientMatterId: log.clientMatterId ?? null,
+    clientActionLogId: log.id,
+    dueDate: log.actionDate ?? null,
+    createdBy: userId ?? undefined,
+    updatedAt: new Date(),
+  } as Partial<InsertTask>;
+
+  if (existingTask) {
+    // Don't clobber user-edited status/assignee on the task; only refresh
+    // fields driven by the action log.
+    await db
+      .update(tasks)
+      .set({
+        title: values.title!,
+        description: values.description ?? null,
+        clientMatterId: values.clientMatterId ?? null,
+        dueDate: values.dueDate ?? null,
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, existingTask.id));
+  } else {
+    await db.insert(tasks).values(values as InsertTask);
+  }
 }
 
 export async function deleteClientActionLog(id: number) {

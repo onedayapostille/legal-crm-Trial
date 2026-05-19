@@ -805,10 +805,11 @@ export const appRouter = router({
         attorney2: z.string().optional(),
         attorney3: z.string().optional(),
         attorneyFullName: z.string().optional(),
-        matterStatus: z.string().optional(),
+        matterDescription: z.string().optional(),
+        matterStatus: z.string().max(100).optional(),
         balanceWorkLeft: z.string().optional(),
         achievementPercentage: z.string().optional(),
-        achievementStatus: z.string().optional(),
+        achievementStatus: z.string().max(100).optional(),
         priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
       }))
       .mutation(async ({ input, ctx }) => db.createClientMatter(input as any, ctx.user!.id)),
@@ -827,10 +828,11 @@ export const appRouter = router({
         attorney2: z.string().optional(),
         attorney3: z.string().optional(),
         attorneyFullName: z.string().optional(),
-        matterStatus: z.string().optional(),
+        matterDescription: z.string().optional(),
+        matterStatus: z.string().max(100).optional(),
         balanceWorkLeft: z.string().optional(),
         achievementPercentage: z.string().optional(),
-        achievementStatus: z.string().optional(),
+        achievementStatus: z.string().max(100).optional(),
         priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
@@ -948,9 +950,9 @@ export const appRouter = router({
         actionType: z.string().optional(),
         actionDetails: z.string().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
-        return db.updateClientActionLog(id, data as any);
+        return db.updateClientActionLog(id, data as any, ctx.user!.id);
       }),
 
     delete: permissionProcedure("actions:manage")
