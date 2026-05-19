@@ -867,6 +867,33 @@ export async function getClientMatters(clientId: number) {
     .orderBy(desc(clientMatters.createdAt));
 }
 
+// Aggregated view across all clients with client name joined in. Used by the
+// global /matters list page.
+export async function getAllClientMatters() {
+  const db = getDb();
+  return db
+    .select({
+      id: clientMatters.id,
+      clientId: clientMatters.clientId,
+      clientName: clients.clientName,
+      clientNumber: clients.clientNumber,
+      originalSerial: clientMatters.originalSerial,
+      matterReference: clientMatters.matterReference,
+      matterType: clientMatters.matterType,
+      matterDescription: clientMatters.matterDescription,
+      leadPartner: clientMatters.leadPartner,
+      leadPartnerFullName: clientMatters.leadPartnerFullName,
+      matterStatus: clientMatters.matterStatus,
+      achievementPercentage: clientMatters.achievementPercentage,
+      achievementStatus: clientMatters.achievementStatus,
+      priority: clientMatters.priority,
+      createdAt: clientMatters.createdAt,
+    })
+    .from(clientMatters)
+    .leftJoin(clients, eq(clientMatters.clientId, clients.id))
+    .orderBy(desc(clientMatters.createdAt));
+}
+
 export async function getClientMatterById(id: number) {
   const db = getDb();
   const result = await db.select().from(clientMatters).where(eq(clientMatters.id, id)).limit(1);
