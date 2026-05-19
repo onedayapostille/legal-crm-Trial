@@ -1,18 +1,9 @@
 import { Link } from "wouter";
-import { Plus, Briefcase, Calendar, DollarSign } from "lucide-react";
+import { Plus, Briefcase, Calendar } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-
-const STATUS_COLORS: Record<string, string> = {
-  active:   "bg-green-100 text-green-700",
-  pending:  "bg-yellow-100 text-yellow-700",
-  closed:   "bg-gray-100 text-gray-600",
-  on_hold:  "bg-orange-100 text-orange-700",
-  archived: "bg-slate-100 text-slate-600",
-};
 
 const PRIORITY_COLORS: Record<string, string> = {
   low:    "bg-gray-100 text-gray-600",
@@ -22,10 +13,7 @@ const PRIORITY_COLORS: Record<string, string> = {
 };
 
 export default function MatterList() {
-  const { data: matters = [], isLoading } = trpc.matters.list.useQuery();
-
-  const formatCurrency = (v: string | null) =>
-    v ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 0 }).format(Number(v)) : null;
+  const { data: matters = [], isLoading } = trpc.clientMatters.listAll.useQuery();
 
   return (
     <DashboardLayout>
@@ -57,8 +45,8 @@ export default function MatterList() {
           </Card>
         ) : (
           <div className="grid gap-3">
-            {matters.map(matter => (
-              <Link key={matter.id} href={`/matters/${matter.id}`}>
+            {matters.map(m => (
+              <Link key={m.id} href={`/clients/${m.clientId}`}>
                 <Card className="hover:shadow-md transition-shadow cursor-pointer">
                   <CardContent className="py-4 px-5">
                     <div className="flex items-start justify-between gap-3">
@@ -68,33 +56,39 @@ export default function MatterList() {
                         </div>
                         <div className="min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-mono text-xs text-muted-foreground">{matter.matterCode}</span>
-                            <span
-                              className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${STATUS_COLORS[matter.status ?? "pending"]}`}
-                            >
-                              {matter.status?.replace("_", " ")}
+                            <span className="font-mono text-xs text-muted-foreground">
+                              {m.matterReference ?? m.originalSerial ?? `Matter #${m.id}`}
                             </span>
+                            {m.matterStatus && (
+                              <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-slate-100 text-slate-700">
+                                {m.matterStatus}
+                              </span>
+                            )}
                             <span
-                              className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${PRIORITY_COLORS[matter.priority ?? "medium"]}`}
+                              className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${PRIORITY_COLORS[m.priority ?? "medium"]}`}
                             >
-                              {matter.priority}
+                              {m.priority ?? "medium"}
                             </span>
                           </div>
-                          <p className="font-semibold text-sm mt-0.5 truncate">{matter.title}</p>
-                          <p className="text-xs text-muted-foreground">{matter.clientName}</p>
+                          <p className="font-semibold text-sm mt-0.5 truncate">
+                            {m.clientName ?? `Client #${m.clientId}`}
+                          </p>
+                          {m.matterDescription && (
+                            <p className="text-xs text-muted-foreground truncate">{m.matterDescription}</p>
+                          )}
+                          {m.matterType && (
+                            <p className="text-xs text-muted-foreground">{m.matterType}{m.leadPartnerFullName ? ` — ${m.leadPartnerFullName}` : ""}</p>
+                          )}
                         </div>
                       </div>
                       <div className="text-right flex-shrink-0 space-y-1">
-                        {matter.estimatedValue && (
-                          <div className="flex items-center gap-1 text-xs text-muted-foreground justify-end">
-                            <DollarSign className="h-3 w-3" />
-                            {formatCurrency(matter.estimatedValue)}
-                          </div>
+                        {m.achievementPercentage && (
+                          <div className="text-xs text-muted-foreground">{m.achievementPercentage}%</div>
                         )}
-                        {matter.openDate && (
+                        {m.createdAt && (
                           <div className="flex items-center gap-1 text-xs text-muted-foreground justify-end">
                             <Calendar className="h-3 w-3" />
-                            {new Date(matter.openDate).toLocaleDateString()}
+                            {new Date(m.createdAt).toLocaleDateString()}
                           </div>
                         )}
                       </div>

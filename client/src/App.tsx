@@ -17,6 +17,7 @@ import PaymentTracker from "@/pages/PaymentTracker";
 import PipelineForecast from "@/pages/PipelineForecast";
 import UserManagement from "@/pages/UserManagement";
 import MatterList from "@/pages/MatterList";
+import MatterNew from "@/pages/MatterNew";
 import TaskList from "@/pages/TaskList";
 import TaskForm from "@/pages/TaskForm";
 import DashboardLayout from "./components/DashboardLayout";
@@ -86,6 +87,9 @@ function Router() {
       </Route>
 
       {/* Matters */}
+      <Route path="/matters/new">
+        <ProtectedRoute permission="clients:manage"><MatterNew /></ProtectedRoute>
+      </Route>
       <Route path="/matters">
         <ProtectedRoute><MatterList /></ProtectedRoute>
       </Route>
