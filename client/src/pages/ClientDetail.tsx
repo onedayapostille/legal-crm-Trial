@@ -643,7 +643,8 @@ function MatterDialog({ open, onClose, clientId }: { open: boolean; onClose: () 
   const [form, setForm] = useState({
     originalSerial: "", matterReference: "", matterType: "", leadPartner: "",
     leadPartnerFullName: "", supportLead: "", attorneyHead: "", attorney1: "",
-    attorney2: "", attorney3: "", attorneyFullName: "", matterStatus: "",
+    attorney2: "", attorney3: "", attorneyFullName: "",
+    matterDescription: "", matterStatus: "",
     balanceWorkLeft: "", achievementPercentage: "", achievementStatus: "",
     priority: "medium" as "low" | "medium" | "high" | "urgent",
   });
@@ -675,7 +676,7 @@ function MatterDialog({ open, onClose, clientId }: { open: boolean; onClose: () 
             ["attorney2", "Attorney 2"],
             ["attorney3", "Attorney 3"],
             ["attorneyFullName", "Attorney Full Name"],
-            ["matterStatus", "Matter Status"],
+            ["matterStatus", "Matter Status (short, e.g. Active)"],
             ["balanceWorkLeft", "Balance Work Left (%)"],
             ["achievementPercentage", "Achievement %"],
             ["achievementStatus", "Achievement Status"],
@@ -689,6 +690,16 @@ function MatterDialog({ open, onClose, clientId }: { open: boolean; onClose: () 
               />
             </div>
           ))}
+          <div className="col-span-2">
+            <Label className="text-xs">Description / Notes</Label>
+            <Textarea
+              value={form.matterDescription}
+              onChange={e => setForm(f => ({ ...f, matterDescription: e.target.value }))}
+              rows={3}
+              className="text-sm"
+              placeholder="Long-form description, scope, instructions…"
+            />
+          </div>
           <div>
             <Label className="text-xs">Priority</Label>
             <Select value={form.priority} onValueChange={v => setForm(f => ({ ...f, priority: v as any }))}>
@@ -704,7 +715,17 @@ function MatterDialog({ open, onClose, clientId }: { open: boolean; onClose: () 
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={() => create.mutate({ clientId, ...form })} disabled={create.isPending}>
+          <Button
+            onClick={() => {
+              const payload: Record<string, unknown> = { clientId, priority: form.priority };
+              for (const [k, v] of Object.entries(form)) {
+                if (k === "priority") continue;
+                if (typeof v === "string" && v.trim() !== "") payload[k] = v.trim();
+              }
+              create.mutate(payload as any);
+            }}
+            disabled={create.isPending}
+          >
             Add Matter
           </Button>
         </DialogFooter>
@@ -935,6 +956,37 @@ function FinancialDialog({ open, onClose, clientId }: { open: boolean; onClose: 
     collectionStatus: "Not Billed" as any, billingDate: "", paymentDate: "",
     invoiceNumber: "", responsibleLawyer: "", financeNotes: "",
   });
+
+  // Symmetric discount auto-calc: editing % updates amount, editing amount
+  // updates %, and netFees = agreedFees - discountAmount. The user-edited
+  // field "wins" so we don't fight their typing.
+  function updateForm(key: string, value: string) {
+    setForm(f => {
+      const next = { ...f, [key]: value } as typeof f;
+      const agreed = Number(next.agreedFees);
+      if (Number.isFinite(agreed) && agreed > 0) {
+        if (key === "discountPercentage") {
+          const pct = Number(value);
+          if (Number.isFinite(pct)) next.discountAmount = String(Math.round(agreed * pct) / 100);
+        } else if (key === "discountAmount") {
+          const amt = Number(value);
+          if (Number.isFinite(amt)) next.discountPercentage = String(Math.round((amt / agreed) * 10000) / 100);
+        } else if (key === "agreedFees") {
+          // Re-evaluate using whichever side the user last set (prefer %).
+          const pct = Number(next.discountPercentage);
+          const amt = Number(next.discountAmount);
+          if (Number.isFinite(pct) && next.discountPercentage !== "") {
+            next.discountAmount = String(Math.round(agreed * pct) / 100);
+          } else if (Number.isFinite(amt) && next.discountAmount !== "") {
+            next.discountPercentage = String(Math.round((amt / agreed) * 10000) / 100);
+          }
+        }
+        const finalAmt = Number(next.discountAmount) || 0;
+        next.netFees = String(Math.round((agreed - finalAmt) * 100) / 100);
+      }
+      return next;
+    });
+  }
   const create = trpc.financial.create.useMutation({
     onSuccess: () => {
       toast.success("Financial record added");
@@ -961,27 +1013,28 @@ function FinancialDialog({ open, onClose, clientId }: { open: boolean; onClose: 
             </Select>
           </div>
           {[
-            ["agreedFees", "Agreed Fees (SAR)"],
-            ["discountPercentage", "Discount %"],
-            ["discountAmount", "Discount Amount"],
-            ["netFees", "Net Fees"],
-            ["billedAmount", "Billed Amount"],
-            ["revenue", "Revenue"],
-            ["collectedAmount", "Collected Amount"],
-            ["remainingAdvanced", "Remaining Advanced"],
-            ["outstandingAmount", "Outstanding Amount"],
-            ["invoiceNumber", "Invoice Number"],
-            ["responsibleLawyer", "Responsible Lawyer"],
-            ["billingDate", "Billing Date"],
-            ["paymentDate", "Payment Date"],
-          ].map(([key, label]) => (
-            <div key={key}>
-              <Label className="text-xs">{label}</Label>
+            ["agreedFees", "Agreed Fees (SAR)", false],
+            ["discountPercentage", "Discount % (auto from amount)", false],
+            ["discountAmount", "Discount Amount (auto from %)", false],
+            ["netFees", "Net Fees (auto)", true],
+            ["billedAmount", "Billed Amount", false],
+            ["revenue", "Revenue", false],
+            ["collectedAmount", "Collected Amount", false],
+            ["remainingAdvanced", "Remaining Advanced", false],
+            ["outstandingAmount", "Outstanding Amount", false],
+            ["invoiceNumber", "Invoice Number", false],
+            ["responsibleLawyer", "Responsible Lawyer", false],
+            ["billingDate", "Billing Date", false],
+            ["paymentDate", "Payment Date", false],
+          ].map(([key, label, readOnly]) => (
+            <div key={key as string}>
+              <Label className="text-xs">{label as string}</Label>
               <Input
-                type={key.endsWith("Date") ? "date" : "text"}
-                value={(form as any)[key]}
-                onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
-                className="h-8 text-sm"
+                type={(key as string).endsWith("Date") ? "date" : "text"}
+                value={(form as any)[key as string]}
+                readOnly={readOnly as boolean}
+                onChange={e => updateForm(key as string, e.target.value)}
+                className={`h-8 text-sm ${readOnly ? "bg-muted" : ""}`}
               />
             </div>
           ))}
