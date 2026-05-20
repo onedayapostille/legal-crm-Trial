@@ -92,35 +92,41 @@ function sanitizeClientMatterInput(data: Record<string, unknown>) {
   return out;
 }
 
-// Compute discount fields symmetrically: given agreedFees and one of
-// (discountPercentage, discountAmount), derive the other and netFees.
-// Caller wins if both are explicitly supplied and consistent; otherwise the
-// authoritative side is whichever the caller provided.
-export function computeDiscountFields(data: Record<string, unknown>) {
+// Fixed discount-rate table matching the Excel workbook formula exactly:
+//   N: Discount% = IF(M="P&L Head Lawyers",5%,IF(M="CEO",10%,IF(M="Board",15%,0)))
+//   O: Discount Amount = ROUND(AgreedFees × Discount%, 2)
+//   P: Net Fees = MAX(0, AgreedFees − DiscountAmount)
+//   T: Remaining Advanced = BilledAmount − Revenue
+//   U: Outstanding Amount = MAX(0, BilledAmount − CollectedAmount)
+const DISCOUNT_RATES: Record<string, number> = {
+  "N/A": 0,
+  "P&L Head Lawyers": 5,
+  "CEO": 10,
+  "Board": 15,
+};
+
+// All financial calculated fields are derived — none are user inputs except
+// discountApproval, agreedFees, billedAmount, revenue, and collectedAmount.
+export function applyDiscountRules(data: Record<string, unknown>): Record<string, unknown> {
   const out = { ...data };
-  const agreed = toNum(out.agreedFees);
-  const pctRaw = out.discountPercentage;
-  const amtRaw = out.discountAmount;
-  const pct = toNum(pctRaw);
-  const amt = toNum(amtRaw);
 
-  if (agreed !== null && agreed > 0) {
-    if (amt === null && pct !== null) {
-      out.discountAmount = round2(agreed * (pct / 100));
-    } else if (pct === null && amt !== null) {
-      out.discountPercentage = round2((amt / agreed) * 100);
-    }
-  }
+  const approval = String(out.discountApproval ?? "N/A");
+  const pct = DISCOUNT_RATES[approval] ?? 0;
+  const agreed = toNum(out.agreedFees) ?? 0;
+  const discountAmt = round2(agreed * pct / 100);
+  const netFees = round2(Math.max(0, agreed - discountAmt));
 
-  const finalAmt = toNum(out.discountAmount) ?? 0;
-  if (agreed !== null && (toNum(out.netFees) === null || pctRaw !== undefined || amtRaw !== undefined || data.agreedFees !== undefined)) {
-    out.netFees = round2(agreed - finalAmt);
-  }
+  out.discountPercentage = String(pct);
+  out.discountAmount     = String(discountAmt);
+  out.netFees            = String(netFees);
 
-  // Drizzle decimal columns expect string values.
-  for (const k of ["discountAmount", "discountPercentage", "netFees"] as const) {
-    if (typeof out[k] === "number") out[k] = String(out[k]);
-  }
+  const billed    = toNum(out.billedAmount)    ?? 0;
+  const revenue   = toNum(out.revenue)         ?? 0;
+  const collected = toNum(out.collectedAmount) ?? 0;
+
+  out.remainingAdvanced = String(round2(billed - revenue));
+  out.outstandingAmount = String(round2(Math.max(0, billed - collected)));
+
   return out;
 }
 
@@ -1032,7 +1038,7 @@ export async function getFinancialRecordById(id: number) {
 
 export async function createFinancialRecord(data: InsertFinancialRecord, userId: number) {
   const db = getDb();
-  const computed = computeDiscountFields(data as Record<string, unknown>) as InsertFinancialRecord;
+  const computed = applyDiscountRules(data as Record<string, unknown>) as InsertFinancialRecord;
   const [record] = await db
     .insert(financialRecords)
     .values({ ...computed, createdBy: userId })
@@ -1054,7 +1060,7 @@ export async function updateFinancialRecord(id: number, data: Partial<InsertFina
   // against the persisted agreedFees.
   const existing = await getFinancialRecordById(id);
   const merged = { ...(existing ?? {}), ...data };
-  const computed = computeDiscountFields(merged as Record<string, unknown>) as Partial<InsertFinancialRecord>;
+  const computed = applyDiscountRules(merged as Record<string, unknown>) as Partial<InsertFinancialRecord>;
   const [record] = await db
     .update(financialRecords)
     .set({ ...computed, updatedAt: new Date() })

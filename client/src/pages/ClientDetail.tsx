@@ -946,51 +946,57 @@ function FinancialSection({ clientId, records }: { clientId: number; records: an
   );
 }
 
+const DISCOUNT_RATES: Record<string, number> = {
+  "N/A": 0,
+  "P&L Head Lawyers": 5,
+  "CEO": 10,
+  "Board": 15,
+};
+
+function calcFinancials(f: {
+  agreedFees: string; discountApproval: string;
+  billedAmount: string; revenue: string; collectedAmount: string;
+}) {
+  const agreed    = Number(f.agreedFees)     || 0;
+  const pct       = DISCOUNT_RATES[f.discountApproval] ?? 0;
+  const discAmt   = Math.round(agreed * pct) / 100;
+  const netFees   = Math.max(0, Math.round((agreed - discAmt) * 100) / 100);
+  const billed    = Number(f.billedAmount)   || 0;
+  const revenue   = Number(f.revenue)        || 0;
+  const collected = Number(f.collectedAmount)|| 0;
+  return {
+    discountPercentage: String(pct),
+    discountAmount:     String(discAmt),
+    netFees:            String(netFees),
+    remainingAdvanced:  String(Math.round((billed - revenue) * 100) / 100),
+    outstandingAmount:  String(Math.max(0, Math.round((billed - collected) * 100) / 100)),
+  };
+}
+
 function FinancialDialog({ open, onClose, clientId }: { open: boolean; onClose: () => void; clientId: number }) {
   const utils = trpc.useUtils();
-  const [form, setForm] = useState({
-    feeType: "" as any,
-    agreedFees: "", discountApproval: "N/A" as any, discountPercentage: "",
-    discountAmount: "", netFees: "", billedAmount: "", revenue: "",
-    collectedAmount: "", remainingAdvanced: "", outstandingAmount: "",
-    collectionStatus: "Not Billed" as any, billingDate: "", paymentDate: "",
-    invoiceNumber: "", responsibleLawyer: "", financeNotes: "",
-  });
 
-  // Symmetric discount auto-calc: editing % updates amount, editing amount
-  // updates %, and netFees = agreedFees - discountAmount. The user-edited
-  // field "wins" so we don't fight their typing.
-  function updateForm(key: string, value: string) {
-    setForm(f => {
-      const next = { ...f, [key]: value } as typeof f;
-      const agreed = Number(next.agreedFees);
-      if (Number.isFinite(agreed) && agreed > 0) {
-        if (key === "discountPercentage") {
-          const pct = Number(value);
-          if (Number.isFinite(pct)) next.discountAmount = String(Math.round(agreed * pct) / 100);
-        } else if (key === "discountAmount") {
-          const amt = Number(value);
-          if (Number.isFinite(amt)) next.discountPercentage = String(Math.round((amt / agreed) * 10000) / 100);
-        } else if (key === "agreedFees") {
-          // Re-evaluate using whichever side the user last set (prefer %).
-          const pct = Number(next.discountPercentage);
-          const amt = Number(next.discountAmount);
-          if (Number.isFinite(pct) && next.discountPercentage !== "") {
-            next.discountAmount = String(Math.round(agreed * pct) / 100);
-          } else if (Number.isFinite(amt) && next.discountAmount !== "") {
-            next.discountPercentage = String(Math.round((amt / agreed) * 10000) / 100);
-          }
-        }
-        const finalAmt = Number(next.discountAmount) || 0;
-        next.netFees = String(Math.round((agreed - finalAmt) * 100) / 100);
-      }
-      return next;
-    });
+  const initInputs = {
+    feeType: "" as any,
+    agreedFees: "",
+    discountApproval: "N/A" as any,
+    billedAmount: "", revenue: "", collectedAmount: "",
+    collectionStatus: "Not Billed" as any,
+    billingDate: "", paymentDate: "",
+    invoiceNumber: "", responsibleLawyer: "", financeNotes: "",
+  };
+  const [form, setForm] = useState(initInputs);
+  const derived = calcFinancials(form);
+
+  function setInput(key: string, value: string) {
+    setForm(f => ({ ...f, [key]: value }));
   }
+
   const create = trpc.financial.create.useMutation({
     onSuccess: () => {
       toast.success("Financial record added");
       utils.financial.list.invalidate({ clientId });
+      setForm(initInputs);
       onClose();
     },
     onError: (e) => toast.error(e.message),
@@ -1001,9 +1007,11 @@ function FinancialDialog({ open, onClose, clientId }: { open: boolean; onClose: 
       <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
         <DialogHeader><DialogTitle>Add Financial Record</DialogTitle></DialogHeader>
         <div className="grid grid-cols-2 gap-3 py-2">
+
+          {/* Fee Type */}
           <div className="col-span-2">
-            <Label>Fee Type</Label>
-            <Select value={form.feeType || "none"} onValueChange={v => setForm(f => ({ ...f, feeType: v === "none" ? "" : v }))}>
+            <Label className="text-xs">Fee Type</Label>
+            <Select value={form.feeType || "none"} onValueChange={v => setInput("feeType", v === "none" ? "" : v)}>
               <SelectTrigger><SelectValue placeholder="Select fee type" /></SelectTrigger>
               <SelectContent>
                 {["Billable Hours", "Fixed / Project-Based Fees", "Retainers", "Success Fees", "Advisory / Special Mandates", "Blended"].map(t => (
@@ -1012,65 +1020,117 @@ function FinancialDialog({ open, onClose, clientId }: { open: boolean; onClose: 
               </SelectContent>
             </Select>
           </div>
-          {[
-            ["agreedFees", "Agreed Fees (SAR)", false],
-            ["discountPercentage", "Discount % (auto from amount)", false],
-            ["discountAmount", "Discount Amount (auto from %)", false],
-            ["netFees", "Net Fees (auto)", true],
-            ["billedAmount", "Billed Amount", false],
-            ["revenue", "Revenue", false],
-            ["collectedAmount", "Collected Amount", false],
-            ["remainingAdvanced", "Remaining Advanced", false],
-            ["outstandingAmount", "Outstanding Amount", false],
-            ["invoiceNumber", "Invoice Number", false],
-            ["responsibleLawyer", "Responsible Lawyer", false],
-            ["billingDate", "Billing Date", false],
-            ["paymentDate", "Payment Date", false],
-          ].map(([key, label, readOnly]) => (
-            <div key={key as string}>
-              <Label className="text-xs">{label as string}</Label>
-              <Input
-                type={(key as string).endsWith("Date") ? "date" : "text"}
-                value={(form as any)[key as string]}
-                readOnly={readOnly as boolean}
-                onChange={e => updateForm(key as string, e.target.value)}
-                className={`h-8 text-sm ${readOnly ? "bg-muted" : ""}`}
-              />
-            </div>
-          ))}
+
+          {/* Agreed Fees */}
+          <div>
+            <Label className="text-xs">Agreed Fees (SAR)</Label>
+            <Input value={form.agreedFees} onChange={e => setInput("agreedFees", e.target.value)} className="h-8 text-sm" placeholder="0" />
+          </div>
+
+          {/* Discount Approval — the ONLY discount input */}
           <div>
             <Label className="text-xs">Discount Approval</Label>
-            <Select value={form.discountApproval} onValueChange={v => setForm(f => ({ ...f, discountApproval: v as any }))}>
+            <Select value={form.discountApproval} onValueChange={v => setInput("discountApproval", v)}>
               <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
               <SelectContent>
-                {["N/A", "P&L Head Lawyers", "CEO", "Board"].map(v => <SelectItem key={v} value={v}>{v}</SelectItem>)}
+                {["N/A", "P&L Head Lawyers", "CEO", "Board"].map(v => (
+                  <SelectItem key={v} value={v}>{v}{v !== "N/A" ? ` (${DISCOUNT_RATES[v]}%)` : ""}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
+
+          {/* Derived discount fields — display only */}
+          <div>
+            <Label className="text-xs text-muted-foreground">Discount % (auto)</Label>
+            <Input value={`${derived.discountPercentage}%`} readOnly className="h-8 text-sm bg-muted" />
+          </div>
+          <div>
+            <Label className="text-xs text-muted-foreground">Discount Amount (auto)</Label>
+            <Input value={derived.discountAmount} readOnly className="h-8 text-sm bg-muted" />
+          </div>
+          <div className="col-span-2">
+            <Label className="text-xs text-muted-foreground">Net Fees (auto)</Label>
+            <Input value={derived.netFees} readOnly className="h-8 text-sm bg-muted font-medium" />
+          </div>
+
+          {/* Billing inputs */}
+          {([
+            ["billedAmount",    "Billed Amount"],
+            ["revenue",         "Revenue"],
+            ["collectedAmount", "Collected Amount"],
+          ] as const).map(([key, label]) => (
+            <div key={key}>
+              <Label className="text-xs">{label}</Label>
+              <Input value={(form as any)[key]} onChange={e => setInput(key, e.target.value)} className="h-8 text-sm" placeholder="0" />
+            </div>
+          ))}
+
+          {/* Derived billing fields — display only */}
+          <div>
+            <Label className="text-xs text-muted-foreground">Remaining Advanced (auto)</Label>
+            <Input value={derived.remainingAdvanced} readOnly className="h-8 text-sm bg-muted" />
+          </div>
+          <div>
+            <Label className="text-xs text-muted-foreground">Outstanding Amount (auto)</Label>
+            <Input value={derived.outstandingAmount} readOnly className="h-8 text-sm bg-muted" />
+          </div>
+
+          {/* Other inputs */}
+          <div>
+            <Label className="text-xs">Invoice Number</Label>
+            <Input value={form.invoiceNumber} onChange={e => setInput("invoiceNumber", e.target.value)} className="h-8 text-sm" />
+          </div>
+          <div>
+            <Label className="text-xs">Responsible Lawyer</Label>
+            <Input value={form.responsibleLawyer} onChange={e => setInput("responsibleLawyer", e.target.value)} className="h-8 text-sm" />
+          </div>
+          <div>
+            <Label className="text-xs">Billing Date</Label>
+            <Input type="date" value={form.billingDate} onChange={e => setInput("billingDate", e.target.value)} className="h-8 text-sm" />
+          </div>
+          <div>
+            <Label className="text-xs">Payment Date</Label>
+            <Input type="date" value={form.paymentDate} onChange={e => setInput("paymentDate", e.target.value)} className="h-8 text-sm" />
+          </div>
           <div>
             <Label className="text-xs">Collection Status</Label>
-            <Select value={form.collectionStatus} onValueChange={v => setForm(f => ({ ...f, collectionStatus: v as any }))}>
+            <Select value={form.collectionStatus} onValueChange={v => setInput("collectionStatus", v)}>
               <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
               <SelectContent>
-                {["Not Billed", "Partially Billed", "Billed", "Partially Collected", "Fully Collected", "Overdue"].map(v => <SelectItem key={v} value={v}>{v}</SelectItem>)}
+                {["Not Billed", "Partially Billed", "Billed", "Partially Collected", "Fully Collected", "Overdue"].map(v => (
+                  <SelectItem key={v} value={v}>{v}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
           <div className="col-span-2">
             <Label className="text-xs">Finance Notes</Label>
-            <Textarea value={form.financeNotes} onChange={e => setForm(f => ({ ...f, financeNotes: e.target.value }))} rows={2} className="text-sm" />
+            <Textarea value={form.financeNotes} onChange={e => setInput("financeNotes", e.target.value)} rows={2} className="text-sm" />
           </div>
         </div>
+
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button
             onClick={() => create.mutate({
               clientId,
-              ...Object.fromEntries(Object.entries(form).filter(([, v]) => v !== "" && v !== null)) as any,
+              ...(form.feeType          ? { feeType: form.feeType }                  : {}),
+              ...(form.agreedFees       ? { agreedFees: form.agreedFees }             : {}),
+              discountApproval: form.discountApproval,
+              ...(form.billedAmount     ? { billedAmount: form.billedAmount }         : {}),
+              ...(form.revenue          ? { revenue: form.revenue }                   : {}),
+              ...(form.collectedAmount  ? { collectedAmount: form.collectedAmount }   : {}),
+              collectionStatus: form.collectionStatus,
+              ...(form.billingDate      ? { billingDate: form.billingDate }           : {}),
+              ...(form.paymentDate      ? { paymentDate: form.paymentDate }           : {}),
+              ...(form.invoiceNumber    ? { invoiceNumber: form.invoiceNumber }       : {}),
+              ...(form.responsibleLawyer? { responsibleLawyer: form.responsibleLawyer}: {}),
+              ...(form.financeNotes     ? { financeNotes: form.financeNotes }         : {}),
             })}
             disabled={create.isPending}
           >
-            Add Record
+            {create.isPending ? "Saving…" : "Add Record"}
           </Button>
         </DialogFooter>
       </DialogContent>
