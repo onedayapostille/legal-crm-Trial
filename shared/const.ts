@@ -72,6 +72,16 @@ export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
   viewer: ["dashboard:view", "clients:view", "analytics:view"],
 };
 
+export const DISCOUNT_APPROVAL_VALUES = ["N/A", "P&L Head Lawyers", "CEO", "Board"] as const;
+export type DiscountApproval = (typeof DISCOUNT_APPROVAL_VALUES)[number];
+
+export const DISCOUNT_RATES: Record<DiscountApproval, number> = {
+  "N/A": 0,
+  "P&L Head Lawyers": 5,
+  "CEO": 10,
+  "Board": 15,
+};
+
 export function hasPermission(role: UserRole | string | null | undefined, permission: string) {
   if (!role || !(role in ROLE_PERMISSIONS)) return false;
   const permissions = ROLE_PERMISSIONS[role as UserRole];
