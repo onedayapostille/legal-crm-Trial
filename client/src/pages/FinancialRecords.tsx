@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import {
   DollarSign, Edit2, Filter, RefreshCw, TrendingUp, AlertTriangle,
-  Clock, Search, X, Users, BarChart3,
+  Clock, Search, X, Users, BarChart3, History,
 } from "lucide-react";
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
@@ -18,6 +18,7 @@ import {
 import DashboardLayout from "@/components/DashboardLayout";
 import FinancialDialog from "@/components/FinancialDialog";
 import type { MatterOption } from "@/components/FinancialDialog";
+import { FinancialAuditTrail } from "@/components/FinancialAuditTrail";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { hasPermission } from "@shared/const";
 
@@ -114,8 +115,9 @@ export default function FinancialRecords() {
   const [dateFrom, setDateFrom]           = useState("");
   const [dateTo,   setDateTo]             = useState("");
 
-  // ── Edit state ─────────────────────────────────────────────────────────────
+  // ── Edit / audit state ─────────────────────────────────────────────────────
   const [editingRecord, setEditingRecord] = useState<any | null>(null);
+  const [auditRecord, setAuditRecord] = useState<any | null>(null);
 
   // ── Data fetching ──────────────────────────────────────────────────────────
   const { data: records = [], isLoading, refetch } = trpc.financial.list.useQuery({
@@ -582,7 +584,7 @@ export default function FinancialRecords() {
                         <TableHead>Invoice Status</TableHead>
                         <TableHead>Invoice #</TableHead>
                         <TableHead>Responsible</TableHead>
-                        {canManage && <TableHead className="w-14" />}
+                        <TableHead className="w-20" />
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -619,18 +621,28 @@ export default function FinancialRecords() {
                           </TableCell>
                           <TableCell className="text-sm font-mono">{r.invoiceNumber ?? "—"}</TableCell>
                           <TableCell className="text-sm">{r.responsibleLawyer ?? "—"}</TableCell>
-                          {canManage && (
-                            <TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-1">
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => setEditingRecord(r)}
-                                title="Edit record"
+                                onClick={() => setAuditRecord(r)}
+                                title="View change history"
                               >
-                                <Edit2 className="h-4 w-4" />
+                                <History className="h-4 w-4 text-muted-foreground" />
                               </Button>
-                            </TableCell>
-                          )}
+                              {canManage && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setEditingRecord(r)}
+                                  title="Edit record"
+                                >
+                                  <Edit2 className="h-4 w-4" />
+                                </Button>
+                              )}
+                            </div>
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -713,6 +725,15 @@ export default function FinancialRecords() {
             : undefined
         }
       />
+
+      {/* Audit trail dialog — read-only */}
+      {auditRecord && (
+        <FinancialAuditTrail
+          open={auditRecord !== null}
+          onClose={() => setAuditRecord(null)}
+          record={auditRecord}
+        />
+      )}
     </DashboardLayout>
   );
 }
