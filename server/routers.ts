@@ -778,6 +778,10 @@ export const appRouter = router({
         const { clientId, ...data } = input;
         return db.upsertRejectedClient(clientId, data as any);
       }),
+
+    conflictCheck: permissionProcedure("clients:view")
+      .input(z.object({ query: z.string().min(1).max(255) }))
+      .query(async ({ input }) => db.checkConflict(input.query)),
   }),
 
   // ─── Client Matters ────────────────────────────────────────────────────────
@@ -857,6 +861,7 @@ export const appRouter = router({
     list: permissionProcedure("financial:view")
       .input(z.object({
         clientId: z.number().optional(),
+        clientMatterId: z.number().optional(),
         collectionStatus: z.string().optional(),
       }).optional())
       .query(async ({ input }) => db.getFinancialRecords(input ?? {})),
@@ -889,6 +894,7 @@ export const appRouter = router({
     update: permissionProcedure("financial:manage")
       .input(z.object({
         id: z.number(),
+        clientMatterId: z.number().nullable().optional(), // null = unlink matter
         feeType: z.enum(["Billable Hours", "Fixed / Project-Based Fees", "Retainers", "Success Fees", "Advisory / Special Mandates", "Blended"]).optional(),
         agreedFees: z.string().optional(),
         discountApproval: z.enum(["N/A", "P&L Head Lawyers", "CEO", "Board"]).optional(),
@@ -917,6 +923,8 @@ export const appRouter = router({
       }),
 
     summary: permissionProcedure("financial:view").query(async () => db.getFinancialSummary()),
+
+    toBeBilledBreakdown: permissionProcedure("financial:view").query(async () => db.getToBeBilledBreakdown()),
   }),
 
   // ─── Client Action Logs ────────────────────────────────────────────────────
