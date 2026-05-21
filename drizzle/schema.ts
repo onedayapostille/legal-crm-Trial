@@ -430,6 +430,7 @@ export const clientMatters = pgTable("client_matters", {
   originalSerial: varchar("original_serial", { length: 50 }),
   matterReference: varchar("matter_reference", { length: 100 }),
   matterType: varchar("matter_type", { length: 100 }),
+  billingType: feeTypeEnum("billing_type"),
   leadPartner: varchar("lead_partner", { length: 100 }),
   leadPartnerFullName: varchar("lead_partner_full_name", { length: 255 }),
   supportLead: varchar("support_lead", { length: 100 }),
@@ -451,6 +452,26 @@ export const clientMatters = pgTable("client_matters", {
 
 export type ClientMatter = typeof clientMatters.$inferSelect;
 export type InsertClientMatter = typeof clientMatters.$inferInsert;
+
+// ─── Matter Lawyer Rates (hourly rates per lawyer per matter) ─────────────────
+
+export const matterLawyerRates = pgTable("matter_lawyer_rates", {
+  id: serial("id").primaryKey(),
+  clientMatterId: integer("client_matter_id").notNull().references(() => clientMatters.id, { onDelete: "cascade" }),
+  lawyerName: varchar("lawyer_name", { length: 255 }).notNull(),
+  role: varchar("role", { length: 100 }),
+  hourlyRate: decimal("hourly_rate", { precision: 15, scale: 2 }).notNull(),
+  currency: varchar("currency", { length: 10 }).notNull().default("SAR"),
+  isActive: boolean("is_active").notNull().default(true),
+  effectiveDate: date("effective_date"),
+  notes: text("notes"),
+  createdBy: integer("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export type MatterLawyerRate = typeof matterLawyerRates.$inferSelect;
+export type InsertMatterLawyerRate = typeof matterLawyerRates.$inferInsert;
 
 // ─── Client Lead Details (pipeline data for Leads-status clients) ─────────────
 
