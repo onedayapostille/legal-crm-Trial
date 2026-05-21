@@ -1,8 +1,8 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, type Dispatch, type SetStateAction } from "react";
 import { useLocation } from "wouter";
 import {
   ArrowLeft, Save, Trash2, Plus, Edit2, Check, X, ChevronDown, ChevronUp,
-  Users, FileText, DollarSign, Calendar, AlertCircle,
+  Users, FileText, DollarSign, Calendar, AlertCircle, Clock, Pencil, History,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -29,6 +29,8 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import DashboardLayout from "@/components/DashboardLayout";
 import FinancialDialog from "@/components/FinancialDialog";
+import { LawyerRatesDialog } from "@/components/LawyerRatesDialog";
+import { FinancialAuditTrail } from "@/components/FinancialAuditTrail";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { hasPermission } from "@shared/const";
@@ -582,6 +584,9 @@ function AuditTrailCard({ entityType, entityId }: { entityType: string; entityId
 
 function MattersTable({ matters, clientId, canManage }: { matters: any[]; clientId: number; canManage: boolean }) {
   const utils = trpc.useUtils();
+  const [editingMatter, setEditingMatter] = useState<any | null>(null);
+  const [ratesMatter, setRatesMatter] = useState<any | null>(null);
+
   const deleteMatter = trpc.clientMatters.delete.useMutation({
     onSuccess: () => {
       toast.success("Matter deleted");
@@ -602,61 +607,235 @@ function MattersTable({ matters, clientId, canManage }: { matters: any[]; client
   }
 
   return (
-    <Card>
-      <CardContent className="p-0">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Reference</TableHead>
-              <TableHead>Type</TableHead>
-              <TableHead>Lead Partner</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Achievement</TableHead>
-              <TableHead>Priority</TableHead>
-              {canManage && <TableHead />}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {matters.map(m => (
-              <TableRow key={m.id}>
-                <TableCell className="font-mono text-sm">{m.matterReference ?? m.originalSerial ?? "—"}</TableCell>
-                <TableCell>{m.matterType ?? "—"}</TableCell>
-                <TableCell>{m.leadPartnerFullName ?? m.leadPartner ?? "—"}</TableCell>
-                <TableCell>{m.matterStatus ?? "—"}</TableCell>
-                <TableCell>{m.achievementPercentage ? `${m.achievementPercentage}%` : "—"}</TableCell>
-                <TableCell>
-                  <Badge variant="outline" className="capitalize">{m.priority ?? "medium"}</Badge>
-                </TableCell>
-                {canManage && (
-                  <TableCell>
-                    <Button variant="ghost" size="sm" className="text-destructive" onClick={() => deleteMatter.mutate({ id: m.id })}>
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </TableCell>
-                )}
+    <>
+      <Card>
+        <CardContent className="p-0">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Reference</TableHead>
+                <TableHead>Type</TableHead>
+                <TableHead>Billing</TableHead>
+                <TableHead>Lead Partner</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Achievement</TableHead>
+                <TableHead>Priority</TableHead>
+                <TableHead />
               </TableRow>
+            </TableHeader>
+            <TableBody>
+              {matters.map(m => (
+                <TableRow key={m.id}>
+                  <TableCell className="font-mono text-sm">{m.matterReference ?? m.originalSerial ?? "—"}</TableCell>
+                  <TableCell>{m.matterType ?? "—"}</TableCell>
+                  <TableCell>
+                    {m.billingType ? (
+                      <Badge
+                        variant="outline"
+                        className={m.billingType === "Billable Hours" ? "border-blue-300 text-blue-700 bg-blue-50" : ""}
+                      >
+                        {m.billingType === "Billable Hours" ? (
+                          <><Clock className="h-3 w-3 mr-1 inline" />{m.billingType}</>
+                        ) : m.billingType}
+                      </Badge>
+                    ) : "—"}
+                  </TableCell>
+                  <TableCell>{m.leadPartnerFullName ?? m.leadPartner ?? "—"}</TableCell>
+                  <TableCell>{m.matterStatus ?? "—"}</TableCell>
+                  <TableCell>{m.achievementPercentage ? `${m.achievementPercentage}%` : "—"}</TableCell>
+                  <TableCell>
+                    <Badge variant="outline" className="capitalize">{m.priority ?? "medium"}</Badge>
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-1">
+                      {m.billingType === "Billable Hours" && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          title="Lawyer Hourly Rates"
+                          onClick={() => setRatesMatter(m)}
+                        >
+                          <Clock className="h-4 w-4 text-blue-500" />
+                        </Button>
+                      )}
+                      {canManage && (
+                        <>
+                          <Button variant="ghost" size="sm" onClick={() => setEditingMatter(m)}>
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-destructive"
+                            onClick={() => deleteMatter.mutate({ id: m.id })}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      {/* Edit matter dialog */}
+      {editingMatter && (
+        <MatterEditDialog
+          open={!!editingMatter}
+          onClose={() => setEditingMatter(null)}
+          clientId={clientId}
+          matter={editingMatter}
+        />
+      )}
+
+      {/* Lawyer rates dialog — only for Billable Hours matters */}
+      {ratesMatter && (
+        <LawyerRatesDialog
+          open={!!ratesMatter}
+          onClose={() => setRatesMatter(null)}
+          matter={ratesMatter}
+        />
+      )}
+    </>
+  );
+}
+
+const FEE_TYPE_OPTIONS = [
+  "Billable Hours",
+  "Fixed / Project-Based Fees",
+  "Retainers",
+  "Success Fees",
+  "Advisory / Special Mandates",
+  "Blended",
+] as const;
+
+type MatterFormState = {
+  originalSerial: string; matterReference: string; matterType: string;
+  billingType: string;
+  leadPartner: string; leadPartnerFullName: string; supportLead: string;
+  attorneyHead: string; attorney1: string; attorney2: string; attorney3: string;
+  attorneyFullName: string; matterDescription: string; matterStatus: string;
+  balanceWorkLeft: string; achievementPercentage: string; achievementStatus: string;
+  priority: "low" | "medium" | "high" | "urgent";
+};
+
+const MATTER_FORM_DEFAULT: MatterFormState = {
+  originalSerial: "", matterReference: "", matterType: "", billingType: "",
+  leadPartner: "", leadPartnerFullName: "", supportLead: "", attorneyHead: "",
+  attorney1: "", attorney2: "", attorney3: "", attorneyFullName: "",
+  matterDescription: "", matterStatus: "",
+  balanceWorkLeft: "", achievementPercentage: "", achievementStatus: "",
+  priority: "medium",
+};
+
+const MATTER_TEXT_FIELDS: [keyof MatterFormState, string][] = [
+  ["originalSerial",       "Original Serial"],
+  ["matterReference",      "Matter Reference"],
+  ["matterType",           "Matter Type"],
+  ["leadPartner",          "Lead Partner (Code)"],
+  ["leadPartnerFullName",  "Lead Partner (Full Name)"],
+  ["supportLead",          "Support Lead"],
+  ["attorneyHead",         "Attorney Head"],
+  ["attorney1",            "Attorney 1"],
+  ["attorney2",            "Attorney 2"],
+  ["attorney3",            "Attorney 3"],
+  ["attorneyFullName",     "Attorney Full Name"],
+  ["matterStatus",         "Matter Status (e.g. Active)"],
+  ["balanceWorkLeft",      "Balance Work Left (%)"],
+  ["achievementPercentage","Achievement %"],
+  ["achievementStatus",    "Achievement Status"],
+];
+
+function buildMatterPayload(
+  form: MatterFormState,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { priority: form.priority, ...extra };
+  for (const [k, v] of Object.entries(form)) {
+    if (k === "priority") continue;
+    if (k === "billingType") {
+      // Always include billingType so it can be explicitly cleared (null = no billing type)
+      payload[k] = v !== "" ? v : null;
+      continue;
+    }
+    if (typeof v === "string" && v.trim() !== "") payload[k] = v.trim();
+  }
+  return payload;
+}
+
+function MatterFormFields({
+  form,
+  setForm,
+}: {
+  form: MatterFormState;
+  setForm: Dispatch<SetStateAction<MatterFormState>>;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-3 py-2">
+      {MATTER_TEXT_FIELDS.map(([key, label]) => (
+        <div key={key}>
+          <Label className="text-xs">{label}</Label>
+          <Input
+            value={form[key] as string}
+            onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+            className="h-8 text-sm"
+          />
+        </div>
+      ))}
+      {/* Billing Type */}
+      <div>
+        <Label className="text-xs">Billing Type</Label>
+        <Select value={form.billingType} onValueChange={v => setForm(f => ({ ...f, billingType: v }))}>
+          <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="— select —" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="">— None —</SelectItem>
+            {FEE_TYPE_OPTIONS.map(opt => (
+              <SelectItem key={opt} value={opt}>{opt}</SelectItem>
             ))}
-          </TableBody>
-        </Table>
-      </CardContent>
-    </Card>
+          </SelectContent>
+        </Select>
+      </div>
+      {/* Priority */}
+      <div>
+        <Label className="text-xs">Priority</Label>
+        <Select value={form.priority} onValueChange={v => setForm(f => ({ ...f, priority: v as any }))}>
+          <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="low">Low</SelectItem>
+            <SelectItem value="medium">Medium</SelectItem>
+            <SelectItem value="high">High</SelectItem>
+            <SelectItem value="urgent">Urgent</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      {/* Description full-width */}
+      <div className="col-span-2">
+        <Label className="text-xs">Description / Notes</Label>
+        <Textarea
+          value={form.matterDescription}
+          onChange={e => setForm(f => ({ ...f, matterDescription: e.target.value }))}
+          rows={3}
+          className="text-sm"
+          placeholder="Long-form description, scope, instructions…"
+        />
+      </div>
+    </div>
   );
 }
 
 function MatterDialog({ open, onClose, clientId }: { open: boolean; onClose: () => void; clientId: number }) {
   const utils = trpc.useUtils();
-  const [form, setForm] = useState({
-    originalSerial: "", matterReference: "", matterType: "", leadPartner: "",
-    leadPartnerFullName: "", supportLead: "", attorneyHead: "", attorney1: "",
-    attorney2: "", attorney3: "", attorneyFullName: "",
-    matterDescription: "", matterStatus: "",
-    balanceWorkLeft: "", achievementPercentage: "", achievementStatus: "",
-    priority: "medium" as "low" | "medium" | "high" | "urgent",
-  });
+  const [form, setForm] = useState<MatterFormState>(MATTER_FORM_DEFAULT);
+
   const create = trpc.clientMatters.create.useMutation({
     onSuccess: () => {
       toast.success("Matter added");
       utils.clientMatters.list.invalidate({ clientId });
+      setForm(MATTER_FORM_DEFAULT);
       onClose();
     },
     onError: (e) => toast.error(e.message),
@@ -668,70 +847,74 @@ function MatterDialog({ open, onClose, clientId }: { open: boolean; onClose: () 
         <DialogHeader>
           <DialogTitle>Add Matter</DialogTitle>
         </DialogHeader>
-        <div className="grid grid-cols-2 gap-3 py-2">
-          {[
-            ["originalSerial", "Original Serial"],
-            ["matterReference", "Matter Reference"],
-            ["matterType", "Matter Type"],
-            ["leadPartner", "Lead Partner (Code)"],
-            ["leadPartnerFullName", "Lead Partner (Full Name)"],
-            ["supportLead", "Support Lead"],
-            ["attorneyHead", "Attorney Head"],
-            ["attorney1", "Attorney 1"],
-            ["attorney2", "Attorney 2"],
-            ["attorney3", "Attorney 3"],
-            ["attorneyFullName", "Attorney Full Name"],
-            ["matterStatus", "Matter Status (short, e.g. Active)"],
-            ["balanceWorkLeft", "Balance Work Left (%)"],
-            ["achievementPercentage", "Achievement %"],
-            ["achievementStatus", "Achievement Status"],
-          ].map(([key, label]) => (
-            <div key={key}>
-              <Label className="text-xs">{label}</Label>
-              <Input
-                value={(form as any)[key]}
-                onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
-                className="h-8 text-sm"
-              />
-            </div>
-          ))}
-          <div className="col-span-2">
-            <Label className="text-xs">Description / Notes</Label>
-            <Textarea
-              value={form.matterDescription}
-              onChange={e => setForm(f => ({ ...f, matterDescription: e.target.value }))}
-              rows={3}
-              className="text-sm"
-              placeholder="Long-form description, scope, instructions…"
-            />
-          </div>
-          <div>
-            <Label className="text-xs">Priority</Label>
-            <Select value={form.priority} onValueChange={v => setForm(f => ({ ...f, priority: v as any }))}>
-              <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="low">Low</SelectItem>
-                <SelectItem value="medium">Medium</SelectItem>
-                <SelectItem value="high">High</SelectItem>
-                <SelectItem value="urgent">Urgent</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
+        <MatterFormFields form={form} setForm={setForm} />
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button
-            onClick={() => {
-              const payload: Record<string, unknown> = { clientId, priority: form.priority };
-              for (const [k, v] of Object.entries(form)) {
-                if (k === "priority") continue;
-                if (typeof v === "string" && v.trim() !== "") payload[k] = v.trim();
-              }
-              create.mutate(payload as any);
-            }}
+            onClick={() => create.mutate(buildMatterPayload(form, { clientId }) as any)}
             disabled={create.isPending}
           >
             Add Matter
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function MatterEditDialog({
+  open, onClose, clientId, matter,
+}: {
+  open: boolean;
+  onClose: () => void;
+  clientId: number;
+  matter: any;
+}) {
+  const utils = trpc.useUtils();
+  const [form, setForm] = useState<MatterFormState>({
+    originalSerial:        matter.originalSerial        ?? "",
+    matterReference:       matter.matterReference       ?? "",
+    matterType:            matter.matterType            ?? "",
+    billingType:           matter.billingType           ?? "",
+    leadPartner:           matter.leadPartner           ?? "",
+    leadPartnerFullName:   matter.leadPartnerFullName   ?? "",
+    supportLead:           matter.supportLead           ?? "",
+    attorneyHead:          matter.attorneyHead          ?? "",
+    attorney1:             matter.attorney1             ?? "",
+    attorney2:             matter.attorney2             ?? "",
+    attorney3:             matter.attorney3             ?? "",
+    attorneyFullName:      matter.attorneyFullName      ?? "",
+    matterDescription:     matter.matterDescription     ?? "",
+    matterStatus:          matter.matterStatus          ?? "",
+    balanceWorkLeft:       matter.balanceWorkLeft       ?? "",
+    achievementPercentage: matter.achievementPercentage ?? "",
+    achievementStatus:     matter.achievementStatus     ?? "",
+    priority:              matter.priority              ?? "medium",
+  });
+
+  const update = trpc.clientMatters.update.useMutation({
+    onSuccess: () => {
+      toast.success("Matter updated");
+      utils.clientMatters.list.invalidate({ clientId });
+      onClose();
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onClose}>
+      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Edit Matter — {matter.matterReference ?? matter.originalSerial ?? `#${matter.id}`}</DialogTitle>
+        </DialogHeader>
+        <MatterFormFields form={form} setForm={setForm} />
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button
+            onClick={() => update.mutate({ id: matter.id, ...buildMatterPayload(form) } as any)}
+            disabled={update.isPending}
+          >
+            Save Changes
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -900,6 +1083,7 @@ function FinancialSection({
   const { user } = useAuth();                                        // BUG-4: hook at top level
   const [createOpen, setCreateOpen] = useState(false);
   const [editingRecord, setEditingRecord] = useState<any | null>(null);
+  const [auditRecord, setAuditRecord] = useState<any | null>(null);
   const [matterFilter, setMatterFilter] = useState("all");
   const canManage = hasPermission(user?.role, "financial:manage");
 
@@ -1015,7 +1199,7 @@ function FinancialSection({
                     <TableHead>Revenue</TableHead>
                     <TableHead>Outstanding</TableHead>
                     <TableHead>Invoice Status</TableHead>
-                    {canManage && <TableHead className="w-20" />}
+                    <TableHead className="w-24" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1046,29 +1230,39 @@ function FinancialSection({
                           {r.collectionStatus ?? "—"}
                         </Badge>
                       </TableCell>
-                      {canManage && (
-                        <TableCell>
-                          <div className="flex items-center gap-1">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => setEditingRecord(r)}
-                              title="Edit record"
-                            >
-                              <Edit2 className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="text-destructive"
-                              onClick={() => deleteRecord.mutate({ id: r.id })}
-                              title="Delete record"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </TableCell>
-                      )}
+                      <TableCell>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setAuditRecord(r)}
+                            title="View change history"
+                          >
+                            <History className="h-4 w-4 text-muted-foreground" />
+                          </Button>
+                          {canManage && (
+                            <>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setEditingRecord(r)}
+                                title="Edit record"
+                              >
+                                <Edit2 className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="text-destructive"
+                                onClick={() => deleteRecord.mutate({ id: r.id })}
+                                title="Delete record"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -1094,6 +1288,15 @@ function FinancialSection({
         record={editingRecord}
         matters={matters}
       />
+
+      {/* Audit trail dialog — read-only, available to all financial:view users */}
+      {auditRecord && (
+        <FinancialAuditTrail
+          open={auditRecord !== null}
+          onClose={() => setAuditRecord(null)}
+          record={auditRecord}
+        />
+      )}
     </div>
   );
 }

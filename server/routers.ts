@@ -804,6 +804,14 @@ export const appRouter = router({
         originalSerial: z.string().optional(),
         matterReference: z.string().optional(),
         matterType: z.string().optional(),
+        billingType: z.enum([
+          "Billable Hours",
+          "Fixed / Project-Based Fees",
+          "Retainers",
+          "Success Fees",
+          "Advisory / Special Mandates",
+          "Blended",
+        ]).optional(),
         leadPartner: z.string().optional(),
         leadPartnerFullName: z.string().optional(),
         supportLead: z.string().optional(),
@@ -827,6 +835,14 @@ export const appRouter = router({
         originalSerial: z.string().optional(),
         matterReference: z.string().optional(),
         matterType: z.string().optional(),
+        billingType: z.enum([
+          "Billable Hours",
+          "Fixed / Project-Based Fees",
+          "Retainers",
+          "Success Fees",
+          "Advisory / Special Mandates",
+          "Blended",
+        ]).optional().nullable(),
         leadPartner: z.string().optional(),
         leadPartnerFullName: z.string().optional(),
         supportLead: z.string().optional(),
@@ -851,6 +867,56 @@ export const appRouter = router({
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await db.deleteClientMatter(input.id);
+        return { success: true };
+      }),
+  }),
+
+  // ─── Matter Lawyer Rates ───────────────────────────────────────────────────
+
+  matterLawyerRates: router({
+    list: permissionProcedure("clients:view")
+      .input(z.object({ clientMatterId: z.number() }))
+      .query(async ({ input }) => db.getMatterLawyerRates(input.clientMatterId)),
+
+    create: permissionProcedure("clients:manage")
+      .input(z.object({
+        clientMatterId: z.number(),
+        lawyerName: z.string().min(1, "Lawyer name is required"),
+        role: z.string().optional(),
+        hourlyRate: z.string().refine(v => {
+          const n = Number(v);
+          return Number.isFinite(n) && n >= 0;
+        }, "Hourly rate must be a number ≥ 0"),
+        currency: z.string().default("SAR"),
+        isActive: z.boolean().default(true),
+        effectiveDate: z.string().optional(),
+        notes: z.string().optional(),
+      }))
+      .mutation(async ({ input, ctx }) => db.createMatterLawyerRate(input as any, ctx.user!.id)),
+
+    update: permissionProcedure("clients:manage")
+      .input(z.object({
+        id: z.number(),
+        lawyerName: z.string().min(1).optional(),
+        role: z.string().optional(),
+        hourlyRate: z.string().refine(v => {
+          const n = Number(v);
+          return Number.isFinite(n) && n >= 0;
+        }, "Hourly rate must be a number ≥ 0").optional(),
+        currency: z.string().optional(),
+        isActive: z.boolean().optional(),
+        effectiveDate: z.string().optional().nullable(),
+        notes: z.string().optional(),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const { id, ...data } = input;
+        return db.updateMatterLawyerRate(id, data as any, ctx.user!.id);
+      }),
+
+    delete: permissionProcedure("clients:manage")
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await db.deleteMatterLawyerRate(input.id);
         return { success: true };
       }),
   }),
@@ -925,6 +991,12 @@ export const appRouter = router({
     summary: permissionProcedure("financial:view").query(async () => db.getFinancialSummary()),
 
     toBeBilledBreakdown: permissionProcedure("financial:view").query(async () => db.getToBeBilledBreakdown()),
+
+    // Read-only audit trail for a specific financial record.
+    // Returns entries in chronological order (oldest first).
+    auditLog: permissionProcedure("financial:view")
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => db.getFinancialAuditLogs(input.id)),
   }),
 
   // ─── Client Action Logs ────────────────────────────────────────────────────
