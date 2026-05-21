@@ -7,12 +7,13 @@ import {
   users, companies, leads, matters, tasks, notes, documents, payments,
   activityLogs, auditLogs, chatSubmissions,
   clients, clientMatters, clientLeadDetails, rejectedClients,
-  financialRecords, clientActionLogs,
+  financialRecords, clientActionLogs, matterLawyerRates,
   type InsertUser, type InsertLead, type InsertMatter,
   type InsertTask, type InsertNote, type InsertPayment,
   type InsertCompany, type InsertActivityLog, type InsertChatSubmission,
   type InsertClient, type InsertClientMatter, type InsertClientLeadDetail,
   type InsertRejectedClient, type InsertFinancialRecord, type InsertClientActionLog,
+  type InsertMatterLawyerRate,
 } from "../drizzle/schema";
 import { hashPassword } from "./_core/auth";
 import type { UserRole, UserStatus } from "../shared/const";
@@ -68,9 +69,18 @@ function sanitizeOptionalInput(data: Record<string, unknown>) {
 // Trim strings, drop empty / "0" placeholders for optional varchar fields, and
 // validate numeric strings. Returns a fresh object safe to spread into a Drizzle
 // insert/update for client_matters.
+//
+// Special case: `billingType` may be passed as `null` to explicitly clear the
+// nullable enum column — null is preserved for this field only.
 function sanitizeClientMatterInput(data: Record<string, unknown>) {
   const out: Record<string, unknown> = {};
   for (const [key, raw] of Object.entries(data)) {
+    // Allow explicit null for billingType to clear the enum column
+    if (key === "billingType") {
+      out[key] = raw === undefined ? undefined : (raw ?? null);
+      if (out[key] === undefined) delete out[key];
+      continue;
+    }
     if (raw === null || raw === undefined) continue;
     if (typeof raw === "string") {
       const trimmed = raw.trim();
@@ -690,6 +700,43 @@ export async function logActivity(data: InsertActivityLog) {
   }
 }
 
+// ─── Financial Record Audit ───────────────────────────────────────────────────
+
+// Fields to diff on every financial-record update.
+// Order determines display order in the UI.
+const FINANCIAL_AUDIT_FIELDS: ReadonlyArray<string> = [
+  "clientMatterId",
+  "feeType",
+  "agreedFees",
+  "discountApproval",
+  "netFees",
+  "billedAmount",
+  "revenue",
+  "collectedAmount",
+  "outstandingAmount",
+  "collectionStatus",
+  "billingDate",
+  "paymentDate",
+  "invoiceNumber",
+  "responsibleLawyer",
+  "financeNotes",
+];
+
+// Decimal fields need canonical normalization to prevent "1000.00" vs "1000" false positives.
+const DECIMAL_AUDIT_FIELDS = new Set([
+  "agreedFees", "netFees", "billedAmount", "revenue",
+  "collectedAmount", "outstandingAmount",
+]);
+
+function normalizeAuditValue(field: string, value: unknown): string {
+  if (value === null || value === undefined || value === "") return "";
+  if (DECIMAL_AUDIT_FIELDS.has(field)) {
+    const n = Number(value);
+    return Number.isFinite(n) ? String(round2(n)) : String(value);
+  }
+  return String(value).trim();
+}
+
 // ─── Audit Logs ───────────────────────────────────────────────────────────────
 
 export async function createAuditLog(data: {
@@ -713,6 +760,33 @@ export async function getAuditLogsByEntity(entityType: string, entityId: number)
     .from(auditLogs)
     .where(and(eq(auditLogs.entityType, entityType), eq(auditLogs.entityId, entityId)))
     .orderBy(desc(auditLogs.createdAt));
+}
+
+// Returns all audit log entries for a specific financial record, joined with
+// the user's name so the UI can show who made each change.
+export async function getFinancialAuditLogs(financialRecordId: number) {
+  const db = getDb();
+  return db
+    .select({
+      id:             auditLogs.id,
+      action:         auditLogs.action,
+      fieldName:      auditLogs.fieldName,
+      oldValue:       auditLogs.oldValue,
+      newValue:       auditLogs.newValue,
+      description:    auditLogs.description,
+      createdAt:      auditLogs.createdAt,
+      changedByName:  users.name,
+      changedByEmail: users.email,
+    })
+    .from(auditLogs)
+    .leftJoin(users, eq(auditLogs.userId, users.id))
+    .where(
+      and(
+        eq(auditLogs.entityType, "financial_record"),
+        eq(auditLogs.entityId, financialRecordId),
+      )
+    )
+    .orderBy(auditLogs.createdAt); // ascending — oldest first (chronological)
 }
 
 // ─── Chat Submissions ─────────────────────────────────────────────────────────
@@ -993,6 +1067,76 @@ export async function deleteClientMatter(id: number) {
   await db.delete(clientMatters).where(eq(clientMatters.id, id));
 }
 
+// ─── Matter Lawyer Rates ──────────────────────────────────────────────────────
+
+export async function getMatterLawyerRates(clientMatterId: number) {
+  const db = getDb();
+  return db
+    .select()
+    .from(matterLawyerRates)
+    .where(eq(matterLawyerRates.clientMatterId, clientMatterId))
+    .orderBy(desc(matterLawyerRates.createdAt));
+}
+
+export async function createMatterLawyerRate(data: Record<string, unknown>, userId: number) {
+  const db = getDb();
+  const hourlyRate = Number(data.hourlyRate);
+  if (!Number.isFinite(hourlyRate) || hourlyRate < 0) {
+    throw new Error("Hourly rate must be a number greater than or equal to 0.");
+  }
+  const [rate] = await db
+    .insert(matterLawyerRates)
+    .values({
+      clientMatterId: data.clientMatterId as number,
+      lawyerName:    (data.lawyerName as string).trim(),
+      role:          data.role ? String(data.role).trim() || undefined : undefined,
+      hourlyRate:    String(hourlyRate),
+      currency:      data.currency ? String(data.currency).trim() : "SAR",
+      isActive:      data.isActive !== undefined ? Boolean(data.isActive) : true,
+      effectiveDate: data.effectiveDate ? String(data.effectiveDate) : undefined,
+      notes:         data.notes ? String(data.notes).trim() || undefined : undefined,
+      createdBy:     userId,
+    } as InsertMatterLawyerRate)
+    .returning();
+  return rate;
+}
+
+export async function updateMatterLawyerRate(id: number, data: Record<string, unknown>, userId: number) {
+  const db = getDb();
+  const updates: Partial<InsertMatterLawyerRate> & { updatedAt: Date } = { updatedAt: new Date() };
+
+  if (data.lawyerName !== undefined) updates.lawyerName = String(data.lawyerName).trim();
+  if (data.role !== undefined)       updates.role       = String(data.role).trim() || undefined;
+  if (data.hourlyRate !== undefined) {
+    const n = Number(data.hourlyRate);
+    if (!Number.isFinite(n) || n < 0) throw new Error("Hourly rate must be a number ≥ 0.");
+    updates.hourlyRate = String(n);
+  }
+  if (data.currency !== undefined)      updates.currency      = String(data.currency).trim() || "SAR";
+  if (data.isActive !== undefined)      updates.isActive      = Boolean(data.isActive);
+  if (data.effectiveDate !== undefined) updates.effectiveDate = data.effectiveDate ? String(data.effectiveDate) : undefined;
+  if (data.notes !== undefined)         updates.notes         = data.notes ? String(data.notes).trim() || undefined : undefined;
+
+  const [rate] = await db
+    .update(matterLawyerRates)
+    .set(updates)
+    .where(eq(matterLawyerRates.id, id))
+    .returning();
+  await createAuditLog({
+    entityType: "matter_lawyer_rate",
+    entityId: id,
+    userId,
+    action: "updated",
+    description: `Lawyer rate ${rate?.lawyerName ?? id} updated`,
+  });
+  return rate;
+}
+
+export async function deleteMatterLawyerRate(id: number) {
+  const db = getDb();
+  await db.delete(matterLawyerRates).where(eq(matterLawyerRates.id, id));
+}
+
 // ─── Client Lead Details ──────────────────────────────────────────────────────
 
 export async function getClientLeadDetail(clientId: number) {
@@ -1148,13 +1292,41 @@ export async function updateFinancialRecord(id: number, data: Partial<InsertFina
     })
     .where(eq(financialRecords.id, id))
     .returning();
-  await createAuditLog({
-    entityType: "financial_record",
-    entityId: id,
-    userId,
-    action: "updated",
-    description: `Financial record ${id} updated`,
-  });
+
+  // ─── Field-level audit diff ────────────────────────────────────────────────
+  // Compare each tracked field between the pre-update snapshot (existing) and
+  // the persisted row (record). One audit entry is written per changed field.
+  let changedFieldCount = 0;
+  for (const field of FINANCIAL_AUDIT_FIELDS) {
+    const oldNorm = normalizeAuditValue(field, (existing as Record<string, unknown>)[field]);
+    const newNorm = normalizeAuditValue(field, (record  as Record<string, unknown>)[field]);
+    if (oldNorm !== newNorm) {
+      changedFieldCount++;
+      await createAuditLog({
+        entityType: "financial_record",
+        entityId:   id,
+        userId,
+        action:     "updated",
+        fieldName:  field,
+        oldValue:   oldNorm || "(empty)",
+        newValue:   newNorm || "(empty)",
+        description: `Field "${field}" changed on financial record ${id}`,
+      });
+    }
+  }
+
+  // If nothing tracked changed (e.g. only updatedAt moved), still write a
+  // summary entry so the record appears in the audit trail.
+  if (changedFieldCount === 0) {
+    await createAuditLog({
+      entityType:  "financial_record",
+      entityId:    id,
+      userId,
+      action:      "updated",
+      description: `Financial record ${id} saved (no tracked fields changed)`,
+    });
+  }
+
   return record;
 }
 
