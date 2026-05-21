@@ -104,7 +104,7 @@ export default function FinancialRecords() {
   const canViewClients = hasPermission(user?.role, "clients:view");   // NC-10
 
   // ── View / tab state ───────────────────────────────────────────────────────
-  const [viewMode, setViewMode]   = useState<"records" | "summary">("records");
+  const [viewMode, setViewMode]   = useState<"records" | "overdue" | "summary">("records");
   const [summaryTab, setSummaryTab] = useState<"client" | "matter">("client");
 
   // ── Filter state ───────────────────────────────────────────────────────────
@@ -118,6 +118,9 @@ export default function FinancialRecords() {
   // ── Edit / audit state ─────────────────────────────────────────────────────
   const [editingRecord, setEditingRecord] = useState<any | null>(null);
   const [auditRecord, setAuditRecord] = useState<any | null>(null);
+
+  // ── Settings ───────────────────────────────────────────────────────────────
+  const { data: overdueDays = 30 } = trpc.settings.getOverdueDays.useQuery();
 
   // ── Data fetching ──────────────────────────────────────────────────────────
   const { data: records = [], isLoading, refetch } = trpc.financial.list.useQuery({
@@ -192,6 +195,13 @@ export default function FinancialRecords() {
       return true;
     });
   }, [records, clientFilter, matterFilter, searchQuery, dateFrom, dateTo, clientMap, allMatterMap]);
+
+  // ── Overdue records (date-based computed flag from server) ─────────────────
+  // isComputedOverdue is annotated by the backend using the configured threshold.
+  const overdueRecords = useMemo(
+    () => filteredRecords.filter((r: any) => r.isComputedOverdue),
+    [filteredRecords],
+  );
 
   // ── Client Summary aggregation ─────────────────────────────────────────────
   const clientSummary = useMemo((): ClientSummaryRow[] => {
@@ -367,6 +377,20 @@ export default function FinancialRecords() {
                 onClick={() => setViewMode("records")}
               >
                 <DollarSign className="h-3.5 w-3.5 mr-1.5" />Records
+              </Button>
+              <Button
+                variant={viewMode === "overdue" ? "default" : "ghost"}
+                size="sm"
+                className={`h-7 text-xs px-3 ${viewMode !== "overdue" && overdueRecords.length > 0 ? "text-red-600" : ""}`}
+                onClick={() => setViewMode("overdue")}
+              >
+                <AlertTriangle className="h-3.5 w-3.5 mr-1.5" />
+                Overdue
+                {overdueRecords.length > 0 && (
+                  <span className="ml-1 rounded-full bg-red-600 text-white text-[10px] font-bold px-1.5 py-0.5 leading-none">
+                    {overdueRecords.length}
+                  </span>
+                )}
               </Button>
               <Button
                 variant={viewMode === "summary" ? "default" : "ghost"}
@@ -645,6 +669,139 @@ export default function FinancialRecords() {
                           </TableCell>
                         </TableRow>
                       ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ════════════════════════════════════════════════════════════════════ */}
+        {/*  OVERDUE VIEW                                                         */}
+        {/* ════════════════════════════════════════════════════════════════════ */}
+        {viewMode === "overdue" && (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2 text-red-700">
+                <AlertTriangle className="h-4 w-4" />
+                Overdue Records
+                <span className="text-xs font-normal text-muted-foreground ml-1">
+                  ({overdueRecords.length} record{overdueRecords.length !== 1 ? "s" : ""})
+                </span>
+              </CardTitle>
+              {/* Explanation text driven by the configured threshold */}
+              <p className="text-sm text-muted-foreground">
+                Records appear here when unpaid for more than{" "}
+                <span className="font-semibold text-foreground">{overdueDays} day{overdueDays !== 1 ? "s" : ""}</span>{" "}
+                after billing date. Only billed/partially-collected invoices are evaluated;
+                fully collected and unbilled records are excluded.
+              </p>
+            </CardHeader>
+            <CardContent className="p-0">
+              {isLoading ? (
+                <div className="p-8 text-center text-muted-foreground">Loading…</div>
+              ) : overdueRecords.length === 0 ? (
+                <div className="p-12 text-center text-muted-foreground">
+                  <AlertTriangle className="h-12 w-12 mx-auto mb-3 opacity-20" />
+                  <p className="font-medium">No overdue records</p>
+                  <p className="text-xs mt-1 opacity-70">
+                    All billed invoices have been paid within {overdueDays} day{overdueDays !== 1 ? "s" : ""}.
+                  </p>
+                  {hasActiveFilters && (
+                    <Button variant="link" size="sm" onClick={clearAllFilters} className="mt-2">
+                      Clear filters to see all records
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="bg-red-50/50">
+                        <TableHead>Client</TableHead>
+                        <TableHead>Matter</TableHead>
+                        <TableHead>Fee Type</TableHead>
+                        <TableHead>Agreed Fees</TableHead>
+                        <TableHead>Net Fees</TableHead>
+                        <TableHead>Billed</TableHead>
+                        <TableHead>Collected</TableHead>
+                        <TableHead>Outstanding</TableHead>
+                        <TableHead>Invoice Status</TableHead>
+                        <TableHead>Billing Date</TableHead>
+                        <TableHead>Days Overdue</TableHead>
+                        <TableHead>Invoice #</TableHead>
+                        <TableHead>Responsible</TableHead>
+                        <TableHead className="w-20" />
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {overdueRecords.map((r: any) => {
+                        const daysOverdue = r.billingDate
+                          ? Math.floor(
+                              (Date.now() - new Date(r.billingDate).setHours(0, 0, 0, 0)) /
+                              (1000 * 60 * 60 * 24),
+                            )
+                          : null;
+                        return (
+                          <TableRow key={r.id} className="bg-red-50/20 hover:bg-red-50/40">
+                            <TableCell className="font-medium text-sm">
+                              {clientMap[r.clientId] ?? `Client #${r.clientId}`}
+                            </TableCell>
+                            <TableCell className="min-w-[110px]">{matterCell(r)}</TableCell>
+                            <TableCell className="text-sm">{r.feeType ?? "—"}</TableCell>
+                            <TableCell className="text-sm">{formatCurrency(r.agreedFees)}</TableCell>
+                            <TableCell className="text-sm">{formatCurrency(r.netFees)}</TableCell>
+                            <TableCell className="text-sm">{formatCurrency(r.billedAmount)}</TableCell>
+                            <TableCell className="text-sm">{formatCurrency(r.collectedAmount)}</TableCell>
+                            <TableCell className="text-sm text-red-700 font-medium">
+                              {formatCurrency(r.outstandingAmount)}
+                            </TableCell>
+                            <TableCell>
+                              <Badge
+                                variant="outline"
+                                className={INVOICE_STATUS_COLORS[r.collectionStatus ?? ""] ?? ""}
+                              >
+                                {r.collectionStatus ?? "—"}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-sm text-muted-foreground">
+                              {r.billingDate ?? "—"}
+                            </TableCell>
+                            <TableCell>
+                              {daysOverdue !== null ? (
+                                <span className="text-sm font-semibold text-red-700">
+                                  {daysOverdue}d
+                                </span>
+                              ) : "—"}
+                            </TableCell>
+                            <TableCell className="text-sm font-mono">{r.invoiceNumber ?? "—"}</TableCell>
+                            <TableCell className="text-sm">{r.responsibleLawyer ?? "—"}</TableCell>
+                            <TableCell>
+                              <div className="flex items-center gap-1">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setAuditRecord(r)}
+                                  title="View change history"
+                                >
+                                  <History className="h-4 w-4 text-muted-foreground" />
+                                </Button>
+                                {canManage && (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setEditingRecord(r)}
+                                    title="Edit record"
+                                  >
+                                    <Edit2 className="h-4 w-4" />
+                                  </Button>
+                                )}
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </div>
