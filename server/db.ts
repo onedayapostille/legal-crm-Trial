@@ -1114,7 +1114,8 @@ export async function updateMatterLawyerRate(id: number, data: Record<string, un
   }
   if (data.currency !== undefined)      updates.currency      = String(data.currency).trim() || "SAR";
   if (data.isActive !== undefined)      updates.isActive      = Boolean(data.isActive);
-  if (data.effectiveDate !== undefined) updates.effectiveDate = data.effectiveDate ? String(data.effectiveDate) : undefined;
+  // null means "clear the date"; undefined means "field not included in this patch"
+  if (data.effectiveDate !== undefined) updates.effectiveDate = data.effectiveDate ? String(data.effectiveDate) : null;
   if (data.notes !== undefined)         updates.notes         = data.notes ? String(data.notes).trim() || undefined : undefined;
 
   const [rate] = await db

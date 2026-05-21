@@ -155,6 +155,9 @@ export default function FinancialDialog({
     utils.financial.list.invalidate();
     utils.financial.summary.invalidate();
     utils.financial.toBeBilledBreakdown.invalidate();
+    // Invalidate all cached audit-log queries so the history dialog
+    // shows fresh entries if it was already open when the edit was saved.
+    utils.financial.auditLog.invalidate();
   }
 
   const create = trpc.financial.create.useMutation({
