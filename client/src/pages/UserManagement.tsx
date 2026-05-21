@@ -32,8 +32,8 @@ import { trpc } from "@/lib/trpc";
 import { ROLE_LABELS, USER_ROLES, USER_STATUSES, type UserRole, type UserStatus } from "@shared/const";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "../../../server/routers";
-import { Edit, KeyRound, Loader2, Plus, ShieldAlert, ShieldCheck, Trash2, Users } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Edit, KeyRound, Loader2, Plus, Settings, ShieldAlert, ShieldCheck, Trash2, Users } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 type RouterOutputs = inferRouterOutputs<AppRouter>;
@@ -279,7 +279,7 @@ export default function UserManagement() {
         <Card>
           <CardHeader>
             <CardTitle>Team Members</CardTitle>
-            <CardDescription>Admin actions are validated again on the server.</CardDescription>
+            <CardDescription>Admin actions are validated server-side.</CardDescription>
           </CardHeader>
           <CardContent>
             <Table>
@@ -341,6 +341,9 @@ export default function UserManagement() {
           </CardContent>
         </Card>
       </div>
+
+      {/* System Settings — admin only */}
+      {currentUser?.role === "admin" && <SystemSettings />}
 
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent>
@@ -442,5 +445,99 @@ export default function UserManagement() {
         </DialogContent>
       </Dialog>
     </DashboardLayout>
+  );
+}
+
+// ─── SystemSettings ───────────────────────────────────────────────────────────
+// Admin-only card for configuring system-wide parameters.
+// Currently exposes the overdue_invoice_days threshold.
+
+function SystemSettings() {
+  const utils = trpc.useUtils();
+  const { data: currentDays, isLoading } = trpc.settings.getOverdueDays.useQuery();
+  const [daysInput, setDaysInput] = useState<string>("");
+  const [dirty, setDirty] = useState(false);
+
+  // Initialise the input once the setting has loaded from the server.
+  useEffect(() => {
+    if (currentDays !== undefined && !dirty) {
+      setDaysInput(String(currentDays));
+    }
+  }, [currentDays]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const updateMutation = trpc.settings.update.useMutation({
+    onSuccess: () => {
+      toast.success("Setting saved");
+      // Refresh the threshold value and everything that depends on it.
+      utils.settings.getOverdueDays.invalidate();
+      utils.financial.summary.invalidate();
+      utils.financial.list.invalidate();   // re-computes isComputedOverdue for all records
+      setDirty(false);
+    },
+    onError: err => toast.error(err.message),
+  });
+
+  function handleSave() {
+    const n = Number(daysInput);
+    if (!Number.isFinite(n) || n < 1 || n > 3650) {
+      toast.error("Overdue days must be a whole number between 1 and 3650.");
+      return;
+    }
+    updateMutation.mutate({ key: "overdue_invoice_days", value: String(Math.floor(n)) });
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Settings className="h-4 w-4 text-muted-foreground" />
+          System Settings
+        </CardTitle>
+        <CardDescription>
+          Configure system-wide behaviour. Changes take effect immediately.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {/* ── Overdue Invoice Days ────────────────────────────────────────── */}
+        <div className="rounded-lg border p-4 space-y-3 max-w-lg">
+          <div>
+            <p className="font-medium text-sm">Overdue Invoice Days</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              An unpaid billed invoice is flagged as overdue when today&apos;s date is this many
+              days or more past the billing date. Affects the Overdue tab in Financial Records
+              and the dashboard overdue count.
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <Input
+                type="number"
+                min={1}
+                max={3650}
+                step={1}
+                value={daysInput}
+                onChange={e => { setDaysInput(e.target.value); setDirty(true); }}
+                className="w-24 h-9"
+                disabled={isLoading}
+              />
+              <span className="text-sm text-muted-foreground whitespace-nowrap">days after billing date</span>
+            </div>
+            <Button
+              size="sm"
+              onClick={handleSave}
+              disabled={!dirty || updateMutation.isPending || isLoading}
+            >
+              {updateMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Save
+            </Button>
+          </div>
+          {currentDays !== undefined && !dirty && (
+            <p className="text-xs text-muted-foreground">
+              Current value: <span className="font-semibold">{currentDays} day{currentDays !== 1 ? "s" : ""}</span>
+            </p>
+          )}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
