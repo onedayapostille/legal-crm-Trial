@@ -7,7 +7,7 @@ import {
   users, companies, leads, matters, tasks, notes, documents, payments,
   activityLogs, auditLogs, chatSubmissions,
   clients, clientMatters, clientLeadDetails, rejectedClients,
-  financialRecords, clientActionLogs, matterLawyerRates,
+  financialRecords, clientActionLogs, matterLawyerRates, systemSettings,
   type InsertUser, type InsertLead, type InsertMatter,
   type InsertTask, type InsertNote, type InsertPayment,
   type InsertCompany, type InsertActivityLog, type InsertChatSubmission,
@@ -1216,15 +1216,89 @@ export async function upsertRejectedClient(clientId: number, data: Partial<Inser
   return created;
 }
 
+// ─── System Settings ─────────────────────────────────────────────────────────
+
+/** Read a single setting by key. Returns null if not found. */
+export async function getSystemSetting(key: string): Promise<string | null> {
+  const db = getDb();
+  const [row] = await db
+    .select({ value: systemSettings.value })
+    .from(systemSettings)
+    .where(eq(systemSettings.key, key))
+    .limit(1);
+  return row?.value ?? null;
+}
+
+/**
+ * Returns the configured overdue invoice days threshold.
+ * Falls back to 30 if the setting is missing or non-numeric.
+ */
+export async function getOverdueDays(): Promise<number> {
+  const raw = await getSystemSetting("overdue_invoice_days");
+  const n   = raw !== null ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 30;
+}
+
+/** Upsert a system setting. Creates it if missing, updates it if present. */
+export async function upsertSystemSetting(
+  key:       string,
+  value:     string,
+  updatedBy: number,
+): Promise<void> {
+  const db = getDb();
+  await db
+    .insert(systemSettings)
+    .values({ key, value, updatedBy, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target:  systemSettings.key,
+      set:     { value, updatedBy, updatedAt: new Date() },
+    });
+}
+
 // ─── Financial Records ────────────────────────────────────────────────────────
+
+/**
+ * Statuses that mean an invoice has been issued but payment is still
+ * outstanding — the only candidates for the date-based overdue calculation.
+ * "Not Billed" is excluded because no invoice exists yet.
+ * "Fully Collected" is excluded because payment is complete.
+ */
+const OVERDUE_CANDIDATE_STATUSES = new Set([
+  "Billed",
+  "Partially Billed",
+  "Partially Collected",
+  "Overdue",       // already manually flagged — always included
+]);
+
+/**
+ * Returns true when a record should be flagged as overdue.
+ * Logic:
+ *   – status must be an unpaid/issued status (not "Not Billed" or "Fully Collected")
+ *   – billingDate must be present (no invoice date → cannot be overdue)
+ *   – (today − billingDate) in days ≥ overdueDays
+ */
+function computeIsOverdue(
+  r: { collectionStatus?: string | null; billingDate?: string | null },
+  overdueDays: number,
+): boolean {
+  if (!r.collectionStatus || !OVERDUE_CANDIDATE_STATUSES.has(r.collectionStatus)) return false;
+  if (!r.billingDate) return false;
+  const today  = new Date();
+  today.setHours(0, 0, 0, 0);
+  const billed = new Date(r.billingDate);
+  billed.setHours(0, 0, 0, 0);
+  const diffDays = Math.floor((today.getTime() - billed.getTime()) / (1000 * 60 * 60 * 24));
+  return diffDays >= overdueDays;
+}
 
 export async function getFinancialRecords(filters?: {
   clientId?: number;
   clientMatterId?: number;
   collectionStatus?: string;
 }) {
-  const db = getDb();
-  const conditions = [];
+  const db          = getDb();
+  const overdueDays = await getOverdueDays();
+  const conditions  = [];
   if (filters?.clientId) conditions.push(eq(financialRecords.clientId, filters.clientId));
   if (filters?.clientMatterId) {
     conditions.push(eq(financialRecords.clientMatterId, filters.clientMatterId));
@@ -1233,7 +1307,9 @@ export async function getFinancialRecords(filters?: {
     conditions.push(eq(financialRecords.collectionStatus, filters.collectionStatus as any));
   }
   const query = db.select().from(financialRecords).orderBy(desc(financialRecords.createdAt));
-  return conditions.length > 0 ? query.where(and(...conditions)) : query;
+  const rows  = await (conditions.length > 0 ? query.where(and(...conditions)) : query);
+  // Annotate each row with a computed overdue flag based on date math + config.
+  return rows.map(r => ({ ...r, isComputedOverdue: computeIsOverdue(r, overdueDays) }));
 }
 
 export async function getFinancialRecordById(id: number) {
@@ -1337,12 +1413,21 @@ export async function deleteFinancialRecord(id: number) {
 }
 
 export async function getFinancialSummary() {
-  const db = getDb();
+  const db          = getDb();
+  const overdueDays = await getOverdueDays();
+  // Use sql.raw for the numeric literal — it is validated as a positive integer
+  // by getOverdueDays(), so injection is not possible.
+  const overdaysSql = sql.raw(String(overdueDays));
   const [row] = await db
     .select({
       totalRevenue:     sql<string>`COALESCE(SUM(${financialRecords.revenue}), 0)`,
       totalOutstanding: sql<string>`COALESCE(SUM(${financialRecords.outstandingAmount}), 0)`,
-      overdueCount:     sql<string>`COUNT(*) FILTER (WHERE ${financialRecords.collectionStatus} = 'Overdue')`,
+      // Date-based overdue: billed but unpaid, billing date older than configured threshold.
+      overdueCount: sql<string>`COUNT(*) FILTER (
+        WHERE ${financialRecords.collectionStatus} IN ('Billed', 'Partially Billed', 'Partially Collected', 'Overdue')
+        AND   ${financialRecords.billingDate} IS NOT NULL
+        AND   CURRENT_DATE - ${financialRecords.billingDate}::date >= ${overdaysSql}
+      )`,
       totalToBeBilled:  sql<string>`COALESCE(SUM(GREATEST(0, COALESCE(${financialRecords.agreedFees}, 0)::numeric - COALESCE(${financialRecords.billedAmount}, 0)::numeric)), 0)`,
     })
     .from(financialRecords);
@@ -1351,6 +1436,7 @@ export async function getFinancialSummary() {
     totalOutstanding:Number(row?.totalOutstanding?? 0),
     overdueCount:    Number(row?.overdueCount    ?? 0),
     totalToBeBilled: Number(row?.totalToBeBilled ?? 0),
+    overdueDays,   // expose so callers can show "X days" in the UI
   };
 }
 
