@@ -789,10 +789,14 @@ function MatterFormFields({
       {/* Billing Type */}
       <div>
         <Label className="text-xs">Billing Type</Label>
-        <Select value={form.billingType} onValueChange={v => setForm(f => ({ ...f, billingType: v }))}>
+        {/* Radix Select.Item requires a non-empty string value — use sentinel "__none__" */}
+        <Select
+          value={form.billingType || "__none__"}
+          onValueChange={v => setForm(f => ({ ...f, billingType: v === "__none__" ? "" : v }))}
+        >
           <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="— select —" /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="">— None —</SelectItem>
+            <SelectItem value="__none__">— None —</SelectItem>
             {FEE_TYPE_OPTIONS.map(opt => (
               <SelectItem key={opt} value={opt}>{opt}</SelectItem>
             ))}
@@ -896,6 +900,7 @@ function MatterEditDialog({
     onSuccess: () => {
       toast.success("Matter updated");
       utils.clientMatters.list.invalidate({ clientId });
+      utils.clientMatters.listAll.invalidate(); // keep global financial page in sync
       onClose();
     },
     onError: (e) => toast.error(e.message),
@@ -1215,8 +1220,8 @@ function FinancialSection({
                           const tbb     = Math.max(0, agreed - billed);
                           const over    = agreed > 0 && billed > agreed;
                           if (over) return <span className="text-red-600 font-medium text-xs">Overbilled</span>;
-                          if (tbb === 0) return <span className="text-green-700 text-xs font-medium">Fully billed</span>;
-                          return <span className="text-amber-700 font-medium">{fmtSAR(tbb)}</span>;
+                          if (tbb === 0 && agreed > 0) return <span className="text-green-700 text-xs font-medium">Fully billed</span>;
+                          return <span className="text-amber-700 font-medium">{agreed > 0 ? fmtSAR(tbb) : "—"}</span>;
                         })()}
                       </TableCell>
                       <TableCell className="text-sm">{fmtSAR(r.netFees)}</TableCell>
