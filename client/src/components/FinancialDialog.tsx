@@ -1,0 +1,548 @@
+import { useState, useEffect } from "react";
+import { AlertTriangle, FileText } from "lucide-react";
+import { trpc } from "@/lib/trpc";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+} from "@/components/ui/dialog";
+import { toast } from "sonner";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface MatterOption {
+  id: number;
+  matterReference: string | null;
+  originalSerial: string | null;
+  matterType: string | null;
+  matterStatus: string | null;
+  leadPartnerFullName: string | null;
+}
+
+// ─── Discount calculation (mirrors server/db.ts applyDiscountRules) ────────────
+
+const DISCOUNT_RATES: Record<string, number> = {
+  "N/A": 0,
+  "P&L Head Lawyers": 5,
+  "CEO": 10,
+  "Board": 15,
+};
+
+function calcFinancials(f: {
+  agreedFees: string;
+  discountApproval: string;
+  billedAmount: string;
+  revenue: string;
+  collectedAmount: string;
+}) {
+  const agreed    = Number(f.agreedFees)      || 0;
+  const pct       = DISCOUNT_RATES[f.discountApproval] ?? 0;
+  const discAmt   = Math.round(agreed * pct) / 100;
+  const netFees   = Math.max(0, Math.round((agreed - discAmt) * 100) / 100);
+  const billed    = Number(f.billedAmount)    || 0;
+  const revenue   = Number(f.revenue)         || 0;
+  const collected = Number(f.collectedAmount) || 0;
+  const toBeBilled = Math.max(0, Math.round((agreed - billed) * 100) / 100);
+  const overbilled = agreed > 0 && billed > agreed;
+  return {
+    discountPercentage: String(pct),
+    discountAmount:     String(discAmt),
+    netFees:            String(netFees),
+    remainingAdvanced:  String(Math.round((billed - revenue) * 100) / 100),
+    outstandingAmount:  String(Math.max(0, Math.round((billed - collected) * 100) / 100)),
+    toBeBilled:         String(toBeBilled),
+    overbilled,
+  };
+}
+
+// ─── Form state ───────────────────────────────────────────────────────────────
+
+const BLANK_FORM = {
+  clientMatterId:    "",   // "" = no matter; "123" = matter id 123
+  feeType:           "" as "" | "Billable Hours" | "Fixed / Project-Based Fees" | "Retainers" | "Success Fees" | "Advisory / Special Mandates" | "Blended",
+  agreedFees:        "",
+  discountApproval:  "N/A" as "N/A" | "P&L Head Lawyers" | "CEO" | "Board",
+  billedAmount:      "",
+  revenue:           "",
+  collectedAmount:   "",
+  collectionStatus:  "Not Billed" as "Not Billed" | "Partially Billed" | "Billed" | "Partially Collected" | "Fully Collected" | "Overdue",
+  billingDate:       "",
+  paymentDate:       "",
+  invoiceNumber:     "",
+  responsibleLawyer: "",
+  financeNotes:      "",
+};
+
+type FormState = typeof BLANK_FORM;
+
+function recordToForm(r: any): FormState {
+  return {
+    clientMatterId:    r.clientMatterId ? String(r.clientMatterId) : "",
+    feeType:           r.feeType           ?? "",
+    agreedFees:        r.agreedFees        ?? "",
+    discountApproval:  r.discountApproval  ?? "N/A",
+    billedAmount:      r.billedAmount      ?? "",
+    revenue:           r.revenue           ?? "",
+    collectedAmount:   r.collectedAmount   ?? "",
+    collectionStatus:  r.collectionStatus  ?? "Not Billed",
+    billingDate:       r.billingDate       ?? "",
+    paymentDate:       r.paymentDate       ?? "",
+    invoiceNumber:     r.invoiceNumber     ?? "",
+    responsibleLawyer: r.responsibleLawyer ?? "",
+    financeNotes:      r.financeNotes      ?? "",
+  };
+}
+
+/** Build a short display label for a matter option */
+function matterLabel(m: MatterOption): string {
+  const ref = m.matterReference ?? m.originalSerial ?? `Matter #${m.id}`;
+  const parts = [m.matterType, m.matterStatus].filter(Boolean).join(" · ");
+  return parts ? `${ref} — ${parts}` : ref;
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
+interface FinancialDialogProps {
+  open: boolean;
+  onClose: () => void;
+  /** Required when creating a new record */
+  clientId?: number;
+  /** When provided the dialog is in edit mode */
+  record?: any;
+  /**
+   * Matters belonging to the relevant client.
+   * • undefined  → don't show the matter selector (global context without client matters loaded)
+   * • []         → client has no matters yet; show helpful empty-state message
+   * • MatterOption[] → show the selector
+   */
+  matters?: MatterOption[];
+}
+
+export default function FinancialDialog({
+  open,
+  onClose,
+  clientId,
+  record,
+  matters,
+}: FinancialDialogProps) {
+  const isEditMode = !!record;
+  const utils = trpc.useUtils();
+
+  const [form, setForm] = useState<FormState>(BLANK_FORM);
+  const [formError, setFormError] = useState("");
+
+  // Populate / reset the form each time the dialog opens or the record changes
+  useEffect(() => {
+    if (open) {
+      setFormError("");
+      setForm(record ? recordToForm(record) : BLANK_FORM);
+    }
+  }, [open, record?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const derived = calcFinancials(form);
+
+  function setField(key: keyof FormState, value: string) {
+    setForm(f => ({ ...f, [key]: value }));
+  }
+
+  // ── Invalidate all financial caches after save ───────────────────────────────
+  function invalidateAll() {
+    utils.financial.list.invalidate();
+    utils.financial.summary.invalidate();
+    utils.financial.toBeBilledBreakdown.invalidate();
+  }
+
+  const create = trpc.financial.create.useMutation({
+    onSuccess: () => {
+      toast.success("Financial record added");
+      invalidateAll();
+      onClose();
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const update = trpc.financial.update.useMutation({
+    onSuccess: () => {
+      toast.success("Financial record updated");
+      invalidateAll();
+      onClose();
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const isPending = isEditMode ? update.isPending : create.isPending;
+
+  // ── Validation + save ────────────────────────────────────────────────────────
+  function handleSave() {
+    setFormError("");
+
+    if (!form.feeType) {
+      setFormError("Fee Type is required.");
+      return;
+    }
+    if (!isEditMode && !clientId) {
+      setFormError("No client selected.");
+      return;
+    }
+
+    // Validate numeric monetary fields — reject non-numeric input
+    const numericFields: Array<[keyof FormState, string]> = [
+      ["agreedFees",     "Agreed Fees"],
+      ["billedAmount",   "Billed Amount"],
+      ["revenue",        "Revenue"],
+      ["collectedAmount","Collected Amount"],
+    ];
+    for (const [key, label] of numericFields) {
+      const v = form[key] as string;
+      if (v !== "" && (isNaN(Number(v)) || !isFinite(Number(v)))) {
+        setFormError(`${label} must be a valid number (e.g. 10000).`);
+        return;
+      }
+    }
+
+    // clientMatterId: send number to link, null to explicitly unlink (edit only),
+    // omit entirely on create when no matter is selected.
+    const matterIdValue = form.clientMatterId ? Number(form.clientMatterId) : null;
+
+    const payload = {
+      ...(form.feeType           ? { feeType:           form.feeType }           : {}),
+      ...(form.agreedFees        ? { agreedFees:        form.agreedFees }        : {}),
+      discountApproval:  form.discountApproval,
+      ...(form.billedAmount      ? { billedAmount:      form.billedAmount }      : {}),
+      ...(form.revenue           ? { revenue:           form.revenue }           : {}),
+      ...(form.collectedAmount   ? { collectedAmount:   form.collectedAmount }   : {}),
+      collectionStatus:  form.collectionStatus,
+      ...(form.billingDate       ? { billingDate:       form.billingDate }       : {}),
+      ...(form.paymentDate       ? { paymentDate:       form.paymentDate }       : {}),
+      ...(form.invoiceNumber     ? { invoiceNumber:     form.invoiceNumber }     : {}),
+      ...(form.responsibleLawyer ? { responsibleLawyer: form.responsibleLawyer } : {}),
+      ...(form.financeNotes      ? { financeNotes:      form.financeNotes }      : {}),
+    };
+
+    if (isEditMode) {
+      // On update: send clientMatterId when selector is shown (null = explicit unlink)
+      update.mutate({
+        id: record.id,
+        ...payload,
+        ...(matters !== undefined ? { clientMatterId: matterIdValue } : {}),
+      });
+    } else {
+      // On create: only include clientMatterId when a matter is actually selected
+      create.mutate({
+        clientId: clientId!,
+        ...payload,
+        ...(matters !== undefined && matterIdValue !== null
+          ? { clientMatterId: matterIdValue }
+          : {}),
+      });
+    }
+  }
+
+  // ── Determine matter selector state ─────────────────────────────────────────
+  const showMatterSelector = matters !== undefined;
+  const hasMatterOptions   = matters && matters.length > 0;
+
+  // ── Render ───────────────────────────────────────────────────────────────────
+  return (
+    <Dialog open={open} onOpenChange={v => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>
+            {isEditMode ? "Edit Financial Record" : "Add Financial Record"}
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="grid grid-cols-2 gap-3 py-2">
+
+          {/* ── Matter Selector ───────────────────────────────────────────── */}
+          {showMatterSelector && (
+            <div className="col-span-2">
+              <Label className="text-xs">Linked Matter (optional)</Label>
+
+              {hasMatterOptions ? (
+                <Select
+                  value={form.clientMatterId || "none"}
+                  onValueChange={v => setField("clientMatterId", v === "none" ? "" : v)}
+                >
+                  <SelectTrigger className="mt-1">
+                    <SelectValue placeholder="No matter — client-level record" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">
+                      No matter — client-level record
+                    </SelectItem>
+                    {matters!.map(m => (
+                      <SelectItem key={m.id} value={String(m.id)}>
+                        <span className="flex flex-col leading-tight">
+                          <span className="font-medium">
+                            {m.matterReference ?? m.originalSerial ?? `Matter #${m.id}`}
+                          </span>
+                          {(m.matterType || m.matterStatus || m.leadPartnerFullName) && (
+                            <span className="text-xs text-muted-foreground">
+                              {[m.matterType, m.matterStatus, m.leadPartnerFullName]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            </span>
+                          )}
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                /* Client has no matters yet */
+                <div className="mt-1 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm">
+                  <FileText className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+                  <span className="text-amber-800">
+                    No matters found for this client. This record will be saved at
+                    client level. Create a matter first to link it here.
+                  </span>
+                </div>
+              )}
+
+              {/* Show selected matter info when one is chosen */}
+              {form.clientMatterId && hasMatterOptions && (() => {
+                const m = matters!.find(x => String(x.id) === form.clientMatterId);
+                if (!m) return null;
+                return (
+                  <div className="mt-1.5 rounded-md bg-blue-50 border border-blue-200 px-3 py-1.5 text-xs text-blue-800 flex flex-wrap gap-x-3 gap-y-0.5">
+                    <span className="font-medium">
+                      {m.matterReference ?? m.originalSerial ?? `Matter #${m.id}`}
+                    </span>
+                    {m.matterType    && <span>{m.matterType}</span>}
+                    {m.matterStatus  && <span>Status: {m.matterStatus}</span>}
+                    {m.leadPartnerFullName && <span>Partner: {m.leadPartnerFullName}</span>}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
+          {/* ── Fee Type ─────────────────────────────────────────────────── */}
+          <div className="col-span-2">
+            <Label className="text-xs">
+              Fee Type <span className="text-destructive">*</span>
+            </Label>
+            <Select
+              value={form.feeType || "none"}
+              onValueChange={v => setField("feeType", v === "none" ? "" : v as any)}
+            >
+              <SelectTrigger className={!form.feeType ? "border-destructive/50" : ""}>
+                <SelectValue placeholder="Select fee type" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Select fee type…</SelectItem>
+                {(["Billable Hours", "Fixed / Project-Based Fees", "Retainers",
+                   "Success Fees", "Advisory / Special Mandates", "Blended"] as const).map(t => (
+                  <SelectItem key={t} value={t}>{t}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* ── Agreed Fees ──────────────────────────────────────────────── */}
+          <div>
+            <Label className="text-xs">Agreed Fees (SAR)</Label>
+            <Input
+              value={form.agreedFees}
+              onChange={e => setField("agreedFees", e.target.value)}
+              className="h-8 text-sm"
+              placeholder="0"
+            />
+          </div>
+
+          {/* ── Discount Approval ────────────────────────────────────────── */}
+          <div>
+            <Label className="text-xs">Discount Approval</Label>
+            <Select
+              value={form.discountApproval}
+              onValueChange={v => setField("discountApproval", v as any)}
+            >
+              <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {(["N/A", "P&L Head Lawyers", "CEO", "Board"] as const).map(v => (
+                  <SelectItem key={v} value={v}>
+                    {v}{v !== "N/A" ? ` (${DISCOUNT_RATES[v]}%)` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* ── Derived: Discount % ──────────────────────────────────────── */}
+          <div>
+            <Label className="text-xs text-muted-foreground">Discount % (auto)</Label>
+            <Input
+              value={`${derived.discountPercentage}%`}
+              readOnly
+              className="h-8 text-sm bg-muted"
+            />
+          </div>
+
+          {/* ── Derived: Discount Amount ─────────────────────────────────── */}
+          <div>
+            <Label className="text-xs text-muted-foreground">Discount Amount (auto)</Label>
+            <Input
+              value={derived.discountAmount}
+              readOnly
+              className="h-8 text-sm bg-muted"
+            />
+          </div>
+
+          {/* ── Derived: Net Fees ────────────────────────────────────────── */}
+          <div className="col-span-2">
+            <Label className="text-xs text-muted-foreground">Net Fees (auto)</Label>
+            <Input
+              value={derived.netFees}
+              readOnly
+              className="h-8 text-sm bg-muted font-medium"
+            />
+          </div>
+
+          {/* ── Billing inputs ───────────────────────────────────────────── */}
+          {(["billedAmount", "revenue", "collectedAmount"] as const).map(key => (
+            <div key={key}>
+              <Label className="text-xs">
+                {key === "billedAmount"  ? "Billed Amount"   :
+                 key === "revenue"       ? "Revenue"         :
+                                          "Collected Amount"}
+              </Label>
+              <Input
+                value={form[key]}
+                onChange={e => setField(key, e.target.value)}
+                className="h-8 text-sm"
+                placeholder="0"
+              />
+            </div>
+          ))}
+
+          {/* ── Derived: Remaining Advanced ──────────────────────────────── */}
+          <div>
+            <Label className="text-xs text-muted-foreground">Remaining Advanced (auto)</Label>
+            <Input value={derived.remainingAdvanced} readOnly className="h-8 text-sm bg-muted" />
+          </div>
+
+          {/* ── Derived: Outstanding Amount ──────────────────────────────── */}
+          <div>
+            <Label className="text-xs text-muted-foreground">Outstanding Amount (auto)</Label>
+            <Input value={derived.outstandingAmount} readOnly className="h-8 text-sm bg-muted" />
+          </div>
+
+          {/* ── Derived: To Be Billed ─────────────────────────────────────── */}
+          <div className="col-span-2">
+            <Label className="text-xs text-amber-700 font-medium">To Be Billed (auto)</Label>
+            <Input
+              value={derived.toBeBilled ? `SAR ${Number(derived.toBeBilled).toLocaleString("en-US")}` : "SAR 0"}
+              readOnly
+              className="h-8 text-sm bg-amber-50 border-amber-200 font-semibold text-amber-900"
+            />
+            <p className="text-xs text-muted-foreground mt-0.5">
+              = MAX(0, Agreed Fees − Billed Amount)
+            </p>
+          </div>
+
+          {/* ── Overbilling warning ───────────────────────────────────────── */}
+          {derived.overbilled && (
+            <div className="col-span-2 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm">
+              <AlertTriangle className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
+              <span className="text-red-700">
+                <strong>Overbilling warning:</strong> Billed Amount (SAR {Number(form.billedAmount || 0).toLocaleString("en-US")}) exceeds Agreed Fees (SAR {Number(form.agreedFees || 0).toLocaleString("en-US")}). Please review.
+              </span>
+            </div>
+          )}
+
+          {/* ── Invoice Number ───────────────────────────────────────────── */}
+          <div>
+            <Label className="text-xs">Invoice Number</Label>
+            <Input
+              value={form.invoiceNumber}
+              onChange={e => setField("invoiceNumber", e.target.value)}
+              className="h-8 text-sm"
+            />
+          </div>
+
+          {/* ── Responsible Lawyer ───────────────────────────────────────── */}
+          <div>
+            <Label className="text-xs">Responsible Lawyer</Label>
+            <Input
+              value={form.responsibleLawyer}
+              onChange={e => setField("responsibleLawyer", e.target.value)}
+              className="h-8 text-sm"
+            />
+          </div>
+
+          {/* ── Billing Date ─────────────────────────────────────────────── */}
+          <div>
+            <Label className="text-xs">Billing Date</Label>
+            <Input
+              type="date"
+              value={form.billingDate}
+              onChange={e => setField("billingDate", e.target.value)}
+              className="h-8 text-sm"
+            />
+          </div>
+
+          {/* ── Payment Date ─────────────────────────────────────────────── */}
+          <div>
+            <Label className="text-xs">Payment Date</Label>
+            <Input
+              type="date"
+              value={form.paymentDate}
+              onChange={e => setField("paymentDate", e.target.value)}
+              className="h-8 text-sm"
+            />
+          </div>
+
+          {/* ── Invoice Status ────────────────────────────────────────────── */}
+          <div>
+            <Label className="text-xs">Invoice Status</Label>
+            <Select
+              value={form.collectionStatus}
+              onValueChange={v => setField("collectionStatus", v as any)}
+            >
+              <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {(["Not Billed", "Partially Billed", "Billed",
+                   "Partially Collected", "Fully Collected", "Overdue"] as const).map(v => (
+                  <SelectItem key={v} value={v}>{v}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* ── Finance Notes ─────────────────────────────────────────────── */}
+          <div className="col-span-2">
+            <Label className="text-xs">Finance Notes</Label>
+            <Textarea
+              value={form.financeNotes}
+              onChange={e => setField("financeNotes", e.target.value)}
+              rows={2}
+              className="text-sm"
+            />
+          </div>
+        </div>
+
+        {/* Inline validation error */}
+        {formError && (
+          <p className="text-sm text-destructive -mt-1 px-1">{formError}</p>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={isPending}>
+            Cancel
+          </Button>
+          <Button onClick={handleSave} disabled={isPending}>
+            {isPending
+              ? (isEditMode ? "Saving…" : "Adding…")
+              : (isEditMode ? "Save Changes" : "Add Record")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
