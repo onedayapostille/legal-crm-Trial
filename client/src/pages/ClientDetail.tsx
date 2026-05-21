@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useLocation } from "wouter";
 import {
   ArrowLeft, Save, Trash2, Plus, Edit2, Check, X, ChevronDown, ChevronUp,
@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import DashboardLayout from "@/components/DashboardLayout";
+import FinancialDialog from "@/components/FinancialDialog";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { hasPermission } from "@shared/const";
@@ -274,7 +275,7 @@ export default function ClientDetail({ id }: { id: number }) {
           {/* Financial */}
           {canViewFinancial && (
             <TabsContent value="financial" className="mt-4">
-              <FinancialSection clientId={id} records={financialRecords} />
+              <FinancialSection clientId={id} records={financialRecords} matters={matters} />
             </TabsContent>
           )}
         </Tabs>
@@ -582,7 +583,11 @@ function AuditTrailCard({ entityType, entityId }: { entityType: string; entityId
 function MattersTable({ matters, clientId, canManage }: { matters: any[]; clientId: number; canManage: boolean }) {
   const utils = trpc.useUtils();
   const deleteMatter = trpc.clientMatters.delete.useMutation({
-    onSuccess: () => { toast.success("Matter deleted"); utils.clientMatters.list.invalidate({ clientId }); },
+    onSuccess: () => {
+      toast.success("Matter deleted");
+      utils.clientMatters.list.invalidate({ clientId });
+      utils.financial.list.invalidate({ clientId });               // NC-8: refresh financial view after matter delete
+    },
   });
 
   if (matters.length === 0) {
@@ -870,23 +875,115 @@ function ActionDialog({ open, onClose, clientId, matters }: { open: boolean; onC
   );
 }
 
-function FinancialSection({ clientId, records }: { clientId: number; records: any[] }) {
+const INVOICE_STATUS_COLORS: Record<string, string> = {
+  "Not Billed":          "bg-gray-100 text-gray-700",
+  "Partially Billed":    "bg-yellow-100 text-yellow-800",
+  "Billed":              "bg-blue-100 text-blue-800",
+  "Partially Collected": "bg-orange-100 text-orange-800",
+  "Fully Collected":     "bg-green-100 text-green-800",
+  "Overdue":             "bg-red-100 text-red-800",
+};
+
+const fmtSAR = (v: string | number | null | undefined) =>
+  v ? `SAR ${Number(v).toLocaleString()}` : "—";
+
+function FinancialSection({
+  clientId,
+  records,
+  matters,
+}: {
+  clientId: number;
+  records: any[];
+  matters: any[];
+}) {
   const utils = trpc.useUtils();
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const canManage = hasPermission(useAuth().user?.role, "financial:manage");
+  const { user } = useAuth();                                        // BUG-4: hook at top level
+  const [createOpen, setCreateOpen] = useState(false);
+  const [editingRecord, setEditingRecord] = useState<any | null>(null);
+  const [matterFilter, setMatterFilter] = useState("all");
+  const canManage = hasPermission(user?.role, "financial:manage");
+
   const deleteRecord = trpc.financial.delete.useMutation({
-    onSuccess: () => { toast.success("Record deleted"); utils.financial.list.invalidate({ clientId }); },
+    onSuccess: () => {
+      toast.success("Record deleted");
+      utils.financial.list.invalidate({ clientId });
+      utils.financial.summary.invalidate();
+      utils.financial.toBeBilledBreakdown.invalidate();             // NC-8: refresh after matter delete
+    },
   });
+
+  // Build matter lookup: id → matter object
+  const matterMap = useMemo(                                        // NC-2: memoize
+    () => Object.fromEntries(matters.map(m => [m.id, m])),
+    [matters],
+  );
+
+  // Client-side filter by matter (memoized — NC-2)
+  const filteredRecords = useMemo(() => {
+    if (matterFilter === "all")  return records;
+    if (matterFilter === "none") return records.filter(r => !r.clientMatterId);
+    return records.filter(r => String(r.clientMatterId) === matterFilter);
+  }, [records, matterFilter]);
+
+  // Matter label helper for the table
+  function matterDisplay(r: any) {
+    if (!r.clientMatterId) {
+      return <span className="text-xs text-muted-foreground italic">Client-level</span>;
+    }
+    const m = matterMap[r.clientMatterId];
+    if (!m) return <span className="text-xs font-mono">#{r.clientMatterId}</span>;
+    return (
+      <span className="text-xs leading-tight">
+        <span className="font-medium">
+          {m.matterReference ?? m.originalSerial ?? `#${m.id}`}
+        </span>
+        {m.matterType && (
+          <span className="text-muted-foreground"> · {m.matterType}</span>
+        )}
+      </span>
+    );
+  }
 
   return (
     <div className="space-y-3">
-      {canManage && (
-        <div className="flex justify-end">
-          <Button size="sm" onClick={() => setDialogOpen(true)}>
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        {/* Matter filter */}
+        <div className="flex items-center gap-2">
+          <Select value={matterFilter} onValueChange={setMatterFilter}>
+            <SelectTrigger className="h-8 w-52 text-xs">
+              <SelectValue placeholder="Filter by matter" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All records</SelectItem>
+              <SelectItem value="none">Client-level only</SelectItem>
+              {matters.map(m => (
+                <SelectItem key={m.id} value={String(m.id)}>
+                  {m.matterReference ?? m.originalSerial ?? `Matter #${m.id}`}
+                  {m.matterType ? ` · ${m.matterType}` : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {matterFilter !== "all" && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 text-xs text-muted-foreground"
+              onClick={() => setMatterFilter("all")}
+            >
+              Clear filter
+            </Button>
+          )}
+        </div>
+
+        {canManage && (
+          <Button size="sm" onClick={() => setCreateOpen(true)}>
             <Plus className="h-4 w-4 mr-1" />Add Financial Record
           </Button>
-        </div>
-      )}
+        )}
+      </div>
+
       {records.length === 0 ? (
         <Card>
           <CardContent className="p-8 text-center text-muted-foreground">
@@ -894,246 +991,110 @@ function FinancialSection({ clientId, records }: { clientId: number; records: an
             <p>No financial records yet.</p>
           </CardContent>
         </Card>
+      ) : filteredRecords.length === 0 ? (
+        <Card>
+          <CardContent className="p-8 text-center text-muted-foreground">
+            <p className="text-sm">No records match the selected filter.</p>
+            <Button variant="link" size="sm" onClick={() => setMatterFilter("all")}>
+              Clear filter
+            </Button>
+          </CardContent>
+        </Card>
       ) : (
         <Card>
           <CardContent className="p-0">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Fee Type</TableHead>
-                  <TableHead>Agreed Fees</TableHead>
-                  <TableHead>Net Fees</TableHead>
-                  <TableHead>Revenue</TableHead>
-                  <TableHead>Outstanding</TableHead>
-                  <TableHead>Collection Status</TableHead>
-                  {canManage && <TableHead />}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {records.map(r => (
-                  <TableRow key={r.id}>
-                    <TableCell>{r.feeType ?? "—"}</TableCell>
-                    <TableCell>{r.agreedFees ? `SAR ${Number(r.agreedFees).toLocaleString()}` : "—"}</TableCell>
-                    <TableCell>{r.netFees ? `SAR ${Number(r.netFees).toLocaleString()}` : "—"}</TableCell>
-                    <TableCell>{r.revenue ? `SAR ${Number(r.revenue).toLocaleString()}` : "—"}</TableCell>
-                    <TableCell>{r.outstandingAmount ? `SAR ${Number(r.outstandingAmount).toLocaleString()}` : "—"}</TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className={
-                        r.collectionStatus === "Fully Collected" ? "bg-green-100 text-green-800" :
-                        r.collectionStatus === "Overdue" ? "bg-red-100 text-red-800" :
-                        r.collectionStatus === "Not Billed" ? "bg-gray-100 text-gray-700" :
-                        "bg-yellow-100 text-yellow-800"
-                      }>
-                        {r.collectionStatus}
-                      </Badge>
-                    </TableCell>
-                    {canManage && (
-                      <TableCell>
-                        <Button variant="ghost" size="sm" className="text-destructive" onClick={() => deleteRecord.mutate({ id: r.id })}>
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </TableCell>
-                    )}
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Matter</TableHead>
+                    <TableHead>Fee Type</TableHead>
+                    <TableHead>Agreed Fees</TableHead>
+                    <TableHead>To Be Billed</TableHead>
+                    <TableHead>Net Fees</TableHead>
+                    <TableHead>Revenue</TableHead>
+                    <TableHead>Outstanding</TableHead>
+                    <TableHead>Invoice Status</TableHead>
+                    {canManage && <TableHead className="w-20" />}
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {filteredRecords.map(r => (
+                    <TableRow key={r.id}>
+                      <TableCell className="min-w-[120px]">{matterDisplay(r)}</TableCell>
+                      <TableCell className="text-sm">{r.feeType ?? "—"}</TableCell>
+                      <TableCell className="text-sm">{fmtSAR(r.agreedFees)}</TableCell>
+                      <TableCell className="text-sm">
+                        {(() => {
+                          const agreed  = Number(r.agreedFees)  || 0;
+                          const billed  = Number(r.billedAmount) || 0;
+                          const tbb     = Math.max(0, agreed - billed);
+                          const over    = agreed > 0 && billed > agreed;
+                          if (over) return <span className="text-red-600 font-medium text-xs">Overbilled</span>;
+                          if (tbb === 0) return <span className="text-green-700 text-xs font-medium">Fully billed</span>;
+                          return <span className="text-amber-700 font-medium">{fmtSAR(tbb)}</span>;
+                        })()}
+                      </TableCell>
+                      <TableCell className="text-sm">{fmtSAR(r.netFees)}</TableCell>
+                      <TableCell className="text-sm">{fmtSAR(r.revenue)}</TableCell>
+                      <TableCell className="text-sm">{fmtSAR(r.outstandingAmount)}</TableCell>
+                      <TableCell>
+                        <Badge
+                          variant="outline"
+                          className={INVOICE_STATUS_COLORS[r.collectionStatus ?? ""] ?? ""}
+                        >
+                          {r.collectionStatus ?? "—"}
+                        </Badge>
+                      </TableCell>
+                      {canManage && (
+                        <TableCell>
+                          <div className="flex items-center gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setEditingRecord(r)}
+                              title="Edit record"
+                            >
+                              <Edit2 className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-destructive"
+                              onClick={() => deleteRecord.mutate({ id: r.id })}
+                              title="Delete record"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      )}
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
           </CardContent>
         </Card>
       )}
-      <FinancialDialog open={dialogOpen} onClose={() => setDialogOpen(false)} clientId={clientId} />
+
+      {/* Create dialog — passes client's matters for matter selector */}
+      <FinancialDialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        clientId={clientId}
+        matters={matters}
+      />
+
+      {/* Edit dialog — passes client's matters so user can change/link matter */}
+      <FinancialDialog
+        open={editingRecord !== null}
+        onClose={() => setEditingRecord(null)}
+        clientId={clientId}
+        record={editingRecord}
+        matters={matters}
+      />
     </div>
   );
 }
 
-const DISCOUNT_RATES: Record<string, number> = {
-  "N/A": 0,
-  "P&L Head Lawyers": 5,
-  "CEO": 10,
-  "Board": 15,
-};
-
-function calcFinancials(f: {
-  agreedFees: string; discountApproval: string;
-  billedAmount: string; revenue: string; collectedAmount: string;
-}) {
-  const agreed    = Number(f.agreedFees)     || 0;
-  const pct       = DISCOUNT_RATES[f.discountApproval] ?? 0;
-  const discAmt   = Math.round(agreed * pct) / 100;
-  const netFees   = Math.max(0, Math.round((agreed - discAmt) * 100) / 100);
-  const billed    = Number(f.billedAmount)   || 0;
-  const revenue   = Number(f.revenue)        || 0;
-  const collected = Number(f.collectedAmount)|| 0;
-  return {
-    discountPercentage: String(pct),
-    discountAmount:     String(discAmt),
-    netFees:            String(netFees),
-    remainingAdvanced:  String(Math.round((billed - revenue) * 100) / 100),
-    outstandingAmount:  String(Math.max(0, Math.round((billed - collected) * 100) / 100)),
-  };
-}
-
-function FinancialDialog({ open, onClose, clientId }: { open: boolean; onClose: () => void; clientId: number }) {
-  const utils = trpc.useUtils();
-
-  const initInputs = {
-    feeType: "" as any,
-    agreedFees: "",
-    discountApproval: "N/A" as any,
-    billedAmount: "", revenue: "", collectedAmount: "",
-    collectionStatus: "Not Billed" as any,
-    billingDate: "", paymentDate: "",
-    invoiceNumber: "", responsibleLawyer: "", financeNotes: "",
-  };
-  const [form, setForm] = useState(initInputs);
-  const derived = calcFinancials(form);
-
-  function setInput(key: string, value: string) {
-    setForm(f => ({ ...f, [key]: value }));
-  }
-
-  const create = trpc.financial.create.useMutation({
-    onSuccess: () => {
-      toast.success("Financial record added");
-      utils.financial.list.invalidate({ clientId });
-      setForm(initInputs);
-      onClose();
-    },
-    onError: (e) => toast.error(e.message),
-  });
-
-  return (
-    <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
-        <DialogHeader><DialogTitle>Add Financial Record</DialogTitle></DialogHeader>
-        <div className="grid grid-cols-2 gap-3 py-2">
-
-          {/* Fee Type */}
-          <div className="col-span-2">
-            <Label className="text-xs">Fee Type</Label>
-            <Select value={form.feeType || "none"} onValueChange={v => setInput("feeType", v === "none" ? "" : v)}>
-              <SelectTrigger><SelectValue placeholder="Select fee type" /></SelectTrigger>
-              <SelectContent>
-                {["Billable Hours", "Fixed / Project-Based Fees", "Retainers", "Success Fees", "Advisory / Special Mandates", "Blended"].map(t => (
-                  <SelectItem key={t} value={t}>{t}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Agreed Fees */}
-          <div>
-            <Label className="text-xs">Agreed Fees (SAR)</Label>
-            <Input value={form.agreedFees} onChange={e => setInput("agreedFees", e.target.value)} className="h-8 text-sm" placeholder="0" />
-          </div>
-
-          {/* Discount Approval — the ONLY discount input */}
-          <div>
-            <Label className="text-xs">Discount Approval</Label>
-            <Select value={form.discountApproval} onValueChange={v => setInput("discountApproval", v)}>
-              <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {["N/A", "P&L Head Lawyers", "CEO", "Board"].map(v => (
-                  <SelectItem key={v} value={v}>{v}{v !== "N/A" ? ` (${DISCOUNT_RATES[v]}%)` : ""}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Derived discount fields — display only */}
-          <div>
-            <Label className="text-xs text-muted-foreground">Discount % (auto)</Label>
-            <Input value={`${derived.discountPercentage}%`} readOnly className="h-8 text-sm bg-muted" />
-          </div>
-          <div>
-            <Label className="text-xs text-muted-foreground">Discount Amount (auto)</Label>
-            <Input value={derived.discountAmount} readOnly className="h-8 text-sm bg-muted" />
-          </div>
-          <div className="col-span-2">
-            <Label className="text-xs text-muted-foreground">Net Fees (auto)</Label>
-            <Input value={derived.netFees} readOnly className="h-8 text-sm bg-muted font-medium" />
-          </div>
-
-          {/* Billing inputs */}
-          {([
-            ["billedAmount",    "Billed Amount"],
-            ["revenue",         "Revenue"],
-            ["collectedAmount", "Collected Amount"],
-          ] as const).map(([key, label]) => (
-            <div key={key}>
-              <Label className="text-xs">{label}</Label>
-              <Input value={(form as any)[key]} onChange={e => setInput(key, e.target.value)} className="h-8 text-sm" placeholder="0" />
-            </div>
-          ))}
-
-          {/* Derived billing fields — display only */}
-          <div>
-            <Label className="text-xs text-muted-foreground">Remaining Advanced (auto)</Label>
-            <Input value={derived.remainingAdvanced} readOnly className="h-8 text-sm bg-muted" />
-          </div>
-          <div>
-            <Label className="text-xs text-muted-foreground">Outstanding Amount (auto)</Label>
-            <Input value={derived.outstandingAmount} readOnly className="h-8 text-sm bg-muted" />
-          </div>
-
-          {/* Other inputs */}
-          <div>
-            <Label className="text-xs">Invoice Number</Label>
-            <Input value={form.invoiceNumber} onChange={e => setInput("invoiceNumber", e.target.value)} className="h-8 text-sm" />
-          </div>
-          <div>
-            <Label className="text-xs">Responsible Lawyer</Label>
-            <Input value={form.responsibleLawyer} onChange={e => setInput("responsibleLawyer", e.target.value)} className="h-8 text-sm" />
-          </div>
-          <div>
-            <Label className="text-xs">Billing Date</Label>
-            <Input type="date" value={form.billingDate} onChange={e => setInput("billingDate", e.target.value)} className="h-8 text-sm" />
-          </div>
-          <div>
-            <Label className="text-xs">Payment Date</Label>
-            <Input type="date" value={form.paymentDate} onChange={e => setInput("paymentDate", e.target.value)} className="h-8 text-sm" />
-          </div>
-          <div>
-            <Label className="text-xs">Collection Status</Label>
-            <Select value={form.collectionStatus} onValueChange={v => setInput("collectionStatus", v)}>
-              <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {["Not Billed", "Partially Billed", "Billed", "Partially Collected", "Fully Collected", "Overdue"].map(v => (
-                  <SelectItem key={v} value={v}>{v}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="col-span-2">
-            <Label className="text-xs">Finance Notes</Label>
-            <Textarea value={form.financeNotes} onChange={e => setInput("financeNotes", e.target.value)} rows={2} className="text-sm" />
-          </div>
-        </div>
-
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button
-            onClick={() => create.mutate({
-              clientId,
-              ...(form.feeType          ? { feeType: form.feeType }                  : {}),
-              ...(form.agreedFees       ? { agreedFees: form.agreedFees }             : {}),
-              discountApproval: form.discountApproval,
-              ...(form.billedAmount     ? { billedAmount: form.billedAmount }         : {}),
-              ...(form.revenue          ? { revenue: form.revenue }                   : {}),
-              ...(form.collectedAmount  ? { collectedAmount: form.collectedAmount }   : {}),
-              collectionStatus: form.collectionStatus,
-              ...(form.billingDate      ? { billingDate: form.billingDate }           : {}),
-              ...(form.paymentDate      ? { paymentDate: form.paymentDate }           : {}),
-              ...(form.invoiceNumber    ? { invoiceNumber: form.invoiceNumber }       : {}),
-              ...(form.responsibleLawyer? { responsibleLawyer: form.responsibleLawyer}: {}),
-              ...(form.financeNotes     ? { financeNotes: form.financeNotes }         : {}),
-            })}
-            disabled={create.isPending}
-          >
-            {create.isPending ? "Saving…" : "Add Record"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}

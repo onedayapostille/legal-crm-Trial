@@ -1,13 +1,17 @@
+import { useState } from "react";
 import { Link } from "wouter";
 import {
   Users, Briefcase, CheckSquare, TrendingUp, DollarSign,
   ArrowRight, Plus, Clock, AlertCircle, Building2, UserCheck,
-  UserX, Calendar, AlertTriangle,
+  UserX, Calendar, AlertTriangle, Receipt,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from "@/components/ui/table";
 import DashboardLayout from "@/components/DashboardLayout";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { hasPermission } from "@shared/const";
@@ -54,6 +58,10 @@ export default function Dashboard() {
   const canViewFinancial = hasPermission(user?.role, "financial:view");
   const { data: clientStats } = trpc.clients.dashboardStats.useQuery(undefined, { enabled: canViewClients });
   const { data: financialSummary } = trpc.financial.summary.useQuery(undefined, { enabled: canViewFinancial });
+  const { data: tbbBreakdown } = trpc.financial.toBeBilledBreakdown.useQuery(undefined, { enabled: canViewFinancial });
+
+  // "To Be Billed" breakdown view toggle
+  const [tbbView, setTbbView] = useState<"client" | "matter">("client");
 
   const pendingTasks = tasks?.filter(t => t.status !== "done") ?? [];
   const overdueTasks = pendingTasks.filter(t => t.dueDate && new Date(t.dueDate) < new Date());
@@ -179,11 +187,11 @@ export default function Dashboard() {
             </div>
 
             {canViewFinancial && financialSummary && (
-              <div>
-                <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+              <div className="space-y-4">
+                <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
                   Financial Overview
                 </h2>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                   <StatCard
                     title="Total Revenue"
                     value={formatSAR(financialSummary.totalRevenue)}
@@ -205,7 +213,109 @@ export default function Dashboard() {
                     color="bg-red-600"
                     href="/financial"
                   />
+                  <StatCard
+                    title="To Be Billed"
+                    value={formatSAR(financialSummary.totalToBeBilled)}
+                    subtitle="Pending invoicing"
+                    icon={Receipt}
+                    color="bg-amber-500"
+                    href="/financial"
+                  />
                 </div>
+
+                {/* To Be Billed breakdown widget */}
+                {tbbBreakdown && (tbbBreakdown.byClient.length > 0 || tbbBreakdown.byMatter.length > 0) && (
+                  <Card>
+                    <CardHeader className="pb-2 pt-4 px-4">
+                      <div className="flex items-center justify-between">
+                        <CardTitle className="text-sm flex items-center gap-2">
+                          <Receipt className="h-4 w-4 text-amber-500" />
+                          To Be Billed — Breakdown
+                        </CardTitle>
+                        <div className="flex gap-1">
+                          <Button
+                            variant={tbbView === "client" ? "secondary" : "ghost"}
+                            size="sm"
+                            className="h-7 text-xs"
+                            onClick={() => setTbbView("client")}
+                          >
+                            By Client
+                          </Button>
+                          <Button
+                            variant={tbbView === "matter" ? "secondary" : "ghost"}
+                            size="sm"
+                            className="h-7 text-xs"
+                            onClick={() => setTbbView("matter")}
+                          >
+                            By Matter
+                          </Button>
+                        </div>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="p-0">
+                      {tbbView === "client" ? (
+                        tbbBreakdown.byClient.length === 0 ? (
+                          <p className="text-xs text-muted-foreground px-4 pb-4">No pending billing by client.</p>
+                        ) : (
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead className="pl-4">Client</TableHead>
+                                <TableHead className="text-right pr-4">To Be Billed</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {tbbBreakdown.byClient.map(r => (
+                                <TableRow key={r.clientId}>
+                                  <TableCell className="pl-4">
+                                    <Link href={`/clients/${r.clientId}`} className="text-sm text-blue-600 hover:underline">
+                                      {r.clientName}
+                                    </Link>
+                                  </TableCell>
+                                  <TableCell className="text-right pr-4 text-sm font-medium text-amber-700">
+                                    {formatSAR(r.toBeBilled)}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        )
+                      ) : (
+                        tbbBreakdown.byMatter.length === 0 ? (
+                          <p className="text-xs text-muted-foreground px-4 pb-4">No matter-level pending billing found.</p>
+                        ) : (
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead className="pl-4">Client</TableHead>
+                                <TableHead>Matter</TableHead>
+                                <TableHead className="text-right pr-4">To Be Billed</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {tbbBreakdown.byMatter.map(r => (
+                                <TableRow key={`m-${r.clientMatterId ?? r.clientId}`}>
+                                  <TableCell className="pl-4">
+                                    <Link href={`/clients/${r.clientId}`} className="text-xs text-blue-600 hover:underline">
+                                      {r.clientName}
+                                    </Link>
+                                  </TableCell>
+                                  <TableCell className="text-xs text-muted-foreground">
+                                    {r.matterReference ?? `Matter #${r.clientMatterId}`}
+                                    {r.matterType ? ` · ${r.matterType}` : ""}
+                                  </TableCell>
+                                  <TableCell className="text-right pr-4 text-sm font-medium text-amber-700">
+                                    {formatSAR(r.toBeBilled)}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        )
+                      )}
+                    </CardContent>
+                  </Card>
+                )}
               </div>
             )}
 

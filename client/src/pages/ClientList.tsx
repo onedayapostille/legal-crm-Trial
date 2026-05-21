@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
 import {
-  Users, Plus, Search, Filter, Building2, FileText, RefreshCw,
+  Users, Plus, Search, Filter, Building2, FileText, RefreshCw, ShieldCheck,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import DashboardLayout from "@/components/DashboardLayout";
+import ConflictCheckDialog from "@/components/ConflictCheckDialog";
 
 const STATUS_COLORS: Record<string, string> = {
   "Existing Client": "bg-green-100 text-green-800 border-green-200",
@@ -28,6 +29,7 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
   const [city, setCity] = useState("all");
   const [matterType, setMatterType] = useState("all");
   const [status, setStatus] = useState(statusFilter ?? "all");
+  const [conflictCheckOpen, setConflictCheckOpen] = useState(false);
 
   const { data: clients = [], isLoading, refetch } = trpc.clients.list.useQuery({
     clientStatus: status !== "all" ? status : undefined,
@@ -63,6 +65,10 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
             <Button variant="outline" size="sm" onClick={() => refetch()}>
               <RefreshCw className="h-4 w-4 mr-1" />
               Refresh
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setConflictCheckOpen(true)}>
+              <ShieldCheck className="h-4 w-4 mr-1" />
+              Conflict Check
             </Button>
             <Button size="sm" onClick={() => navigate("/clients/new")}>
               <Plus className="h-4 w-4 mr-1" />
@@ -228,6 +234,11 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
           </CardContent>
         </Card>
       </div>
+
+      <ConflictCheckDialog
+        open={conflictCheckOpen}
+        onClose={() => setConflictCheckOpen(false)}
+      />
     </DashboardLayout>
   );
 }
