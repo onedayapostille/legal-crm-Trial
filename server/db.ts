@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gte, lte, ne, or, sql, ilike } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, lte, ne, or, sql, ilike } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import fs from "fs";
@@ -792,6 +792,60 @@ export async function getClientById(id: number) {
   return result[0] ?? null;
 }
 
+export async function checkConflict(rawQuery: string) {
+  const db = getDb();
+  // Normalize: trim and collapse internal whitespace
+  const normalized = rawQuery.trim().replace(/\s+/g, " ");
+  if (!normalized) return [];
+
+  const term = `%${normalized}%`;
+
+  const matchedClients = await db
+    .select()
+    .from(clients)
+    .where(
+      or(
+        ilike(clients.clientName, term),
+        ilike(clients.clientNumber, term),
+        ilike(clients.fileNumber, term),
+      )
+    )
+    .orderBy(desc(clients.createdAt));
+
+  if (matchedClients.length === 0) return [];
+
+  const ids = matchedClients.map((c) => c.id);
+
+  const relatedMatters = await db
+    .select({
+      id: clientMatters.id,
+      clientId: clientMatters.clientId,
+      matterReference: clientMatters.matterReference,
+      matterType: clientMatters.matterType,
+      matterStatus: clientMatters.matterStatus,
+      leadPartnerFullName: clientMatters.leadPartnerFullName,
+      attorney1: clientMatters.attorney1,
+      attorney2: clientMatters.attorney2,
+      attorney3: clientMatters.attorney3,
+      priority: clientMatters.priority,
+      achievementStatus: clientMatters.achievementStatus,
+    })
+    .from(clientMatters)
+    .where(inArray(clientMatters.clientId, ids));
+
+  const mattersByClientId = new Map<number, typeof relatedMatters>();
+  for (const m of relatedMatters) {
+    const list = mattersByClientId.get(m.clientId) ?? [];
+    list.push(m);
+    mattersByClientId.set(m.clientId, list);
+  }
+
+  return matchedClients.map((c) => ({
+    ...c,
+    matters: mattersByClientId.get(c.id) ?? [],
+  }));
+}
+
 export async function createClient(data: InsertClient, userId: number) {
   const db = getDb();
   const [client] = await db
@@ -1019,10 +1073,17 @@ export async function upsertRejectedClient(clientId: number, data: Partial<Inser
 
 // ─── Financial Records ────────────────────────────────────────────────────────
 
-export async function getFinancialRecords(filters?: { clientId?: number; collectionStatus?: string }) {
+export async function getFinancialRecords(filters?: {
+  clientId?: number;
+  clientMatterId?: number;
+  collectionStatus?: string;
+}) {
   const db = getDb();
   const conditions = [];
   if (filters?.clientId) conditions.push(eq(financialRecords.clientId, filters.clientId));
+  if (filters?.clientMatterId) {
+    conditions.push(eq(financialRecords.clientMatterId, filters.clientMatterId));
+  }
   if (filters?.collectionStatus) {
     conditions.push(eq(financialRecords.collectionStatus, filters.collectionStatus as any));
   }
@@ -1059,11 +1120,32 @@ export async function updateFinancialRecord(id: number, data: Partial<InsertFina
   // that updating only one side of the (pct, amount) pair still reconciles
   // against the persisted agreedFees.
   const existing = await getFinancialRecordById(id);
-  const merged = { ...(existing ?? {}), ...data };
-  const computed = applyDiscountRules(merged as Record<string, unknown>) as Partial<InsertFinancialRecord>;
+  if (!existing) throw new Error(`Financial record ${id} not found`);
+
+  // Only pass the 5 user-editable inputs to applyDiscountRules — never spread
+  // the full DB row (which contains id, createdAt, etc.) into SET.
+  const rulesInput = {
+    discountApproval: data.discountApproval ?? existing.discountApproval ?? "N/A",
+    agreedFees:       data.agreedFees       ?? existing.agreedFees,
+    billedAmount:     data.billedAmount     ?? existing.billedAmount,
+    revenue:          data.revenue          ?? existing.revenue,
+    collectedAmount:  data.collectedAmount  ?? existing.collectedAmount,
+  };
+  const computed = applyDiscountRules(rulesInput as Record<string, unknown>);
+
   const [record] = await db
     .update(financialRecords)
-    .set({ ...computed, updatedAt: new Date() })
+    .set({
+      // user-supplied partial update fields
+      ...data,
+      // server-computed overrides (always win over any client value)
+      discountPercentage: computed.discountPercentage as string,
+      discountAmount:     computed.discountAmount     as string,
+      netFees:            computed.netFees            as string,
+      remainingAdvanced:  computed.remainingAdvanced  as string,
+      outstandingAmount:  computed.outstandingAmount  as string,
+      updatedAt:          new Date(),
+    })
     .where(eq(financialRecords.id, id))
     .returning();
   await createAuditLog({
@@ -1085,16 +1167,84 @@ export async function getFinancialSummary() {
   const db = getDb();
   const [row] = await db
     .select({
-      totalRevenue: sql<string>`COALESCE(SUM(${financialRecords.revenue}), 0)`,
+      totalRevenue:     sql<string>`COALESCE(SUM(${financialRecords.revenue}), 0)`,
       totalOutstanding: sql<string>`COALESCE(SUM(${financialRecords.outstandingAmount}), 0)`,
-      overdueCount: sql<number>`COUNT(*) FILTER (WHERE ${financialRecords.collectionStatus} = 'Overdue')`,
+      overdueCount:     sql<string>`COUNT(*) FILTER (WHERE ${financialRecords.collectionStatus} = 'Overdue')`,
+      totalToBeBilled:  sql<string>`COALESCE(SUM(GREATEST(0, COALESCE(${financialRecords.agreedFees}, 0)::numeric - COALESCE(${financialRecords.billedAmount}, 0)::numeric)), 0)`,
     })
     .from(financialRecords);
   return {
-    totalRevenue: Number(row?.totalRevenue ?? 0),
-    totalOutstanding: Number(row?.totalOutstanding ?? 0),
-    overdueCount: Number(row?.overdueCount ?? 0),
+    totalRevenue:    Number(row?.totalRevenue    ?? 0),
+    totalOutstanding:Number(row?.totalOutstanding?? 0),
+    overdueCount:    Number(row?.overdueCount    ?? 0),
+    totalToBeBilled: Number(row?.totalToBeBilled ?? 0),
   };
+}
+
+// ─── To Be Billed Breakdown ───────────────────────────────────────────────────
+
+export async function getToBeBilledBreakdown() {
+  const db = getDb();
+
+  // Reusable SQL expression: MAX(0, agreedFees - billedAmount) per row, then SUM
+  const tbbSum = sql<string>`COALESCE(SUM(GREATEST(0, COALESCE(${financialRecords.agreedFees}, 0)::numeric - COALESCE(${financialRecords.billedAmount}, 0)::numeric)), 0)`;
+
+  // ── By Client ──────────────────────────────────────────────────────────────
+  const byClientRaw = await db
+    .select({
+      clientId:   financialRecords.clientId,
+      clientName: clients.clientName,
+      toBeBilled: tbbSum,
+    })
+    .from(financialRecords)
+    .innerJoin(clients, eq(financialRecords.clientId, clients.id))
+    .groupBy(financialRecords.clientId, clients.clientName);
+
+  // ── By Matter (only records linked to a matter) ────────────────────────────
+  const byMatterRaw = await db
+    .select({
+      clientId:       financialRecords.clientId,
+      clientName:     clients.clientName,
+      clientMatterId: financialRecords.clientMatterId,
+      matterReference:clientMatters.matterReference,
+      originalSerial: clientMatters.originalSerial,
+      matterType:     clientMatters.matterType,
+      toBeBilled:     tbbSum,
+    })
+    .from(financialRecords)
+    .innerJoin(clients, eq(financialRecords.clientId, clients.id))
+    .innerJoin(clientMatters, eq(financialRecords.clientMatterId, clientMatters.id))
+    .groupBy(
+      financialRecords.clientId,
+      clients.clientName,
+      financialRecords.clientMatterId,
+      clientMatters.matterReference,
+      clientMatters.originalSerial,
+      clientMatters.matterType,
+    );
+
+  const byClient = byClientRaw
+    .map(r => ({
+      clientId:   r.clientId,
+      clientName: r.clientName,
+      toBeBilled: Number(r.toBeBilled),
+    }))
+    .filter(r => r.toBeBilled > 0)
+    .sort((a, b) => b.toBeBilled - a.toBeBilled);
+
+  const byMatter = byMatterRaw
+    .map(r => ({
+      clientId:       r.clientId,
+      clientName:     r.clientName,
+      clientMatterId: r.clientMatterId,
+      matterReference:r.matterReference ?? r.originalSerial ?? null,
+      matterType:     r.matterType,
+      toBeBilled:     Number(r.toBeBilled),
+    }))
+    .filter(r => r.toBeBilled > 0)
+    .sort((a, b) => b.toBeBilled - a.toBeBilled);
+
+  return { byClient, byMatter };
 }
 
 // ─── Client Action Logs ───────────────────────────────────────────────────────
