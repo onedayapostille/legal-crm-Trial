@@ -555,3 +555,17 @@ export const clientActionLogs = pgTable("client_action_logs", {
 
 export type ClientActionLog = typeof clientActionLogs.$inferSelect;
 export type InsertClientActionLog = typeof clientActionLogs.$inferInsert;
+
+// ─── System Settings ──────────────────────────────────────────────────────────
+// Key-value store for configurable application parameters (e.g. overdue_invoice_days).
+
+export const systemSettings = pgTable("system_settings", {
+  key:         varchar("key",   { length: 100 }).primaryKey(),
+  value:       text("value").notNull(),
+  description: text("description"),
+  updatedBy:   integer("updated_by").references(() => users.id),
+  updatedAt:   timestamp("updated_at").defaultNow().notNull(),
+});
+
+export type SystemSetting       = typeof systemSettings.$inferSelect;
+export type InsertSystemSetting = typeof systemSettings.$inferInsert;

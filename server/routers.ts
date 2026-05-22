@@ -999,6 +999,25 @@ export const appRouter = router({
       .query(async ({ input }) => db.getFinancialAuditLogs(input.id)),
   }),
 
+  // ─── System Settings ───────────────────────────────────────────────────────
+  // getOverdueDays: readable by any financial:view user (needed for UI copy).
+  // update: admin-only to prevent non-admins from changing business thresholds.
+
+  settings: router({
+    getOverdueDays: permissionProcedure("financial:view")
+      .query(async () => db.getOverdueDays()),
+
+    update: adminProcedure
+      .input(z.object({
+        key:   z.string().min(1).max(100),
+        value: z.string().min(1).max(500),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        await db.upsertSystemSetting(input.key, input.value, ctx.user!.id);
+        return { success: true };
+      }),
+  }),
+
   // ─── Client Action Logs ────────────────────────────────────────────────────
 
   clientActions: router({
