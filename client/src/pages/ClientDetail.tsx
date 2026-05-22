@@ -591,6 +591,7 @@ function MattersTable({ matters, clientId, canManage }: { matters: any[]; client
     onSuccess: () => {
       toast.success("Matter deleted");
       utils.clientMatters.list.invalidate({ clientId });
+      utils.clientMatters.listAll.invalidate();
       utils.financial.list.invalidate({ clientId });               // NC-8: refresh financial view after matter delete
     },
   });
@@ -839,6 +840,7 @@ function MatterDialog({ open, onClose, clientId }: { open: boolean; onClose: () 
     onSuccess: () => {
       toast.success("Matter added");
       utils.clientMatters.list.invalidate({ clientId });
+      utils.clientMatters.listAll.invalidate();
       setForm(MATTER_FORM_DEFAULT);
       onClose();
     },
