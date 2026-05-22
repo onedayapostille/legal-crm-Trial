@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { AlertTriangle, FileText } from "lucide-react";
+import { AlertTriangle, FileText, Loader2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,6 +22,11 @@ export interface MatterOption {
   matterType: string | null;
   matterStatus: string | null;
   leadPartnerFullName: string | null;
+}
+
+export interface ClientOption {
+  id: number;
+  clientName: string;
 }
 
 // ─── Discount calculation (mirrors server/db.ts applyDiscountRules) ────────────
@@ -63,7 +68,7 @@ function calcFinancials(f: {
 // ─── Form state ───────────────────────────────────────────────────────────────
 
 const BLANK_FORM = {
-  clientMatterId:    "",   // "" = no matter; "123" = matter id 123
+  clientMatterId:    "",
   feeType:           "" as "" | "Billable Hours" | "Fixed / Project-Based Fees" | "Retainers" | "Success Fees" | "Advisory / Special Mandates" | "Blended",
   agreedFees:        "",
   discountApproval:  "N/A" as "N/A" | "P&L Head Lawyers" | "CEO" | "Board",
@@ -98,29 +103,39 @@ function recordToForm(r: any): FormState {
   };
 }
 
-/** Build a short display label for a matter option */
-function matterLabel(m: MatterOption): string {
-  const ref = m.matterReference ?? m.originalSerial ?? `Matter #${m.id}`;
-  const parts = [m.matterType, m.matterStatus].filter(Boolean).join(" · ");
-  return parts ? `${ref} — ${parts}` : ref;
-}
-
 // ─── Component ────────────────────────────────────────────────────────────────
 
 interface FinancialDialogProps {
   open: boolean;
   onClose: () => void;
-  /** Required when creating a new record */
+
+  /**
+   * Required when creating from a known client context (ClientDetail page).
+   * Omit when using `allClients` for quick-add from the global page.
+   */
   clientId?: number;
+
   /** When provided the dialog is in edit mode */
   record?: any;
+
   /**
    * Matters belonging to the relevant client.
    * • undefined  → don't show the matter selector (global context without client matters loaded)
    * • []         → client has no matters yet; show helpful empty-state message
    * • MatterOption[] → show the selector
+   *
+   * Not needed in quick-add mode — matters are loaded dynamically from the
+   * selected client via tRPC.
    */
   matters?: MatterOption[];
+
+  /**
+   * Full client list for the Quick Add client picker.
+   * When provided (and no `clientId`), a client selector appears at the top of
+   * the form. The matters dropdown then auto-populates based on the chosen client.
+   * Pass `[]` to render the picker in a disabled/empty state.
+   */
+  allClients?: ClientOption[];
 }
 
 export default function FinancialDialog({
@@ -129,18 +144,46 @@ export default function FinancialDialog({
   clientId,
   record,
   matters,
+  allClients,
 }: FinancialDialogProps) {
-  const isEditMode = !!record;
-  const utils = trpc.useUtils();
+  const isEditMode     = !!record;
+  const isQuickAddMode = !clientId && allClients !== undefined;
+  const utils          = trpc.useUtils();
 
-  const [form, setForm] = useState<FormState>(BLANK_FORM);
-  const [formError, setFormError] = useState("");
+  const [form, setForm]                   = useState<FormState>(BLANK_FORM);
+  const [formError, setFormError]         = useState("");
+  // Internal client selection — only used in quick-add mode
+  const [internalClientId, setInternalClientId] = useState<number | null>(null);
 
-  // Populate / reset the form each time the dialog opens or the record changes
+  // ── Quick-add: load matters dynamically when a client is chosen ─────────────
+  const {
+    data:      autoLoadedMatters,
+    isLoading: isLoadingMatters,
+  } = trpc.clientMatters.list.useQuery(
+    { clientId: internalClientId! },
+    { enabled: isQuickAddMode && internalClientId !== null },
+  );
+
+  // ── Derived effective values ─────────────────────────────────────────────────
+  // The client ID to use when saving
+  const effectiveClientId: number | undefined = clientId ?? (internalClientId ?? undefined);
+
+  // The matters list to show in the matter selector
+  const effectiveMatters: MatterOption[] | undefined = isQuickAddMode
+    ? (internalClientId !== null && !isLoadingMatters
+        ? ((autoLoadedMatters as MatterOption[] | undefined) ?? [])
+        : undefined)
+    : matters;
+
+  // Whether to show the loading spinner in place of the matter selector
+  const isMatterLoading = isQuickAddMode && internalClientId !== null && isLoadingMatters;
+
+  // ── Reset form & internal state on open/close ───────────────────────────────
   useEffect(() => {
     if (open) {
       setFormError("");
       setForm(record ? recordToForm(record) : BLANK_FORM);
+      if (isQuickAddMode) setInternalClientId(null);
     }
   }, [open, record?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -155,8 +198,6 @@ export default function FinancialDialog({
     utils.financial.list.invalidate();
     utils.financial.summary.invalidate();
     utils.financial.toBeBilledBreakdown.invalidate();
-    // Invalidate all cached audit-log queries so the history dialog
-    // shows fresh entries if it was already open when the edit was saved.
     utils.financial.auditLog.invalidate();
   }
 
@@ -184,16 +225,23 @@ export default function FinancialDialog({
   function handleSave() {
     setFormError("");
 
+    // Quick-add mode: must select a client first
+    if (isQuickAddMode && !internalClientId) {
+      setFormError("Please select a client.");
+      return;
+    }
+
     if (!form.feeType) {
       setFormError("Fee Type is required.");
       return;
     }
-    if (!isEditMode && !clientId) {
+
+    if (!isEditMode && !effectiveClientId) {
       setFormError("No client selected.");
       return;
     }
 
-    // Validate numeric monetary fields — reject non-numeric input
+    // Validate numeric monetary fields
     const numericFields: Array<[keyof FormState, string]> = [
       ["agreedFees",     "Agreed Fees"],
       ["billedAmount",   "Billed Amount"],
@@ -208,8 +256,7 @@ export default function FinancialDialog({
       }
     }
 
-    // clientMatterId: send number to link, null to explicitly unlink (edit only),
-    // omit entirely on create when no matter is selected.
+    // clientMatterId: number to link, null to unlink (edit), omit on create with no matter
     const matterIdValue = form.clientMatterId ? Number(form.clientMatterId) : null;
 
     const payload = {
@@ -228,27 +275,25 @@ export default function FinancialDialog({
     };
 
     if (isEditMode) {
-      // On update: send clientMatterId when selector is shown (null = explicit unlink)
       update.mutate({
         id: record.id,
         ...payload,
-        ...(matters !== undefined ? { clientMatterId: matterIdValue } : {}),
+        ...(effectiveMatters !== undefined ? { clientMatterId: matterIdValue } : {}),
       });
     } else {
-      // On create: only include clientMatterId when a matter is actually selected
       create.mutate({
-        clientId: clientId!,
+        clientId: effectiveClientId!,
         ...payload,
-        ...(matters !== undefined && matterIdValue !== null
+        ...(effectiveMatters !== undefined && matterIdValue !== null
           ? { clientMatterId: matterIdValue }
           : {}),
       });
     }
   }
 
-  // ── Determine matter selector state ─────────────────────────────────────────
-  const showMatterSelector = matters !== undefined;
-  const hasMatterOptions   = matters && matters.length > 0;
+  // ── Matter selector helpers ──────────────────────────────────────────────────
+  const showMatterSelector = effectiveMatters !== undefined;
+  const hasMatterOptions   = effectiveMatters && effectiveMatters.length > 0;
 
   // ── Render ───────────────────────────────────────────────────────────────────
   return (
@@ -258,11 +303,80 @@ export default function FinancialDialog({
           <DialogTitle>
             {isEditMode ? "Edit Financial Record" : "Add Financial Record"}
           </DialogTitle>
+          {isEditMode && record?.invoiceNumber && (
+            <p className="text-xs text-muted-foreground">
+              Invoice {record.invoiceNumber}
+            </p>
+          )}
         </DialogHeader>
 
         <div className="grid grid-cols-2 gap-3 py-2">
 
+          {/* ── Client Selector (Quick Add mode only) ────────────────────── */}
+          {isQuickAddMode && (
+            <div className="col-span-2">
+              <Label className="text-xs">
+                Client <span className="text-destructive">*</span>
+              </Label>
+              {allClients!.length === 0 ? (
+                <div className="mt-1 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm">
+                  <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+                  <span className="text-amber-800">
+                    No clients are available. You may not have permission to view clients,
+                    or no clients have been created yet.
+                  </span>
+                </div>
+              ) : (
+                <Select
+                  value={internalClientId ? String(internalClientId) : "__none__"}
+                  onValueChange={v => {
+                    const newId = v === "__none__" ? null : Number(v);
+                    setInternalClientId(newId);
+                    setField("clientMatterId", ""); // reset matter when client changes
+                  }}
+                >
+                  <SelectTrigger
+                    className={`mt-1 ${!internalClientId ? "border-destructive/40" : ""}`}
+                  >
+                    <SelectValue placeholder="Select client…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">Select client…</SelectItem>
+                    {[...allClients!]
+                      .sort((a, b) => a.clientName.localeCompare(b.clientName))
+                      .map(c => (
+                        <SelectItem key={c.id} value={String(c.id)}>
+                          {c.clientName}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
+          )}
+
+          {/* ── Client banner (non-quick-add edit mode — show which client) ─ */}
+          {isEditMode && record?.clientId && !isQuickAddMode && (
+            <div className="col-span-2 rounded-md bg-muted/60 border px-3 py-2 text-xs text-muted-foreground">
+              Editing record for <span className="font-medium text-foreground">Client #{record.clientId}</span>
+              {record.invoiceNumber ? ` · Invoice ${record.invoiceNumber}` : ""}
+            </div>
+          )}
+
           {/* ── Matter Selector ───────────────────────────────────────────── */}
+
+          {/* Loading state while matters are fetched for quick-add client */}
+          {isMatterLoading && (
+            <div className="col-span-2">
+              <Label className="text-xs">Linked Matter (optional)</Label>
+              <div className="mt-1 flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2.5 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+                Loading matters for this client…
+              </div>
+            </div>
+          )}
+
+          {/* Matter selector — shown once matters are available */}
           {showMatterSelector && (
             <div className="col-span-2">
               <Label className="text-xs">Linked Matter (optional)</Label>
@@ -279,7 +393,7 @@ export default function FinancialDialog({
                     <SelectItem value="none">
                       No matter — client-level record
                     </SelectItem>
-                    {matters!.map(m => (
+                    {effectiveMatters!.map(m => (
                       <SelectItem key={m.id} value={String(m.id)}>
                         <span className="flex flex-col leading-tight">
                           <span className="font-medium">
@@ -308,9 +422,9 @@ export default function FinancialDialog({
                 </div>
               )}
 
-              {/* Show selected matter info when one is chosen */}
+              {/* Inline matter info chip */}
               {form.clientMatterId && hasMatterOptions && (() => {
-                const m = matters!.find(x => String(x.id) === form.clientMatterId);
+                const m = effectiveMatters!.find(x => String(x.id) === form.clientMatterId);
                 if (!m) return null;
                 return (
                   <div className="mt-1.5 rounded-md bg-blue-50 border border-blue-200 px-3 py-1.5 text-xs text-blue-800 flex flex-wrap gap-x-3 gap-y-0.5">
