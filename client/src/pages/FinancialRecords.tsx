@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import {
-  DollarSign, Edit2, Filter, RefreshCw, TrendingUp, AlertTriangle,
+  DollarSign, Edit2, Filter, Plus, RefreshCw, TrendingUp, AlertTriangle,
   Clock, Search, X, Users, BarChart3, History,
 } from "lucide-react";
 import { Link } from "wouter";
@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/table";
 import DashboardLayout from "@/components/DashboardLayout";
 import FinancialDialog from "@/components/FinancialDialog";
-import type { MatterOption } from "@/components/FinancialDialog";
+import type { MatterOption, ClientOption } from "@/components/FinancialDialog";
 import { FinancialAuditTrail } from "@/components/FinancialAuditTrail";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { hasPermission } from "@shared/const";
@@ -115,9 +115,10 @@ export default function FinancialRecords() {
   const [dateFrom, setDateFrom]           = useState("");
   const [dateTo,   setDateTo]             = useState("");
 
-  // ── Edit / audit state ─────────────────────────────────────────────────────
-  const [editingRecord, setEditingRecord] = useState<any | null>(null);
-  const [auditRecord, setAuditRecord] = useState<any | null>(null);
+  // ── Edit / add / audit state ───────────────────────────────────────────────
+  const [addDialogOpen,  setAddDialogOpen]  = useState(false);
+  const [editingRecord,  setEditingRecord]  = useState<any | null>(null);
+  const [auditRecord,    setAuditRecord]    = useState<any | null>(null);
 
   // ── Settings ───────────────────────────────────────────────────────────────
   const { data: overdueDays = 30 } = trpc.settings.getOverdueDays.useQuery();
@@ -368,6 +369,13 @@ export default function FinancialRecords() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            {/* Quick Add */}
+            {canManage && (
+              <Button size="sm" onClick={() => setAddDialogOpen(true)}>
+                <Plus className="h-4 w-4 mr-1.5" />Add Financial Record
+              </Button>
+            )}
+
             {/* View toggle */}
             <div className="flex rounded-lg border bg-muted p-0.5 gap-0.5">
               <Button
@@ -870,7 +878,14 @@ export default function FinancialRecords() {
         )}
       </div>
 
-      {/* Edit dialog */}
+      {/* Quick Add dialog — client picker + dynamic matter loading built into the dialog */}
+      <FinancialDialog
+        open={addDialogOpen}
+        onClose={() => setAddDialogOpen(false)}
+        allClients={clients as ClientOption[]}
+      />
+
+      {/* Edit dialog — client + matters pre-resolved by the page */}
       <FinancialDialog
         open={editingRecord !== null}
         onClose={() => setEditingRecord(null)}
