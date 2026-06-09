@@ -137,6 +137,7 @@ export const appRouter = router({
         channelMedium: z.string().optional(),
         status: z.string().optional(),
         search: z.string().optional(),
+        assignedTo: z.number().optional(),
       }).optional())
       .query(async ({ input }) => db.getAllLeads(input ?? {})),
 
@@ -500,6 +501,10 @@ export const appRouter = router({
     assignableLawyers: permissionProcedure("clients:view")
       .query(async () => db.getAssignableLawyers()),
 
+    // Active Partners/Lawyers for the "Suggested Lead Lawyer" dropdown.
+    leadLawyers: permissionProcedure("leads:manage")
+      .query(async () => db.getLeadLawyers()),
+
     create: adminProcedure
       .input(z.object({
         name: z.string().trim().min(1, "Name is required").max(120),
@@ -716,6 +721,24 @@ export const appRouter = router({
       .query(async ({ input }) => {
         return db.getAuditLogsByEntity(input.entityType, input.entityId);
       }),
+  }),
+
+  // ─── In-app Notifications (current user) ───────────────────────────────────
+
+  notifications: router({
+    list: protectedProcedure
+      .input(z.object({ limit: z.number().int().positive().max(50).default(20) }).optional())
+      .query(async ({ input, ctx }) => db.getUserNotifications(ctx.user!.id, input?.limit ?? 20)),
+
+    unreadCount: protectedProcedure
+      .query(async ({ ctx }) => db.getUnreadNotificationCount(ctx.user!.id)),
+
+    markRead: protectedProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input, ctx }) => db.markNotificationRead(input.id, ctx.user!.id)),
+
+    markAllRead: protectedProcedure
+      .mutation(async ({ ctx }) => db.markAllNotificationsRead(ctx.user!.id)),
   }),
 
   // ─── Clients ──────────────────────────────────────────────────────────────
