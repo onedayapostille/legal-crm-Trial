@@ -73,6 +73,33 @@ export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
   viewer: ["dashboard:view", "clients:view", "analytics:view"],
 };
 
+// ─── Communication Channel (two-level: type → medium) ────────────────────────
+export const CHANNEL_TYPES = [
+  "Digital Channels",
+  "Referral",
+  "Walk-in",
+  "Event / Conference",
+] as const;
+export type ChannelType = (typeof CHANNEL_TYPES)[number];
+
+// Level-2 mediums when channel_type = "Digital Channels".
+export const DIGITAL_MEDIUMS = ["LinkedIn", "Email", "Phone", "WhatsApp", "Website"] as const;
+
+/** channel_medium is required only for Digital Channels and Referral. */
+export function channelMediumRequired(type: string | null | undefined): boolean {
+  return type === "Digital Channels" || type === "Referral";
+}
+
+/** Label for the medium field given the channel type (or null if no field). */
+export function channelMediumLabel(type: string | null | undefined): string | null {
+  switch (type) {
+    case "Digital Channels": return "Medium";
+    case "Referral":         return "Referral Name";
+    case "Event / Conference": return "Event Name";
+    default:                 return null; // Walk-in → no medium field
+  }
+}
+
 export const DISCOUNT_APPROVAL_VALUES = ["N/A", "P&L Head Lawyers", "CEO", "Board"] as const;
 export type DiscountApproval = (typeof DISCOUNT_APPROVAL_VALUES)[number];
 

@@ -11,6 +11,7 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
 import EnquiryForm from "@/pages/EnquiryForm";
+import EnquiriesLog from "@/pages/EnquiriesLog";
 import StatusTracker from "@/pages/StatusTracker";
 import KPIDashboard from "@/pages/KPIDashboard";
 import PaymentTracker from "@/pages/PaymentTracker";
@@ -72,6 +73,10 @@ function Router() {
       {/* Enquiries (legacy bookmarks preserved via redirect) */}
       <Route path="/enquiries">
         <Redirect to="/clients/leads" />
+      </Route>
+      {/* Filterable enquiries list for channel/marketing-source reporting */}
+      <Route path="/enquiries/log">
+        <ProtectedRoute permission="leads:manage"><EnquiriesLog /></ProtectedRoute>
       </Route>
       <Route path="/enquiries/new">
         <ProtectedRoute>

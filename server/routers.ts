@@ -131,7 +131,17 @@ export const appRouter = router({
   // ─── Leads ────────────────────────────────────────────────────────────────
 
   leads: router({
-    list: permissionProcedure("leads:manage").query(async () => db.getAllLeads()),
+    list: permissionProcedure("leads:manage")
+      .input(z.object({
+        channelType: z.string().optional(),
+        channelMedium: z.string().optional(),
+        status: z.string().optional(),
+        search: z.string().optional(),
+      }).optional())
+      .query(async ({ input }) => db.getAllLeads(input ?? {})),
+
+    // Distinct channel values for filter dropdowns.
+    channelOptions: permissionProcedure("leads:manage").query(async () => db.getLeadChannelOptions()),
 
     get: permissionProcedure("leads:manage")
       .input(z.object({ id: z.number() }))
@@ -145,6 +155,9 @@ export const appRouter = router({
         // Canonical UTC instant (ISO 8601) + the browser timezone captured at entry.
         enquiryAt: z.string().datetime().optional(),
         enquiryTimezone: z.string().optional(),
+        // Two-level communication channel
+        channelType: z.string().optional(),
+        channelMedium: z.string().optional(),
         communicationChannel: z.string().optional(),
         receivedBy: z.string().optional(),
         clientType: z.string().optional(),
@@ -172,6 +185,7 @@ export const appRouter = router({
         internalNotes: z.string().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
+        db.validateChannel(input.channelType, input.channelMedium, { requireType: true });
         return db.createLead(input, ctx.user!.id);
       }),
 
@@ -183,6 +197,8 @@ export const appRouter = router({
         time: z.string().optional(),
         enquiryAt: z.string().datetime().optional(),
         enquiryTimezone: z.string().optional(),
+        channelType: z.string().optional(),
+        channelMedium: z.string().optional(),
         communicationChannel: z.string().optional(),
         receivedBy: z.string().optional(),
         clientType: z.string().optional(),
@@ -223,6 +239,7 @@ export const appRouter = router({
       }))
       .mutation(async ({ input }) => {
         const { id, ...data } = input;
+        db.validateChannel(data.channelType, data.channelMedium, { requireType: false });
         return db.updateLead(id, data);
       }),
 
@@ -714,6 +731,8 @@ export const appRouter = router({
       assignedLawyerId: z.number().optional(),
       createdFrom: z.string().optional(),
       createdTo: z.string().optional(),
+      channelType: z.string().optional(),
+      channelMedium: z.string().optional(),
     }).optional()).query(async ({ input }) => db.getAllClients(input ?? {})),
 
     get: permissionProcedure("clients:view")
@@ -785,12 +804,15 @@ export const appRouter = router({
         nextActionDate2: z.string().optional(),
         nextActionOwner: z.string().optional(),
         assignedLawyerId: z.number().nullable().optional(),
+        channelType: z.string().optional(),
+        channelMedium: z.string().optional(),
         nextAction: z.string().optional(),
         priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
         leadStatus: z.string().optional(),
       }))
       .mutation(async ({ input }) => {
         const { clientId, ...data } = input;
+        db.validateChannel(data.channelType, data.channelMedium, { requireType: false });
         return db.upsertClientLeadDetail(clientId, data as any);
       }),
 

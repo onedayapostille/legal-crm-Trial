@@ -17,7 +17,29 @@ import {
   type InsertMatterLawyerRate,
 } from "../drizzle/schema";
 import { hashPassword } from "./_core/auth";
+import { channelMediumRequired } from "../shared/const";
 import type { UserRole, UserStatus } from "../shared/const";
+
+/**
+ * Validate the two-level communication channel.
+ *  - channel_type required when `requireType` (enquiry creation).
+ *  - channel_medium required for Digital Channels and Referral.
+ */
+export function validateChannel(
+  channelType: unknown,
+  channelMedium: unknown,
+  opts: { requireType: boolean },
+) {
+  const type = typeof channelType === "string" ? channelType.trim() : "";
+  const medium = typeof channelMedium === "string" ? channelMedium.trim() : "";
+  if (opts.requireType && !type) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Channel type is required." });
+  }
+  if (type && channelMediumRequired(type) && !medium) {
+    const label = type === "Referral" ? "Referral name" : "Channel medium";
+    throw new TRPCError({ code: "BAD_REQUEST", message: `${label} is required for ${type}.` });
+  }
+}
 
 // ─── DB Connection ────────────────────────────────────────────────────────────
 
@@ -385,9 +407,38 @@ export async function generateLeadCode(): Promise<string> {
   return `LEAD-${String(next).padStart(4, "0")}`;
 }
 
-export async function getAllLeads() {
+export async function getAllLeads(filters?: {
+  channelType?: string;
+  channelMedium?: string;
+  status?: string;
+  search?: string;
+}) {
   const db = getDb();
-  return db.select().from(leads).orderBy(desc(leads.createdAt));
+  const conditions = [];
+  if (filters?.channelType) conditions.push(eq(leads.channelType, filters.channelType));
+  if (filters?.channelMedium) conditions.push(ilike(leads.channelMedium, `%${filters.channelMedium}%`));
+  if (filters?.status) conditions.push(eq(leads.currentStatus, filters.status as any));
+  if (filters?.search) {
+    const t = `%${filters.search}%`;
+    conditions.push(or(ilike(leads.clientName, t), ilike(leads.leadCode, t), ilike(leads.email, t)));
+  }
+  const q = db.select().from(leads).orderBy(desc(leads.createdAt));
+  return conditions.length ? q.where(and(...conditions)) : q;
+}
+
+/** Distinct channel values present in the leads table — powers filter dropdowns. */
+export async function getLeadChannelOptions() {
+  const db = getDb();
+  const rows = await db
+    .selectDistinct({ channelType: leads.channelType, channelMedium: leads.channelMedium })
+    .from(leads);
+  const types = new Set<string>();
+  const mediums = new Set<string>();
+  for (const r of rows) {
+    if (r.channelType) types.add(r.channelType);
+    if (r.channelMedium) mediums.add(r.channelMedium);
+  }
+  return { types: Array.from(types).sort(), mediums: Array.from(mediums).sort() };
 }
 
 export async function getLeadById(id: number) {
@@ -853,6 +904,8 @@ export async function getAllClients(filters?: {
   assignedLawyerId?: number;   // lead's assigned lawyer (client_lead_details)
   createdFrom?: string;        // YYYY-MM-DD (inclusive)
   createdTo?: string;          // YYYY-MM-DD (inclusive)
+  channelType?: string;        // communication channel type (client_lead_details)
+  channelMedium?: string;      // communication channel medium
 }) {
   const db = getDb();
   const conditions = [];
@@ -871,6 +924,12 @@ export async function getAllClients(filters?: {
   }
   if (filters?.assignedLawyerId) {
     conditions.push(eq(clientLeadDetails.assignedLawyerId, filters.assignedLawyerId));
+  }
+  if (filters?.channelType) {
+    conditions.push(eq(clientLeadDetails.channelType, filters.channelType));
+  }
+  if (filters?.channelMedium) {
+    conditions.push(ilike(clientLeadDetails.channelMedium, `%${filters.channelMedium}%`));
   }
   // Date range on created_at, compared with the DB clock (timezone-consistent).
   if (filters?.createdFrom) {
@@ -898,6 +957,8 @@ export async function getAllClients(filters?: {
       ...getTableColumns(clients),
       assignedLawyerId: clientLeadDetails.assignedLawyerId,
       assignedLawyerName: users.name,
+      channelType: clientLeadDetails.channelType,
+      channelMedium: clientLeadDetails.channelMedium,
     })
     .from(clients)
     .leftJoin(clientLeadDetails, eq(clientLeadDetails.clientId, clients.id))

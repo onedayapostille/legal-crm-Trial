@@ -36,7 +36,7 @@ import type { ConflictMatch } from "@/components/ConflictMatchTable";
 import { useGoBack } from "@/hooks/useGoBack";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { hasPermission } from "@shared/const";
+import { hasPermission, CHANNEL_TYPES, DIGITAL_MEDIUMS, channelMediumLabel } from "@shared/const";
 
 const STATUS_COLORS: Record<string, string> = {
   "Existing Client": "bg-green-100 text-green-800 border-green-200",
@@ -450,6 +450,8 @@ function LeadDetailCard({ clientId, detail, canManage }: { clientId: number; det
     nextActionDate2: detail?.nextActionDate2 ?? "",
     nextActionOwner: detail?.nextActionOwner ?? "",
     assignedLawyerId: detail?.assignedLawyerId ? String(detail.assignedLawyerId) : "",
+    channelType: detail?.channelType ?? "",
+    channelMedium: detail?.channelMedium ?? "",
     nextAction: detail?.nextAction ?? "",
     priority: detail?.priority ?? "medium",
     leadStatus: detail?.leadStatus ?? "",
@@ -510,6 +512,34 @@ function LeadDetailCard({ clientId, detail, canManage }: { clientId: number; det
                 </Select>
               </div>
               <div>
+                <Label>Channel Type</Label>
+                <Select
+                  value={form.channelType || "none"}
+                  onValueChange={v => setForm(f => ({ ...f, channelType: v === "none" ? "" : v, channelMedium: "" }))}
+                >
+                  <SelectTrigger><SelectValue placeholder="— None —" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">— None —</SelectItem>
+                    {CHANNEL_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              {channelMediumLabel(form.channelType) && (
+                <div>
+                  <Label>{channelMediumLabel(form.channelType)}{(form.channelType === "Digital Channels" || form.channelType === "Referral") ? " *" : ""}</Label>
+                  {form.channelType === "Digital Channels" ? (
+                    <Select value={form.channelMedium} onValueChange={v => setForm(f => ({ ...f, channelMedium: v }))}>
+                      <SelectTrigger><SelectValue placeholder="Select medium" /></SelectTrigger>
+                      <SelectContent>
+                        {DIGITAL_MEDIUMS.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Input value={form.channelMedium} onChange={e => setForm(f => ({ ...f, channelMedium: e.target.value }))} />
+                  )}
+                </div>
+              )}
+              <div>
                 <Label>Priority</Label>
                 <Select value={form.priority} onValueChange={v => setForm(f => ({ ...f, priority: v as any }))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -538,6 +568,8 @@ function LeadDetailCard({ clientId, detail, canManage }: { clientId: number; det
             <DataItem label="Next Action Date" value={detail.nextActionDate ?? "—"} />
             <DataItem label="Next Action Owner" value={detail.nextActionOwner ?? "—"} />
             <DataItem label="Assigned Lawyer" value={assignedLawyerName ?? "—"} />
+            <DataItem label="Channel Type" value={detail.channelType ?? "—"} />
+            <DataItem label="Channel Medium" value={detail.channelMedium ?? "—"} />
             <DataItem label="Next Action" value={detail.nextAction ?? "—"} />
           </dl>
         ) : (

@@ -36,6 +36,7 @@ const menuItems = [
   { icon: Building2,     label: "All Clients",        path: "/clients",           permission: "clients:view" },
   { icon: UserCheck,     label: "Existing Clients",   path: "/clients/existing",  permission: "clients:view" },
   { icon: Users,         label: "Leads Pipeline",     path: "/clients/leads",     permission: "clients:view" },
+  { icon: FileText,      label: "Enquiries Log",      path: "/enquiries/log",     permission: "leads:manage" },
   { icon: UserX,         label: "Rejected Clients",   path: "/clients/rejected",  permission: "clients:view" },
   { icon: Calendar,      label: "Action Log",         path: "/client-actions",    permission: "actions:manage" },
   { icon: DollarSign,    label: "Financial Records",  path: "/financial",         permission: "financial:view" },

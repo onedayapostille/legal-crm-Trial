@@ -8,7 +8,7 @@ import * as XLSX from "xlsx";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { hasPermission } from "@shared/const";
+import { hasPermission, CHANNEL_TYPES } from "@shared/const";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -45,6 +45,8 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
   const [assignedLawyer, setAssignedLawyer] = useQueryParam("lawyer", "all");
   const [dateFrom, setDateFrom] = useQueryParam("from", "");
   const [dateTo, setDateTo] = useQueryParam("to", "");
+  const [channelType, setChannelType] = useQueryParam("channelType", "all");
+  const [channelMedium, setChannelMedium] = useQueryParam("channelMedium", "");
   const [conflictCheckOpen, setConflictCheckOpen] = useState(false);
 
   const { data: clients = [], isLoading, refetch } = trpc.clients.list.useQuery({
@@ -56,6 +58,8 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
     assignedLawyerId: assignedLawyer !== "all" ? Number(assignedLawyer) : undefined,
     createdFrom: dateFrom || undefined,
     createdTo: dateTo || undefined,
+    channelType: channelType !== "all" ? channelType : undefined,
+    channelMedium: channelMedium.trim() || undefined,
   });
 
   const { data: stats } = trpc.clients.statusCounts.useQuery();
@@ -83,6 +87,8 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
       "Client Name":     c.clientName,
       "Status":          c.clientStatus,
       "Source":          (c as any).convertedFrom ?? "",
+      "Channel Type":    (c as any).channelType ?? "",
+      "Channel Medium":  (c as any).channelMedium ?? "",
       "City":            c.city ?? "",
       "Matter Type":     c.matterType ?? "",
       "Assigned Lawyer": (c as any).assignedLawyerName ?? "",
@@ -262,6 +268,23 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
                   aria-label="Created to"
                 />
               </div>
+              {/* Communication channel */}
+              <Select value={channelType} onValueChange={setChannelType}>
+                <SelectTrigger className="w-44">
+                  <SelectValue placeholder="Channel Type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Channels</SelectItem>
+                  {CHANNEL_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Input
+                placeholder="Channel medium…"
+                value={channelMedium}
+                onChange={e => setChannelMedium(e.target.value)}
+                className="w-40"
+                aria-label="Channel medium"
+              />
             </div>
           </CardContent>
         </Card>
