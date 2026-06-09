@@ -10,6 +10,7 @@ import { useForm } from "react-hook-form";
 import { Loader2, Save, ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 import { useEffect } from "react";
+import { CHANNEL_TYPES, DIGITAL_MEDIUMS, channelMediumRequired } from "@shared/const";
 
 interface EnquiryFormProps {
   id?: number;
@@ -27,6 +28,8 @@ interface FormData {
   enquiryDateTime?: string; // local datetime-local value; UTC + legacy fields derived on submit
   clientName: string;
   time?: string;
+  channelType?: string;
+  channelMedium?: string;
   communicationChannel?: string;
   receivedBy?: string;
   clientType?: string;
@@ -122,14 +125,26 @@ export default function EnquiryForm({ id }: EnquiryFormProps) {
   }, [enquiry, id, setValue]);
 
   const onSubmit = (data: FormData) => {
+    // Channel validation (mirrors the backend).
+    if (!data.channelType) {
+      toast.error("Communication channel type is required.");
+      return;
+    }
+    if (channelMediumRequired(data.channelType) && !data.channelMedium?.trim()) {
+      toast.error(data.channelType === "Referral" ? "Referral name is required." : "Channel medium is required.");
+      return;
+    }
+
     const local = data.enquiryDateTime || toLocalDateTimeInput(new Date());
     // local ("YYYY-MM-DDTHH:MM") is parsed as local time → toISOString() gives UTC.
     const enquiryAt = new Date(local).toISOString();
     const dateOfEnquiry = local.split("T")[0];            // legacy display column
     const time = (local.split("T")[1] ?? "").slice(0, 5); // legacy display column
     const enquiryTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    // Keep the legacy flat column populated for back-compat.
+    const communicationChannel = data.channelMedium?.trim() || data.channelType;
     const { enquiryDateTime: _omit, ...rest } = data;
-    const payload = { ...rest, dateOfEnquiry, time, enquiryAt, enquiryTimezone };
+    const payload = { ...rest, communicationChannel, dateOfEnquiry, time, enquiryAt, enquiryTimezone };
     if (id) {
       updateMutation.mutate({ id, ...payload });
     } else {
@@ -183,23 +198,51 @@ export default function EnquiryForm({ id }: EnquiryFormProps) {
               </p>
               {errors.enquiryDateTime && <p className="text-sm text-red-600">Date &amp; time is required</p>}
             </div>
+            {/* Communication Channel — Level 1: type */}
             <div className="space-y-2">
-              <Label htmlFor="communicationChannel">Communication Channel</Label>
-              <Select onValueChange={(value) => setValue("communicationChannel", value)} value={watch("communicationChannel")}>
+              <Label htmlFor="channelType">Communication Channel *</Label>
+              <Select
+                value={watch("channelType")}
+                onValueChange={(value) => {
+                  setValue("channelType", value);
+                  setValue("channelMedium", ""); // reset medium when type changes
+                }}
+              >
                 <SelectTrigger>
-                  <SelectValue placeholder="Select channel" />
+                  <SelectValue placeholder="Select channel type" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="Email">Email</SelectItem>
-                  <SelectItem value="Phone">Phone</SelectItem>
-                  <SelectItem value="WhatsApp">WhatsApp</SelectItem>
-                  <SelectItem value="Website">Website</SelectItem>
-                  <SelectItem value="Referral">Referral</SelectItem>
-                  <SelectItem value="Walk-in">Walk-in</SelectItem>
-                  <SelectItem value="Event/Conference">Event/Conference</SelectItem>
+                  {CHANNEL_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
+
+            {/* Level 2: medium (conditional on type) */}
+            {watch("channelType") === "Digital Channels" && (
+              <div className="space-y-2">
+                <Label htmlFor="channelMedium">Medium *</Label>
+                <Select value={watch("channelMedium")} onValueChange={(value) => setValue("channelMedium", value)}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select medium" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {DIGITAL_MEDIUMS.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            {watch("channelType") === "Referral" && (
+              <div className="space-y-2">
+                <Label htmlFor="channelMedium">Referral Name *</Label>
+                <Input id="channelMedium" {...register("channelMedium")} placeholder="Who referred them?" />
+              </div>
+            )}
+            {watch("channelType") === "Event / Conference" && (
+              <div className="space-y-2">
+                <Label htmlFor="channelMedium">Event Name</Label>
+                <Input id="channelMedium" {...register("channelMedium")} placeholder="Event / conference name (optional)" />
+              </div>
+            )}
             <div className="space-y-2">
               <Label htmlFor="receivedBy">Received By</Label>
               <Input id="receivedBy" {...register("receivedBy")} />

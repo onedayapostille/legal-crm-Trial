@@ -118,6 +118,10 @@ export const leads = pgTable("leads", {
   enquiryTimezone: varchar("enquiry_timezone", { length: 64 }),
   dateOfEnquiry: date("date_of_enquiry").notNull(),
   time: varchar("time", { length: 10 }),
+  // Two-level communication channel. communicationChannel is kept as a legacy
+  // flat value (derived from medium/type) for back-compat.
+  channelType: varchar("channel_type", { length: 50 }),
+  channelMedium: varchar("channel_medium", { length: 255 }),
   communicationChannel: varchar("communication_channel", { length: 50 }),
   receivedBy: varchar("received_by", { length: 100 }),
 
@@ -502,6 +506,9 @@ export const clientLeadDetails = pgTable("client_lead_details", {
   id: serial("id").primaryKey(),
   clientId: integer("client_id").notNull().unique().references(() => clients.id, { onDelete: "cascade" }),
   clientSource: varchar("client_source", { length: 255 }),
+  // Two-level communication channel for client intake (mirrors leads).
+  channelType: varchar("channel_type", { length: 50 }),
+  channelMedium: varchar("channel_medium", { length: 255 }),
   nextActionDate: date("next_action_date"),
   nextActionDate2: date("next_action_date_2"),
   nextActionOwner: varchar("next_action_owner", { length: 255 }),
