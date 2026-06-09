@@ -788,16 +788,32 @@ export async function deleteMatter(id: number) {
 
 // ─── Tasks ────────────────────────────────────────────────────────────────────
 
-export async function getAllTasks(filters?: { matterId?: number; assignedTo?: number; status?: string }) {
+export async function getAllTasks(filters?: {
+  matterId?: number;
+  assignedTo?: number;
+  status?: string;
+  clientId?: number;
+  clientMatterId?: number;
+}) {
   const db = getDb();
   const conditions = [];
   if (filters?.matterId) conditions.push(eq(tasks.matterId, filters.matterId));
   if (filters?.assignedTo) conditions.push(eq(tasks.assignedTo, filters.assignedTo));
   if (filters?.status) conditions.push(eq(tasks.status, filters.status as typeof tasks.status._.data));
+  if (filters?.clientId) conditions.push(eq(tasks.clientId, filters.clientId));
+  if (filters?.clientMatterId) conditions.push(eq(tasks.clientMatterId, filters.clientMatterId));
 
+  // Join assignee + client matter so the per-client/per-matter task lists can show
+  // names without extra round-trips.
   return db
-    .select()
+    .select({
+      ...getTableColumns(tasks),
+      assigneeName: users.name,
+      matterReference: clientMatters.matterReference,
+    })
     .from(tasks)
+    .leftJoin(users, eq(users.id, tasks.assignedTo))
+    .leftJoin(clientMatters, eq(clientMatters.id, tasks.clientMatterId))
     .where(conditions.length > 0 ? and(...conditions) : undefined)
     .orderBy(tasks.dueDate, desc(tasks.createdAt));
 }

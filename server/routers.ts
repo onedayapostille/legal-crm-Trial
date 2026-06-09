@@ -327,6 +327,8 @@ export const appRouter = router({
         matterId: z.number().optional(),
         assignedTo: z.number().optional(),
         status: z.string().optional(),
+        clientId: z.number().optional(),
+        clientMatterId: z.number().optional(),
       }).optional())
       .query(async ({ input }) => db.getAllTasks(input ?? {})),
 
@@ -342,10 +344,15 @@ export const appRouter = router({
         priority: z.string().optional(),
         matterId: z.number().optional(),
         leadId: z.number().optional(),
+        // Client context (from the client profile Tasks tab).
+        clientId: z.number().optional(),
+        clientMatterId: z.number().optional(),
         assignedTo: z.number().optional(),
         dueDate: z.string().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
+        // Rejected clients are locked: no new tasks under them.
+        await db.assertClientNotRejected(input.clientId);
         return db.createTask(input, ctx.user!.id);
       }),
 
@@ -357,6 +364,7 @@ export const appRouter = router({
         status: z.string().optional(),
         priority: z.string().optional(),
         matterId: z.number().optional(),
+        clientMatterId: z.number().nullable().optional(),
         assignedTo: z.number().optional(),
         dueDate: z.string().optional(),
       }))

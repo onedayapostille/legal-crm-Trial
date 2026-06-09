@@ -34,6 +34,7 @@ import { FinancialAuditTrail } from "@/components/FinancialAuditTrail";
 import ConflictWarningDialog from "@/components/ConflictWarningDialog";
 import type { ConflictMatch } from "@/components/ConflictMatchTable";
 import { useGoBack } from "@/hooks/useGoBack";
+import { ClientTasksSection, RelatedTasks } from "@/components/ClientTasks";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { hasPermission, CHANNEL_TYPES, DIGITAL_MEDIUMS, channelMediumLabel } from "@shared/const";
@@ -50,6 +51,7 @@ export default function ClientDetail({ id }: { id: number }) {
   const { user } = useAuth();
   const canManage = hasPermission(user?.role, "clients:manage");
   const canViewFinancial = hasPermission(user?.role, "financial:view");
+  const canViewTasks = hasPermission(user?.role, "tasks:manage");
   const utils = trpc.useUtils();
 
   const { data: client, isLoading } = trpc.clients.get.useQuery({ id });
@@ -66,6 +68,10 @@ export default function ClientDetail({ id }: { id: number }) {
   const { data: financialRecords = [] } = trpc.financial.list.useQuery(
     { clientId: id },
     { enabled: canViewFinancial }
+  );
+  const { data: clientTasks = [] } = trpc.tasks.list.useQuery(
+    { clientId: id },
+    { enabled: canViewTasks }
   );
 
   // Rejected clients are locked: read-only, no new matters/financials/actions/edits.
@@ -238,6 +244,9 @@ export default function ClientDetail({ id }: { id: number }) {
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="matters">Matters ({matters.length})</TabsTrigger>
             <TabsTrigger value="actions">Actions ({actions.length})</TabsTrigger>
+            {canViewTasks && (
+              <TabsTrigger value="tasks">Tasks ({clientTasks.length})</TabsTrigger>
+            )}
             {canViewFinancial && (
               <TabsTrigger value="financial">Financial ({financialRecords.length})</TabsTrigger>
             )}
@@ -304,6 +313,18 @@ export default function ClientDetail({ id }: { id: number }) {
               matters={matters}
             />
           </TabsContent>
+
+          {/* Tasks */}
+          {canViewTasks && (
+            <TabsContent value="tasks" className="mt-4">
+              <ClientTasksSection
+                clientId={id}
+                clientName={client.clientName}
+                matters={matters}
+                canManage={canManageActive}
+              />
+            </TabsContent>
+          )}
 
           {/* Financial */}
           {canViewFinancial && (
@@ -1049,6 +1070,13 @@ function MatterEditDialog({
           <DialogTitle>Edit Matter — {matter.matterReference ?? matter.originalSerial ?? `#${matter.id}`}</DialogTitle>
         </DialogHeader>
         <MatterFormFields form={form} setForm={setForm} />
+
+        {/* Related tasks for this matter */}
+        <div className="border-t pt-3 mt-2">
+          <h4 className="text-sm font-semibold mb-2">Related Tasks</h4>
+          <RelatedTasks clientMatterId={matter.id} />
+        </div>
+
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button
