@@ -114,12 +114,12 @@ export default function Dashboard() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <StatCard
-              title="Total Leads"
-              value={stats?.totalLeads ?? 0}
-              subtitle={`${stats?.newLeads ?? 0} new this month`}
+              title="Total Leads (Non-active)"
+              value={clientStats?.nonActive ?? 0}
+              subtitle="Leads + Rejected — clients not yet Active"
               icon={Users}
               color="bg-blue-500"
-              href="/leads"
+              href="/clients"
             />
             <StatCard
               title="Active Matters"
@@ -165,6 +165,7 @@ export default function Dashboard() {
                 <StatCard
                   title="Existing Clients"
                   value={clientStats.existing}
+                  subtitle="Active / converted clients"
                   icon={UserCheck}
                   color="bg-green-600"
                   href="/clients/existing"
@@ -172,6 +173,7 @@ export default function Dashboard() {
                 <StatCard
                   title="Leads Pipeline"
                   value={clientStats.leads}
+                  subtitle="In Lead status — needs follow-up"
                   icon={Users}
                   color="bg-blue-600"
                   href="/clients/leads"
