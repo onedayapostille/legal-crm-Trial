@@ -458,10 +458,14 @@ export async function getLeadKpiMetrics() {
     .where(eq(leads.currentStatus, "Converted"));
   const revenue = Number(revenueRow?.total ?? 0);
 
+  // "Active Matters" counts client matters whose status is exactly "Active"
+  // (case/whitespace-insensitive, since client_matters.matter_status is free-text).
+  // This is the same table/data shown on the /matters list, so the KPI value and
+  // the click-through filtered list always agree.
   const [activeMatterRow] = await db
     .select({ count: count() })
-    .from(matters)
-    .where(eq(matters.status, "active"));
+    .from(clientMatters)
+    .where(isActiveMatterStatus());
   const activeMatters = Number(activeMatterRow?.count ?? 0);
 
   const [pendingTaskRow] = await db
@@ -1005,10 +1009,24 @@ export async function getClientMatters(clientId: number) {
     .orderBy(desc(clientMatters.createdAt));
 }
 
+// Case/whitespace-insensitive predicate for a client matter's status. Because
+// client_matters.matter_status is a free-text VARCHAR, stored values may vary in
+// casing/padding (e.g. "Active", "active", " On Hold "). Normalize both sides so
+// "Active" always matches regardless of how it was entered.
+function matterStatusEquals(status: string) {
+  return sql`lower(trim(${clientMatters.matterStatus})) = ${status.trim().toLowerCase()}`;
+}
+
+function isActiveMatterStatus() {
+  return matterStatusEquals("Active");
+}
+
 // Aggregated view across all clients with client name joined in. Used by the
-// global /matters list page.
-export async function getAllClientMatters() {
+// global /matters list page. An optional status filter is applied at the DB
+// layer (not in the frontend) so the list always matches the dashboard KPI.
+export async function getAllClientMatters(filters: { status?: string } = {}) {
   const db = getDb();
+  const status = filters.status?.trim();
   return db
     .select({
       id: clientMatters.id,
@@ -1029,6 +1047,7 @@ export async function getAllClientMatters() {
     })
     .from(clientMatters)
     .leftJoin(clients, eq(clientMatters.clientId, clients.id))
+    .where(status ? matterStatusEquals(status) : undefined)
     .orderBy(desc(clientMatters.createdAt));
 }
 
