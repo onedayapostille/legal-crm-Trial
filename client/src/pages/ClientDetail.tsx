@@ -33,6 +33,7 @@ import { LawyerRatesDialog } from "@/components/LawyerRatesDialog";
 import { FinancialAuditTrail } from "@/components/FinancialAuditTrail";
 import ConflictWarningDialog from "@/components/ConflictWarningDialog";
 import type { ConflictMatch } from "@/components/ConflictMatchTable";
+import { useGoBack } from "@/hooks/useGoBack";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { hasPermission } from "@shared/const";
@@ -45,6 +46,7 @@ const STATUS_COLORS: Record<string, string> = {
 
 export default function ClientDetail({ id }: { id: number }) {
   const [, navigate] = useLocation();
+  const goBack = useGoBack("/clients");
   const { user } = useAuth();
   const canManage = hasPermission(user?.role, "clients:manage");
   const canViewFinancial = hasPermission(user?.role, "financial:view");
@@ -113,7 +115,7 @@ export default function ClientDetail({ id }: { id: number }) {
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
           <div className="flex items-start gap-3">
-            <Button variant="ghost" size="sm" onClick={() => navigate("/clients")}>
+            <Button variant="ghost" size="sm" onClick={goBack}>
               <ArrowLeft className="h-4 w-4" />
             </Button>
             <div>
