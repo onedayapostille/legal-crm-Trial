@@ -15,8 +15,16 @@ interface EnquiryFormProps {
   id?: number;
 }
 
+/** Format a Date as `YYYY-MM-DDTHH:MM` in the browser's local time for
+ *  <input type="datetime-local">. Avoids toISOString()'s UTC shift. */
+function toLocalDateTimeInput(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 interface FormData {
   dateOfEnquiry: string;
+  enquiryDateTime?: string; // local datetime-local value; UTC + legacy fields derived on submit
   clientName: string;
   time?: string;
   communicationChannel?: string;
@@ -100,14 +108,32 @@ export default function EnquiryForm({ id }: EnquiryFormProps) {
           setValue(key as keyof FormData, value as any);
         }
       });
+      // Show the stored UTC instant in the user's local timezone.
+      const iso = (enquiry as any).enquiryAt as string | null | undefined;
+      if (iso) {
+        setValue("enquiryDateTime", toLocalDateTimeInput(new Date(iso)));
+      } else if (enquiry.dateOfEnquiry) {
+        setValue("enquiryDateTime", `${enquiry.dateOfEnquiry}T${String(enquiry.time ?? "00:00").slice(0, 5)}`);
+      }
+    } else if (!id) {
+      // New enquiry → auto-populate with the current browser/local time.
+      setValue("enquiryDateTime", toLocalDateTimeInput(new Date()));
     }
-  }, [enquiry, setValue]);
+  }, [enquiry, id, setValue]);
 
   const onSubmit = (data: FormData) => {
+    const local = data.enquiryDateTime || toLocalDateTimeInput(new Date());
+    // local ("YYYY-MM-DDTHH:MM") is parsed as local time → toISOString() gives UTC.
+    const enquiryAt = new Date(local).toISOString();
+    const dateOfEnquiry = local.split("T")[0];            // legacy display column
+    const time = (local.split("T")[1] ?? "").slice(0, 5); // legacy display column
+    const enquiryTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const { enquiryDateTime: _omit, ...rest } = data;
+    const payload = { ...rest, dateOfEnquiry, time, enquiryAt, enquiryTimezone };
     if (id) {
-      updateMutation.mutate({ id, ...data });
+      updateMutation.mutate({ id, ...payload });
     } else {
-      createMutation.mutate(data);
+      createMutation.mutate(payload as any);
     }
   };
 
@@ -144,18 +170,18 @@ export default function EnquiryForm({ id }: EnquiryFormProps) {
             <CardDescription>Essential enquiry details</CardDescription>
           </CardHeader>
           <CardContent className="grid md:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="dateOfEnquiry">Date of Enquiry *</Label>
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="enquiryDateTime">Date &amp; Time of Enquiry *</Label>
               <Input
-                id="dateOfEnquiry"
-                type="date"
-                {...register("dateOfEnquiry", { required: true })}
+                id="enquiryDateTime"
+                type="datetime-local"
+                {...register("enquiryDateTime", { required: true })}
               />
-              {errors.dateOfEnquiry && <p className="text-sm text-red-600">Date is required</p>}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="time">Time</Label>
-              <Input id="time" type="time" {...register("time")} />
+              <p className="text-xs text-muted-foreground">
+                Auto-filled with your current local time ({Intl.DateTimeFormat().resolvedOptions().timeZone}).
+                Override for past enquiries — stored in UTC.
+              </p>
+              {errors.enquiryDateTime && <p className="text-sm text-red-600">Date &amp; time is required</p>}
             </div>
             <div className="space-y-2">
               <Label htmlFor="communicationChannel">Communication Channel</Label>

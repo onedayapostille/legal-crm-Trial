@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gte, inArray, lte, ne, or, sql, ilike } from "drizzle-orm";
+import { and, count, desc, eq, getTableColumns, gte, inArray, lt, lte, ne, or, sql, ilike } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { TRPCError } from "@trpc/server";
 import postgres from "postgres";
@@ -56,6 +56,14 @@ function sanitizeLeadInput(data: Record<string, unknown>) {
 
   if (typeof sanitized.currentStatus === "string") {
     sanitized.currentStatus = leadStatusAliases[sanitized.currentStatus] ?? sanitized.currentStatus;
+  }
+
+  // The client sends enquiryAt as a UTC ISO string; the timestamptz column wants a
+  // Date. Postgres stores it as UTC regardless of the connection timezone.
+  if (typeof sanitized.enquiryAt === "string") {
+    const d = new Date(sanitized.enquiryAt);
+    if (Number.isNaN(d.getTime())) delete sanitized.enquiryAt;
+    else sanitized.enquiryAt = d;
   }
 
   return sanitized;
@@ -450,12 +458,13 @@ export async function getLeadKpiMetrics() {
     .where(eq(leads.currentStatus, "Converted"));
   const converted = Number(convertedRow?.count ?? 0);
 
-  const now = new Date();
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split("T")[0];
+  // "This month" is computed from the stored UTC enquiry timestamp using the DB
+  // clock (date_trunc on now()), so it is timezone-consistent rather than relying
+  // on a string-compared date built from the app server's local time.
   const [thisMonthRow] = await db
     .select({ count: count() })
     .from(leads)
-    .where(sql`${leads.dateOfEnquiry} >= ${startOfMonth}`);
+    .where(gte(leads.enquiryAt, sql`date_trunc('month', now())`));
   const thisMonth = Number(thisMonthRow?.count ?? 0);
 
   const [revenueRow] = await db
@@ -839,6 +848,11 @@ export async function getAllClients(filters?: {
   city?: string;
   matterType?: string;
   search?: string;
+  // Unified intake filters:
+  convertedFrom?: string;      // origin: Lead | Enquiry | Direct
+  assignedLawyerId?: number;   // lead's assigned lawyer (client_lead_details)
+  createdFrom?: string;        // YYYY-MM-DD (inclusive)
+  createdTo?: string;          // YYYY-MM-DD (inclusive)
 }) {
   const db = getDb();
   const conditions = [];
@@ -852,6 +866,19 @@ export async function getAllClients(filters?: {
   if (filters?.matterType) {
     conditions.push(eq(clients.matterType, filters.matterType as any));
   }
+  if (filters?.convertedFrom) {
+    conditions.push(eq(clients.convertedFrom, filters.convertedFrom as any));
+  }
+  if (filters?.assignedLawyerId) {
+    conditions.push(eq(clientLeadDetails.assignedLawyerId, filters.assignedLawyerId));
+  }
+  // Date range on created_at, compared with the DB clock (timezone-consistent).
+  if (filters?.createdFrom) {
+    conditions.push(gte(clients.createdAt, sql`${filters.createdFrom}::timestamp`));
+  }
+  if (filters?.createdTo) {
+    conditions.push(lt(clients.createdAt, sql`(${filters.createdTo}::date + 1)`));
+  }
   if (filters?.search) {
     const term = `%${filters.search}%`;
     conditions.push(
@@ -863,11 +890,24 @@ export async function getAllClients(filters?: {
     );
   }
 
-  const query = db.select().from(clients).orderBy(desc(clients.createdAt));
+  // Left-join the lead detail (1:1) + assigned lawyer user so the intake page can
+  // filter/show the assigned lawyer. All client columns are preserved, plus two
+  // additive fields, so existing consumers are unaffected.
+  const base = db
+    .select({
+      ...getTableColumns(clients),
+      assignedLawyerId: clientLeadDetails.assignedLawyerId,
+      assignedLawyerName: users.name,
+    })
+    .from(clients)
+    .leftJoin(clientLeadDetails, eq(clientLeadDetails.clientId, clients.id))
+    .leftJoin(users, eq(users.id, clientLeadDetails.assignedLawyerId))
+    .orderBy(desc(clients.createdAt));
+
   if (conditions.length > 0) {
-    return query.where(and(...conditions));
+    return base.where(and(...conditions));
   }
-  return query;
+  return base;
 }
 
 /**

@@ -436,7 +436,11 @@ export default function EnquiryList() {
                           />
                         </TableCell>
                         <TableCell className="font-medium">{enquiry.leadCode}</TableCell>
-                        <TableCell>{new Date(enquiry.dateOfEnquiry).toLocaleDateString()}</TableCell>
+                        <TableCell>
+                          {(enquiry as any).enquiryAt
+                            ? new Date((enquiry as any).enquiryAt).toLocaleString()
+                            : new Date(enquiry.dateOfEnquiry).toLocaleDateString()}
+                        </TableCell>
                         <TableCell>{enquiry.clientName}</TableCell>
                         <TableCell>{enquiry.serviceRequested || "N/A"}</TableCell>
                         <TableCell>

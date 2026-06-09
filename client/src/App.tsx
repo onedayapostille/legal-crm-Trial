@@ -10,7 +10,6 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 // Pages
 import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
-import EnquiryList from "@/pages/EnquiryList";
 import EnquiryForm from "@/pages/EnquiryForm";
 import StatusTracker from "@/pages/StatusTracker";
 import KPIDashboard from "@/pages/KPIDashboard";
@@ -51,11 +50,11 @@ function Router() {
         <ProtectedRoute><Dashboard /></ProtectedRoute>
       </Route>
 
-      {/* Leads — also aliased as /leads from the old /enquiries */}
+      {/* Unified intake: the Enquiry Log / Leads list is consolidated into the
+          clients-module Leads Pipeline. The list routes redirect (preserving
+          bookmarks); the create/edit enquiry forms still work. */}
       <Route path="/leads">
-        <ProtectedRoute>
-          <DashboardLayout><EnquiryList /></DashboardLayout>
-        </ProtectedRoute>
+        <Redirect to="/clients/leads" />
       </Route>
       <Route path="/leads/new">
         <ProtectedRoute>
@@ -70,11 +69,9 @@ function Router() {
         )}
       </Route>
 
-      {/* Enquiries (legacy URLs still work) */}
+      {/* Enquiries (legacy bookmarks preserved via redirect) */}
       <Route path="/enquiries">
-        <ProtectedRoute>
-          <DashboardLayout><EnquiryList /></DashboardLayout>
-        </ProtectedRoute>
+        <Redirect to="/clients/leads" />
       </Route>
       <Route path="/enquiries/new">
         <ProtectedRoute>

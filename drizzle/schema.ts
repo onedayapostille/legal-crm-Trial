@@ -111,6 +111,11 @@ export const leads = pgTable("leads", {
   leadCode: varchar("lead_code", { length: 20 }).notNull().unique(), // ENQ-0001 or LEAD-0001
 
   // Basic info
+  // Canonical enquiry instant, stored in UTC (timestamptz). dateOfEnquiry/time are
+  // kept as legacy display columns, derived from this on write.
+  enquiryAt: timestamp("enquiry_at", { withTimezone: true }).defaultNow(),
+  // The browser/user timezone captured at entry (IANA name), for auditability.
+  enquiryTimezone: varchar("enquiry_timezone", { length: 64 }),
   dateOfEnquiry: date("date_of_enquiry").notNull(),
   time: varchar("time", { length: 10 }),
   communicationChannel: varchar("communication_channel", { length: 50 }),
@@ -500,6 +505,9 @@ export const clientLeadDetails = pgTable("client_lead_details", {
   nextActionDate: date("next_action_date"),
   nextActionDate2: date("next_action_date_2"),
   nextActionOwner: varchar("next_action_owner", { length: 255 }),
+  // Assigned lawyer for the lead/intake (real user). Filterable on the unified
+  // intake page.
+  assignedLawyerId: integer("assigned_lawyer_id").references(() => users.id),
   nextAction: text("next_action"),
   priority: priorityEnum("priority").default("medium"),
   leadStatus: varchar("lead_status", { length: 100 }),
