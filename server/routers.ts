@@ -792,7 +792,8 @@ export const appRouter = router({
       .query(async ({ input }) => db.getClientMatters(input.clientId)),
 
     listAll: permissionProcedure("clients:view")
-      .query(async () => db.getAllClientMatters()),
+      .input(z.object({ status: z.string().optional() }).optional())
+      .query(async ({ input }) => db.getAllClientMatters(input ?? {})),
 
     get: permissionProcedure("clients:view")
       .input(z.object({ id: z.number() }))
