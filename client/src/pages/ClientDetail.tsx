@@ -2,7 +2,7 @@ import { useState, useMemo, type Dispatch, type SetStateAction } from "react";
 import { useLocation } from "wouter";
 import {
   ArrowLeft, Save, Trash2, Plus, Edit2, Check, X, ChevronDown, ChevronUp,
-  Users, FileText, DollarSign, Calendar, AlertCircle, Clock, Pencil, History,
+  Users, FileText, DollarSign, Calendar, AlertCircle, Clock, Pencil, History, Ban,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
@@ -67,6 +67,12 @@ export default function ClientDetail({ id }: { id: number }) {
     { clientId: id },
     { enabled: canViewFinancial }
   );
+
+  // Rejected clients are locked: read-only, no new matters/financials/actions/edits.
+  // The status control itself stays available (gated by canManage) so an admin can
+  // reactivate the client.
+  const isRejected = client?.clientStatus === "Rejected";
+  const canManageActive = canManage && !isRejected;
 
   // Edit client status inline
   const [editingStatus, setEditingStatus] = useState(false);
@@ -205,6 +211,21 @@ export default function ClientDetail({ id }: { id: number }) {
           </div>
         </div>
 
+        {/* Rejected lock banner */}
+        {isRejected && (
+          <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-3 flex items-start gap-3">
+            <Ban className="h-5 w-5 text-red-600 mt-0.5 shrink-0" />
+            <div>
+              <p className="font-semibold text-red-800">This client is marked as Rejected</p>
+              <p className="text-sm text-red-700 mt-0.5">
+                The record is locked and read-only. No new matters, financial records, tasks, or
+                edits can be created. Existing history remains visible. To reactivate, change the
+                status above.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Tabs */}
         <Tabs defaultValue="overview">
           <TabsList>
@@ -218,7 +239,7 @@ export default function ClientDetail({ id }: { id: number }) {
 
           {/* Overview */}
           <TabsContent value="overview" className="space-y-4 mt-4">
-            <ClientInfoCard client={client} canManage={canManage} onUpdated={() => utils.clients.get.invalidate({ id })} />
+            <ClientInfoCard client={client} canManage={canManageActive} onUpdated={() => utils.clients.get.invalidate({ id })} />
 
             {client.clientStatus === "Leads" && (
               <LeadDetailCard
@@ -243,14 +264,14 @@ export default function ClientDetail({ id }: { id: number }) {
           <TabsContent value="matters" className="mt-4">
             <div className="flex justify-between items-center mb-3">
               <h3 className="font-semibold">Client Matters</h3>
-              {canManage && (
+              {canManageActive && (
                 <Button size="sm" onClick={() => setMatterDialogOpen(true)}>
                   <Plus className="h-4 w-4 mr-1" />
                   Add Matter
                 </Button>
               )}
             </div>
-            <MattersTable matters={matters} clientId={id} canManage={canManage} />
+            <MattersTable matters={matters} clientId={id} canManage={canManageActive} />
             <MatterDialog
               open={matterDialogOpen}
               onClose={() => setMatterDialogOpen(false)}
@@ -262,14 +283,14 @@ export default function ClientDetail({ id }: { id: number }) {
           <TabsContent value="actions" className="mt-4">
             <div className="flex justify-between items-center mb-3">
               <h3 className="font-semibold">Client Action Log</h3>
-              {canManage && (
+              {canManageActive && (
                 <Button size="sm" onClick={() => setActionDialogOpen(true)}>
                   <Plus className="h-4 w-4 mr-1" />
                   Log Action
                 </Button>
               )}
             </div>
-            <ActionsTable actions={actions} canManage={canManage} />
+            <ActionsTable actions={actions} canManage={canManageActive} />
             <ActionDialog
               open={actionDialogOpen}
               onClose={() => setActionDialogOpen(false)}
@@ -281,7 +302,7 @@ export default function ClientDetail({ id }: { id: number }) {
           {/* Financial */}
           {canViewFinancial && (
             <TabsContent value="financial" className="mt-4">
-              <FinancialSection clientId={id} records={financialRecords} matters={matters} />
+              <FinancialSection clientId={id} records={financialRecords} matters={matters} locked={isRejected} />
             </TabsContent>
           )}
         </Tabs>
@@ -619,6 +640,7 @@ function MattersTable({ matters, clientId, canManage }: { matters: any[]; client
             <TableHeader>
               <TableRow>
                 <TableHead>Reference</TableHead>
+                <TableHead>Original Serial</TableHead>
                 <TableHead>Type</TableHead>
                 <TableHead>Billing</TableHead>
                 <TableHead>Lead Partner</TableHead>
@@ -631,7 +653,8 @@ function MattersTable({ matters, clientId, canManage }: { matters: any[]; client
             <TableBody>
               {matters.map(m => (
                 <TableRow key={m.id}>
-                  <TableCell className="font-mono text-sm">{m.matterReference ?? m.originalSerial ?? "—"}</TableCell>
+                  <TableCell className="font-mono text-sm">{m.matterReference ?? "—"}</TableCell>
+                  <TableCell className="font-mono text-sm">{m.originalSerial ?? "—"}</TableCell>
                   <TableCell>{m.matterType ?? "—"}</TableCell>
                   <TableCell>
                     {m.billingType ? (
@@ -738,7 +761,7 @@ const MATTER_FORM_DEFAULT: MatterFormState = {
 };
 
 const MATTER_TEXT_FIELDS: [keyof MatterFormState, string][] = [
-  ["originalSerial",       "Original Serial"],
+  ["originalSerial",       "Original Serial (optional — auto MAT-####)"],
   ["matterReference",      "Matter Reference"],
   ["matterType",           "Matter Type"],
   ["leadPartner",          "Lead Partner (Code)"],
@@ -1120,10 +1143,12 @@ function FinancialSection({
   clientId,
   records,
   matters,
+  locked = false,
 }: {
   clientId: number;
   records: any[];
   matters: any[];
+  locked?: boolean;
 }) {
   const utils = trpc.useUtils();
   const { user } = useAuth();                                        // BUG-4: hook at top level
@@ -1131,7 +1156,8 @@ function FinancialSection({
   const [editingRecord, setEditingRecord] = useState<any | null>(null);
   const [auditRecord, setAuditRecord] = useState<any | null>(null);
   const [matterFilter, setMatterFilter] = useState("all");
-  const canManage = hasPermission(user?.role, "financial:manage");
+  // Rejected clients lock create/edit/delete; viewing + audit stay available.
+  const canManage = hasPermission(user?.role, "financial:manage") && !locked;
 
   const deleteRecord = trpc.financial.delete.useMutation({
     onSuccess: () => {

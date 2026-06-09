@@ -450,6 +450,9 @@ export const clientMatters = pgTable("client_matters", {
   attorney3: varchar("attorney_3", { length: 100 }),
   attorneyFullName: varchar("attorney_full_name", { length: 255 }),
   matterDescription: text("matter_description"),
+  // Assigned lead lawyer as a real user (authoritative). leadPartner* remain as
+  // legacy free-text display fields; the Hourly Rate section uses this FK.
+  leadLawyerId: integer("lead_lawyer_id").references(() => users.id),
   // Adverse / opposing party for conflict-of-interest checks.
   opposingParty: varchar("opposing_party", { length: 255 }),
   matterStatus: varchar("matter_status", { length: 100 }),
@@ -470,6 +473,9 @@ export type InsertClientMatter = typeof clientMatters.$inferInsert;
 export const matterLawyerRates = pgTable("matter_lawyer_rates", {
   id: serial("id").primaryKey(),
   clientMatterId: integer("client_matter_id").notNull().references(() => clientMatters.id, { onDelete: "cascade" }),
+  // Assigned user this rate belongs to. The authoritative identity; lawyerName is
+  // a server-derived display cache (never free-text from the client).
+  userId: integer("user_id").references(() => users.id),
   lawyerName: varchar("lawyer_name", { length: 255 }).notNull(),
   role: varchar("role", { length: 100 }),
   hourlyRate: decimal("hourly_rate", { precision: 15, scale: 2 }).notNull(),

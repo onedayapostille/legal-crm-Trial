@@ -398,9 +398,16 @@ async function main() {
 
     matterClientIds.add(clientId);
 
+    // Original Serial must be matter-specific, never a copy of the client number.
+    // If the source column mirrors the client number, drop it (it'll be left blank
+    // rather than wrongly showing the client number as the matter serial).
+    const rawSerial = cleanStr(row[5]);
+    const originalSerial =
+      rawSerial && clientNum && rawSerial.trim() === String(clientNum).trim() ? null : rawSerial;
+
     matterRecords.push({
       clientId,
-      originalSerial:        cleanStr(row[5]),
+      originalSerial,
       matterReference:       matterRef,
       matterType:            cleanStr(row[7]),
       leadPartner:           cleanStr(row[8]),

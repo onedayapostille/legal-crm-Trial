@@ -1,5 +1,6 @@
 import { and, count, desc, eq, gte, inArray, lte, ne, or, sql, ilike } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
+import { TRPCError } from "@trpc/server";
 import postgres from "postgres";
 import fs from "fs";
 import path from "path";
@@ -1025,9 +1026,72 @@ export async function createClient(data: InsertClient, userId: number) {
   return client;
 }
 
+// ─── Rejected-client lock ─────────────────────────────────────────────────────
+
+export const REJECTED_LOCK_MESSAGE =
+  "This client is marked as Rejected. No new records can be created or modified.";
+
+/** Throw 403 if the given client is Rejected. No-op for null/unknown ids. */
+export async function assertClientNotRejected(clientId: number | null | undefined) {
+  if (clientId == null) return;
+  const client = await getClientById(clientId);
+  if (client?.clientStatus === "Rejected") {
+    throw new TRPCError({ code: "FORBIDDEN", message: REJECTED_LOCK_MESSAGE });
+  }
+}
+
+/** Throw 403 if the matter's owning client is Rejected. */
+export async function assertMatterClientNotRejected(clientMatterId: number) {
+  const matter = await getClientMatterById(clientMatterId);
+  await assertClientNotRejected((matter as { clientId?: number } | null)?.clientId ?? null);
+}
+
+/** Throw 403 if the financial record's owning client is Rejected. */
+export async function assertFinancialRecordClientNotRejected(recordId: number) {
+  const db = getDb();
+  const [rec] = await db
+    .select({ clientId: financialRecords.clientId })
+    .from(financialRecords)
+    .where(eq(financialRecords.id, recordId))
+    .limit(1);
+  await assertClientNotRejected(rec?.clientId ?? null);
+}
+
+/** Throw 403 if the action log's owning client is Rejected. */
+export async function assertActionClientNotRejected(actionId: number) {
+  const db = getDb();
+  const [a] = await db
+    .select({ clientId: clientActionLogs.clientId })
+    .from(clientActionLogs)
+    .where(eq(clientActionLogs.id, actionId))
+    .limit(1);
+  await assertClientNotRejected(a?.clientId ?? null);
+}
+
+/** Throw 403 if the lawyer-rate's owning client is Rejected. */
+export async function assertRateClientNotRejected(rateId: number) {
+  const db = getDb();
+  const [r] = await db
+    .select({ clientMatterId: matterLawyerRates.clientMatterId })
+    .from(matterLawyerRates)
+    .where(eq(matterLawyerRates.id, rateId))
+    .limit(1);
+  if (r) await assertMatterClientNotRejected(r.clientMatterId);
+}
+
 export async function updateClient(id: number, data: Partial<InsertClient>, userId: number) {
   const db = getDb();
   const existing = await getClientById(id);
+
+  // Lock: a Rejected client is read-only. The ONLY permitted update is moving it
+  // out of Rejected (reactivation), so the client is never permanently bricked.
+  if (existing?.clientStatus === "Rejected") {
+    const movingOut = typeof data.clientStatus === "string" && data.clientStatus !== "Rejected";
+    if (!movingOut) {
+      throw new TRPCError({ code: "FORBIDDEN", message: REJECTED_LOCK_MESSAGE });
+    }
+  }
+
   const [client] = await db
     .update(clients)
     .set({ ...data, updatedAt: new Date() })
@@ -1219,6 +1283,65 @@ export async function getClientMatterById(id: number) {
   return result[0] ?? null;
 }
 
+// ─── Original Serial (matter-specific identifier) ─────────────────────────────
+
+export const ORIGINAL_SERIAL_PREFIX = "MAT-";
+const ORIGINAL_SERIAL_RE = /^MAT-\d{4,}$/;
+
+/**
+ * Next auto-generated Original Serial, independent of the client number.
+ * Scans existing MAT-#### serials and increments the highest. Format: MAT-0001.
+ */
+export async function nextOriginalSerial(): Promise<string> {
+  const db = getDb();
+  const rows = await db
+    .select({ s: clientMatters.originalSerial })
+    .from(clientMatters)
+    .where(ilike(clientMatters.originalSerial, `${ORIGINAL_SERIAL_PREFIX}%`));
+  let max = 0;
+  for (const { s } of rows) {
+    const m = /^MAT-(\d+)$/.exec((s ?? "").trim());
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  }
+  return `${ORIGINAL_SERIAL_PREFIX}${String(max + 1).padStart(4, "0")}`;
+}
+
+/** True if `serial` is already used by another matter (optionally excluding one id). */
+export async function isOriginalSerialTaken(serial: string, excludeId?: number): Promise<boolean> {
+  const db = getDb();
+  const where = excludeId
+    ? and(eq(clientMatters.originalSerial, serial), ne(clientMatters.id, excludeId))
+    : eq(clientMatters.originalSerial, serial);
+  const rows = await db.select({ id: clientMatters.id }).from(clientMatters).where(where).limit(1);
+  return rows.length > 0;
+}
+
+/**
+ * Resolve the Original Serial for an insert/update:
+ *  - blank → auto-generate an independent MAT-#### serial
+ *  - provided → validate format + enforce uniqueness across all matters
+ * Never derived from the client number.
+ */
+async function resolveOriginalSerial(
+  raw: unknown,
+  opts: { excludeId?: number } = {},
+): Promise<string | undefined> {
+  const provided = typeof raw === "string" ? raw.trim() : "";
+  if (!provided) {
+    return opts.excludeId ? undefined : nextOriginalSerial();
+  }
+  if (provided.length > 50) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Original Serial must be 50 characters or fewer." });
+  }
+  if (await isOriginalSerialTaken(provided, opts.excludeId)) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: `Original Serial "${provided}" is already used by another matter. It must be unique.`,
+    });
+  }
+  return provided;
+}
+
 export async function createClientMatter(
   data: Record<string, unknown>,
   userId: number,
@@ -1226,6 +1349,8 @@ export async function createClientMatter(
 ) {
   const db = getDb();
   const clean = sanitizeClientMatterInput(data) as Partial<InsertClientMatter>;
+  // Original Serial is generated/validated independently of the client number.
+  clean.originalSerial = await resolveOriginalSerial(clean.originalSerial);
   const [matter] = await db
     .insert(clientMatters)
     .values({ ...clean, clientId: (data as any).clientId, createdBy: userId } as InsertClientMatter)
@@ -1254,6 +1379,12 @@ export async function createClientMatter(
 export async function updateClientMatter(id: number, data: Record<string, unknown>, userId: number) {
   const db = getDb();
   const clean = sanitizeClientMatterInput(data) as Partial<InsertClientMatter>;
+  // If the Original Serial is being changed, validate uniqueness (excluding this row).
+  if (clean.originalSerial !== undefined) {
+    const resolved = await resolveOriginalSerial(clean.originalSerial, { excludeId: id });
+    if (resolved === undefined) delete clean.originalSerial; // blank on update → leave unchanged
+    else clean.originalSerial = resolved;
+  }
   const [matter] = await db
     .update(clientMatters)
     .set({ ...clean, updatedAt: new Date() })
@@ -1276,27 +1407,94 @@ export async function deleteClientMatter(id: number) {
 
 // ─── Matter Lawyer Rates ──────────────────────────────────────────────────────
 
-export async function getMatterLawyerRates(clientMatterId: number) {
+// Roles that may be assigned as a matter's lead/co-lawyer.
+export const ASSIGNABLE_LAWYER_ROLES = ["admin", "manager", "partner", "lawyer"] as const;
+
+/** Active users who may be assigned to a matter as lead/co-lawyers. */
+export async function getAssignableLawyers() {
   const db = getDb();
   return db
-    .select()
+    .select({ id: users.id, name: users.name, role: users.role })
+    .from(users)
+    .where(and(eq(users.status, "active"), inArray(users.role, [...ASSIGNABLE_LAWYER_ROLES] as any)))
+    .orderBy(users.name);
+}
+
+/** Fetch + validate a user that is being assigned as a lawyer. Throws if invalid. */
+async function resolveAssignedUser(userId: number) {
+  const db = getDb();
+  const [u] = await db
+    .select({ id: users.id, name: users.name, role: users.role, status: users.status })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!u) throw new TRPCError({ code: "BAD_REQUEST", message: "Selected lawyer does not exist." });
+  if (u.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "Selected lawyer is not active." });
+  if (!(ASSIGNABLE_LAWYER_ROLES as readonly string[]).includes(u.role)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: `Users with role "${u.role}" cannot be assigned as a lawyer.` });
+  }
+  return u;
+}
+
+export async function getMatterLawyerRates(clientMatterId: number) {
+  const db = getDb();
+  const rows = await db
+    .select({
+      id: matterLawyerRates.id,
+      clientMatterId: matterLawyerRates.clientMatterId,
+      userId: matterLawyerRates.userId,
+      lawyerName: matterLawyerRates.lawyerName,
+      userName: users.name,
+      userRole: users.role,
+      role: matterLawyerRates.role,
+      hourlyRate: matterLawyerRates.hourlyRate,
+      currency: matterLawyerRates.currency,
+      isActive: matterLawyerRates.isActive,
+      effectiveDate: matterLawyerRates.effectiveDate,
+      notes: matterLawyerRates.notes,
+      createdAt: matterLawyerRates.createdAt,
+    })
     .from(matterLawyerRates)
+    .leftJoin(users, eq(matterLawyerRates.userId, users.id))
     .where(eq(matterLawyerRates.clientMatterId, clientMatterId))
     .orderBy(desc(matterLawyerRates.createdAt));
+  // The live user name is authoritative; fall back to the stored value for
+  // legacy rows that predate the user link.
+  return rows.map(r => ({ ...r, lawyerName: r.userName ?? r.lawyerName }));
 }
 
 export async function createMatterLawyerRate(data: Record<string, unknown>, userId: number) {
   const db = getDb();
+  // Names cannot be free text: a rate must reference an assignable user, and the
+  // stored lawyerName is derived from that user.
+  const assignedUserId = Number(data.userId);
+  if (!Number.isFinite(assignedUserId)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "A lawyer (assigned user) is required." });
+  }
+  const lawyer = await resolveAssignedUser(assignedUserId);
+
   const hourlyRate = Number(data.hourlyRate);
   if (!Number.isFinite(hourlyRate) || hourlyRate < 0) {
-    throw new Error("Hourly rate must be a number greater than or equal to 0.");
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Hourly rate must be a number greater than or equal to 0." });
   }
+
+  const clientMatterId = data.clientMatterId as number;
+  const dup = await db
+    .select({ id: matterLawyerRates.id })
+    .from(matterLawyerRates)
+    .where(and(eq(matterLawyerRates.clientMatterId, clientMatterId), eq(matterLawyerRates.userId, assignedUserId)))
+    .limit(1);
+  if (dup.length) {
+    throw new TRPCError({ code: "CONFLICT", message: `${lawyer.name ?? "This lawyer"} already has a rate on this matter.` });
+  }
+
   const [rate] = await db
     .insert(matterLawyerRates)
     .values({
-      clientMatterId: data.clientMatterId as number,
-      lawyerName:    (data.lawyerName as string).trim(),
-      role:          data.role ? String(data.role).trim() || undefined : undefined,
+      clientMatterId,
+      userId:        assignedUserId,
+      lawyerName:    (lawyer.name ?? "Unknown").trim(), // server-derived, not free text
+      role:          data.role ? String(data.role).trim() || undefined : (lawyer.role ?? undefined),
       hourlyRate:    String(hourlyRate),
       currency:      data.currency ? String(data.currency).trim() : "SAR",
       isActive:      data.isActive !== undefined ? Boolean(data.isActive) : true,
@@ -1312,16 +1510,20 @@ export async function updateMatterLawyerRate(id: number, data: Record<string, un
   const db = getDb();
   const updates: Partial<InsertMatterLawyerRate> & { updatedAt: Date } = { updatedAt: new Date() };
 
-  if (data.lawyerName !== undefined) updates.lawyerName = String(data.lawyerName).trim();
+  // lawyerName is never accepted as free text; it is re-derived from the user.
+  if (data.userId !== undefined) {
+    const lawyer = await resolveAssignedUser(Number(data.userId));
+    updates.userId = lawyer.id;
+    updates.lawyerName = (lawyer.name ?? "Unknown").trim();
+  }
   if (data.role !== undefined)       updates.role       = String(data.role).trim() || undefined;
   if (data.hourlyRate !== undefined) {
     const n = Number(data.hourlyRate);
-    if (!Number.isFinite(n) || n < 0) throw new Error("Hourly rate must be a number ≥ 0.");
+    if (!Number.isFinite(n) || n < 0) throw new TRPCError({ code: "BAD_REQUEST", message: "Hourly rate must be a number ≥ 0." });
     updates.hourlyRate = String(n);
   }
   if (data.currency !== undefined)      updates.currency      = String(data.currency).trim() || "SAR";
   if (data.isActive !== undefined)      updates.isActive      = Boolean(data.isActive);
-  // null means "clear the date"; undefined means "field not included in this patch"
   if (data.effectiveDate !== undefined) updates.effectiveDate = data.effectiveDate ? String(data.effectiveDate) : null;
   if (data.notes !== undefined)         updates.notes         = data.notes ? String(data.notes).trim() || undefined : undefined;
 
@@ -1343,6 +1545,110 @@ export async function updateMatterLawyerRate(id: number, data: Record<string, un
 export async function deleteMatterLawyerRate(id: number) {
   const db = getDb();
   await db.delete(matterLawyerRates).where(eq(matterLawyerRates.id, id));
+}
+
+/**
+ * Reassign a matter's lead lawyer to an assignable user. Controlled action —
+ * exposed via a permission-restricted (Admin/Partner) endpoint. The lead name is
+ * derived from the user, so it cannot be overridden by free text.
+ */
+export async function reassignLeadLawyer(clientMatterId: number, newUserId: number, actorId: number) {
+  const db = getDb();
+  const lawyer = await resolveAssignedUser(newUserId);
+  const [existing] = await db.select().from(clientMatters).where(eq(clientMatters.id, clientMatterId)).limit(1);
+  if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Matter not found." });
+
+  const [matter] = await db
+    .update(clientMatters)
+    .set({
+      leadLawyerId: lawyer.id,
+      leadPartnerFullName: lawyer.name ?? existing.leadPartnerFullName, // keep legacy display in sync
+      updatedAt: new Date(),
+    })
+    .where(eq(clientMatters.id, clientMatterId))
+    .returning();
+
+  await createAuditLog({
+    entityType: "client_matter",
+    entityId: clientMatterId,
+    userId: actorId,
+    action: "assigned",
+    fieldName: "leadLawyerId",
+    oldValue: existing.leadLawyerId != null ? String(existing.leadLawyerId) : undefined,
+    newValue: String(lawyer.id),
+    description: `Lead lawyer for matter ${existing.matterReference ?? clientMatterId} reassigned to ${lawyer.name ?? lawyer.id}`,
+  });
+  return matter;
+}
+
+/**
+ * All lawyers billable on a matter (lead + co-lawyers) with their effective
+ * hourly rate. This is the integration point for hours/billing logic: every
+ * entry has a userId and a resolved rate (or null if not yet set).
+ */
+export async function getMatterBillableLawyers(clientMatterId: number) {
+  const db = getDb();
+  const [matter] = await db
+    .select({ leadLawyerId: clientMatters.leadLawyerId, leadPartnerFullName: clientMatters.leadPartnerFullName })
+    .from(clientMatters)
+    .where(eq(clientMatters.id, clientMatterId))
+    .limit(1);
+
+  const rates = await getMatterLawyerRates(clientMatterId);
+  const rateByUser = new Map<number, (typeof rates)[number]>();
+  for (const r of rates) if (r.userId != null) rateByUser.set(r.userId, r);
+
+  type Lawyer = {
+    userId: number | null;
+    name: string;
+    role: string | null;
+    isLead: boolean;
+    hourlyRate: string | null;
+    currency: string | null;
+    rateId: number | null;
+    isActive: boolean;
+  };
+
+  let lead: Lawyer | null = null;
+  if (matter?.leadLawyerId) {
+    const [u] = await db
+      .select({ id: users.id, name: users.name, role: users.role })
+      .from(users)
+      .where(eq(users.id, matter.leadLawyerId))
+      .limit(1);
+    const r = rateByUser.get(matter.leadLawyerId);
+    lead = {
+      userId: matter.leadLawyerId,
+      name: u?.name ?? matter.leadPartnerFullName ?? "Unknown",
+      role: u?.role ?? null,
+      isLead: true,
+      hourlyRate: r?.hourlyRate ?? null,
+      currency: r?.currency ?? null,
+      rateId: r?.id ?? null,
+      isActive: r?.isActive ?? true,
+    };
+  } else if (matter?.leadPartnerFullName) {
+    // Legacy free-text lead not yet linked to a user.
+    lead = {
+      userId: null, name: matter.leadPartnerFullName, role: null, isLead: true,
+      hourlyRate: null, currency: null, rateId: null, isActive: true,
+    };
+  }
+
+  const coLawyers: Lawyer[] = rates
+    .filter(r => r.userId != null && r.userId !== matter?.leadLawyerId)
+    .map(r => ({
+      userId: r.userId,
+      name: r.lawyerName,
+      role: r.role ?? r.userRole ?? null,
+      isLead: false,
+      hourlyRate: r.hourlyRate,
+      currency: r.currency,
+      rateId: r.id,
+      isActive: r.isActive,
+    }));
+
+  return { lead, coLawyers, all: [...(lead ? [lead] : []), ...coLawyers] };
 }
 
 // ─── Client Lead Details ──────────────────────────────────────────────────────
