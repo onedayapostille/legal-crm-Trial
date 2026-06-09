@@ -1018,8 +1018,9 @@ export const appRouter = router({
         feeType: z.enum(["Billable Hours", "Fixed / Project-Based Fees", "Retainers", "Success Fees", "Advisory / Special Mandates", "Blended"]).optional(),
         agreedFees: z.string().optional(),
         discountApproval: z.enum(["N/A", "P&L Head Lawyers", "CEO", "Board"]).default("N/A"),
-        // discountPercentage, discountAmount, netFees are server-computed from discountApproval
-        billedAmount: z.string().optional(),
+        // discountPercentage, discountAmount, netFees are server-computed from discountApproval.
+        // billedAmount removed — Revenue is the single amount field; billed_amount is
+        // mirrored to revenue server-side for backward compatibility.
         revenue: z.string().optional(),
         collectedAmount: z.string().optional(),
         // remainingAdvanced, outstandingAmount are server-computed from billing fields
@@ -1043,8 +1044,8 @@ export const appRouter = router({
         feeType: z.enum(["Billable Hours", "Fixed / Project-Based Fees", "Retainers", "Success Fees", "Advisory / Special Mandates", "Blended"]).optional(),
         agreedFees: z.string().optional(),
         discountApproval: z.enum(["N/A", "P&L Head Lawyers", "CEO", "Board"]).optional(),
-        // discountPercentage, discountAmount, netFees are server-computed
-        billedAmount: z.string().optional(),
+        // discountPercentage, discountAmount, netFees are server-computed.
+        // billedAmount removed — mirrored to revenue server-side (compatibility).
         revenue: z.string().optional(),
         collectedAmount: z.string().optional(),
         // remainingAdvanced, outstandingAmount are server-computed

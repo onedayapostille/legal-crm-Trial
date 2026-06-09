@@ -131,12 +131,17 @@ export function applyDiscountRules(data: Record<string, unknown>): Record<string
   out.discountAmount     = String(discountAmt);
   out.netFees            = String(netFees);
 
-  const billed    = toNum(out.billedAmount)    ?? 0;
+  // "Revenue" is now the single amount field. "Billed Amount" was removed from the
+  // forms (it duplicated Revenue). We keep the billed_amount COLUMN as a
+  // compatibility alias — always mirrored to revenue on write — so historical
+  // readers and any missed report keep working and stay consistent.
   const revenue   = toNum(out.revenue)         ?? 0;
+  const billed    = revenue; // alias
   const collected = toNum(out.collectedAmount) ?? 0;
 
-  out.remainingAdvanced = String(round2(billed - revenue));
-  out.outstandingAmount = String(round2(Math.max(0, billed - collected)));
+  out.billedAmount      = String(round2(billed)); // mirror revenue
+  out.remainingAdvanced = String(round2(billed - revenue)); // = 0 (kept for the column)
+  out.outstandingAmount = String(round2(Math.max(0, revenue - collected)));
 
   return out;
 }
@@ -1858,10 +1863,10 @@ export async function updateFinancialRecord(id: number, data: Partial<InsertFina
 
   // Only pass the 5 user-editable inputs to applyDiscountRules — never spread
   // the full DB row (which contains id, createdAt, etc.) into SET.
+  // Revenue is the single amount input; billedAmount is derived (alias) from it.
   const rulesInput = {
     discountApproval: data.discountApproval ?? existing.discountApproval ?? "N/A",
     agreedFees:       data.agreedFees       ?? existing.agreedFees,
-    billedAmount:     data.billedAmount     ?? existing.billedAmount,
     revenue:          data.revenue          ?? existing.revenue,
     collectedAmount:  data.collectedAmount  ?? existing.collectedAmount,
   };
@@ -1876,6 +1881,7 @@ export async function updateFinancialRecord(id: number, data: Partial<InsertFina
       discountPercentage: computed.discountPercentage as string,
       discountAmount:     computed.discountAmount     as string,
       netFees:            computed.netFees            as string,
+      billedAmount:       computed.billedAmount       as string, // mirror revenue
       remainingAdvanced:  computed.remainingAdvanced  as string,
       outstandingAmount:  computed.outstandingAmount  as string,
       updatedAt:          new Date(),
@@ -1941,7 +1947,8 @@ export async function getFinancialSummary() {
         AND   ${financialRecords.billingDate} IS NOT NULL
         AND   CURRENT_DATE - ${financialRecords.billingDate}::date >= ${overdaysSql}
       )`,
-      totalToBeBilled:  sql<string>`COALESCE(SUM(GREATEST(0, COALESCE(${financialRecords.agreedFees}, 0)::numeric - COALESCE(${financialRecords.billedAmount}, 0)::numeric)), 0)`,
+      // To Be Billed uses Revenue (the single amount source) = MAX(0, agreedFees - revenue).
+      totalToBeBilled:  sql<string>`COALESCE(SUM(GREATEST(0, COALESCE(${financialRecords.agreedFees}, 0)::numeric - COALESCE(${financialRecords.revenue}, 0)::numeric)), 0)`,
     })
     .from(financialRecords);
   return {
@@ -1958,8 +1965,9 @@ export async function getFinancialSummary() {
 export async function getToBeBilledBreakdown() {
   const db = getDb();
 
-  // Reusable SQL expression: MAX(0, agreedFees - billedAmount) per row, then SUM
-  const tbbSum = sql<string>`COALESCE(SUM(GREATEST(0, COALESCE(${financialRecords.agreedFees}, 0)::numeric - COALESCE(${financialRecords.billedAmount}, 0)::numeric)), 0)`;
+  // Reusable SQL expression: MAX(0, agreedFees - revenue) per row, then SUM.
+  // Revenue is the single amount source (billed_amount is a deprecated alias).
+  const tbbSum = sql<string>`COALESCE(SUM(GREATEST(0, COALESCE(${financialRecords.agreedFees}, 0)::numeric - COALESCE(${financialRecords.revenue}, 0)::numeric)), 0)`;
 
   // ── By Client ──────────────────────────────────────────────────────────────
   const byClientRaw = await db

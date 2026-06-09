@@ -41,7 +41,6 @@ const DISCOUNT_RATES: Record<string, number> = {
 function calcFinancials(f: {
   agreedFees: string;
   discountApproval: string;
-  billedAmount: string;
   revenue: string;
   collectedAmount: string;
 }) {
@@ -49,17 +48,17 @@ function calcFinancials(f: {
   const pct       = DISCOUNT_RATES[f.discountApproval] ?? 0;
   const discAmt   = Math.round(agreed * pct) / 100;
   const netFees   = Math.max(0, Math.round((agreed - discAmt) * 100) / 100);
-  const billed    = Number(f.billedAmount)    || 0;
+  // Revenue is the single amount field (billed amount was removed; it duplicated this).
   const revenue   = Number(f.revenue)         || 0;
   const collected = Number(f.collectedAmount) || 0;
-  const toBeBilled = Math.max(0, Math.round((agreed - billed) * 100) / 100);
-  const overbilled = agreed > 0 && billed > agreed;
+  const toBeBilled = Math.max(0, Math.round((agreed - revenue) * 100) / 100);
+  const overbilled = agreed > 0 && revenue > agreed;
   return {
     discountPercentage: String(pct),
     discountAmount:     String(discAmt),
     netFees:            String(netFees),
-    remainingAdvanced:  String(Math.round((billed - revenue) * 100) / 100),
-    outstandingAmount:  String(Math.max(0, Math.round((billed - collected) * 100) / 100)),
+    remainingAdvanced:  "0",
+    outstandingAmount:  String(Math.max(0, Math.round((revenue - collected) * 100) / 100)),
     toBeBilled:         String(toBeBilled),
     overbilled,
   };
@@ -72,7 +71,6 @@ const BLANK_FORM = {
   feeType:           "" as "" | "Billable Hours" | "Fixed / Project-Based Fees" | "Retainers" | "Success Fees" | "Advisory / Special Mandates" | "Blended",
   agreedFees:        "",
   discountApproval:  "N/A" as "N/A" | "P&L Head Lawyers" | "CEO" | "Board",
-  billedAmount:      "",
   revenue:           "",
   collectedAmount:   "",
   collectionStatus:  "Not Billed" as "Not Billed" | "Partially Billed" | "Billed" | "Partially Collected" | "Fully Collected" | "Overdue",
@@ -91,7 +89,6 @@ function recordToForm(r: any): FormState {
     feeType:           r.feeType           ?? "",
     agreedFees:        r.agreedFees        ?? "",
     discountApproval:  r.discountApproval  ?? "N/A",
-    billedAmount:      r.billedAmount      ?? "",
     revenue:           r.revenue           ?? "",
     collectedAmount:   r.collectedAmount   ?? "",
     collectionStatus:  r.collectionStatus  ?? "Not Billed",
@@ -244,7 +241,6 @@ export default function FinancialDialog({
     // Validate numeric monetary fields
     const numericFields: Array<[keyof FormState, string]> = [
       ["agreedFees",     "Agreed Fees"],
-      ["billedAmount",   "Billed Amount"],
       ["revenue",        "Revenue"],
       ["collectedAmount","Collected Amount"],
     ];
@@ -263,7 +259,6 @@ export default function FinancialDialog({
       ...(form.feeType           ? { feeType:           form.feeType }           : {}),
       ...(form.agreedFees        ? { agreedFees:        form.agreedFees }        : {}),
       discountApproval:  form.discountApproval,
-      ...(form.billedAmount      ? { billedAmount:      form.billedAmount }      : {}),
       ...(form.revenue           ? { revenue:           form.revenue }           : {}),
       ...(form.collectedAmount   ? { collectedAmount:   form.collectedAmount }   : {}),
       collectionStatus:  form.collectionStatus,
@@ -521,13 +516,11 @@ export default function FinancialDialog({
             />
           </div>
 
-          {/* ── Billing inputs ───────────────────────────────────────────── */}
-          {(["billedAmount", "revenue", "collectedAmount"] as const).map(key => (
+          {/* ── Billing inputs (Revenue is the single amount field) ───────── */}
+          {(["revenue", "collectedAmount"] as const).map(key => (
             <div key={key}>
               <Label className="text-xs">
-                {key === "billedAmount"  ? "Billed Amount"   :
-                 key === "revenue"       ? "Revenue"         :
-                                          "Collected Amount"}
+                {key === "revenue" ? "Revenue" : "Collected Amount"}
               </Label>
               <Input
                 value={form[key]}
@@ -559,7 +552,7 @@ export default function FinancialDialog({
               className="h-8 text-sm bg-amber-50 border-amber-200 font-semibold text-amber-900"
             />
             <p className="text-xs text-muted-foreground mt-0.5">
-              = MAX(0, Agreed Fees − Billed Amount)
+              = MAX(0, Agreed Fees − Revenue)
             </p>
           </div>
 
@@ -568,7 +561,7 @@ export default function FinancialDialog({
             <div className="col-span-2 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm">
               <AlertTriangle className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
               <span className="text-red-700">
-                <strong>Overbilling warning:</strong> Billed Amount (SAR {Number(form.billedAmount || 0).toLocaleString("en-US")}) exceeds Agreed Fees (SAR {Number(form.agreedFees || 0).toLocaleString("en-US")}). Please review.
+                <strong>Over-recognition warning:</strong> Revenue (SAR {Number(form.revenue || 0).toLocaleString("en-US")}) exceeds Agreed Fees (SAR {Number(form.agreedFees || 0).toLocaleString("en-US")}). Please review.
               </span>
             </div>
           )}
