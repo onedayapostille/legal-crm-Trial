@@ -1,5 +1,5 @@
-import { Link } from "wouter";
-import { Plus, Briefcase, Calendar } from "lucide-react";
+import { Link, useSearch } from "wouter";
+import { Plus, Briefcase, Calendar, X } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Button } from "@/components/ui/button";
@@ -13,16 +13,38 @@ const PRIORITY_COLORS: Record<string, string> = {
 };
 
 export default function MatterList() {
-  const { data: matters = [], isLoading } = trpc.clientMatters.listAll.useQuery();
+  // Read the status filter straight from the URL (?status=Active) so the page is
+  // deep-linkable from the dashboard KPI. The filter is applied by the backend
+  // query — there is no client-side filtering of the result set.
+  const search = useSearch();
+  const statusFilter = new URLSearchParams(search).get("status")?.trim() || undefined;
+
+  const { data: matters = [], isLoading } = trpc.clientMatters.listAll.useQuery(
+    statusFilter ? { status: statusFilter } : undefined,
+  );
 
   return (
     <DashboardLayout>
       <div className="space-y-5">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold">Matters</h1>
+            <h1 className="text-2xl font-bold">
+              {statusFilter ? `${statusFilter} Matters` : "Matters"}
+            </h1>
             <p className="text-sm text-muted-foreground mt-0.5">
               {matters.length} matter{matters.length !== 1 ? "s" : ""}
+              {statusFilter && (
+                <>
+                  {" "}· filtered by status{" "}
+                  <span className="font-medium">{statusFilter}</span>
+                  <Link
+                    href="/matters"
+                    className="inline-flex items-center gap-0.5 ml-2 text-blue-600 hover:underline"
+                  >
+                    <X className="h-3 w-3" /> clear
+                  </Link>
+                </>
+              )}
             </p>
           </div>
           <Link href="/matters/new">

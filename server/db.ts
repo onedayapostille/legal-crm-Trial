@@ -458,10 +458,14 @@ export async function getLeadKpiMetrics() {
     .where(eq(leads.currentStatus, "Converted"));
   const revenue = Number(revenueRow?.total ?? 0);
 
+  // "Active Matters" counts client matters whose status is exactly "Active"
+  // (case/whitespace-insensitive, since client_matters.matter_status is free-text).
+  // This is the same table/data shown on the /matters list, so the KPI value and
+  // the click-through filtered list always agree.
   const [activeMatterRow] = await db
     .select({ count: count() })
-    .from(matters)
-    .where(eq(matters.status, "active"));
+    .from(clientMatters)
+    .where(isActiveMatterStatus());
   const activeMatters = Number(activeMatterRow?.count ?? 0);
 
   const [pendingTaskRow] = await db
@@ -922,9 +926,15 @@ export async function checkConflict(rawQuery: string) {
 
 export async function createClient(data: InsertClient, userId: number) {
   const db = getDb();
+  // Infer the intake channel when the caller didn't specify one:
+  //  - created straight as "Existing Client" → "Direct" (walk-in, not funnel)
+  //  - otherwise (Leads/Rejected) → "Lead" (entered the intake funnel)
+  const convertedFrom =
+    data.convertedFrom ??
+    (data.clientStatus === "Existing Client" ? "Direct" : "Lead");
   const [client] = await db
     .insert(clients)
-    .values({ ...data, createdBy: userId })
+    .values({ ...data, convertedFrom, createdBy: userId })
     .returning();
   await createAuditLog({
     entityType: "client",
@@ -979,7 +989,7 @@ export async function getClientStatusCounts() {
     .select({ status: clients.clientStatus, count: count() })
     .from(clients)
     .groupBy(clients.clientStatus);
-  const result = { existing: 0, leads: 0, rejected: 0, total: 0 };
+  const result = { existing: 0, leads: 0, rejected: 0, total: 0, nonActive: 0 };
   for (const row of rows) {
     const n = Number(row.count);
     result.total += n;
@@ -987,7 +997,88 @@ export async function getClientStatusCounts() {
     else if (row.status === "Leads") result.leads = n;
     else if (row.status === "Rejected") result.rejected = n;
   }
+  // "Non-active" leads = every client that is NOT a converted Active ("Existing Client").
+  // This is the basis for the Dashboard "Total Leads" KPI, while "Leads Pipeline"
+  // counts only clients still in "Leads" status (i.e. requiring follow-up).
+  result.nonActive = result.leads + result.rejected;
   return result;
+}
+
+export type ConversionRange = "month" | "quarter" | "all";
+
+// Inclusive lower-bound date for a conversion range, or null for "all time".
+// Exported for reuse/testing.
+export function conversionRangeStart(range: ConversionRange, now: Date): Date | null {
+  if (range === "month") {
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  }
+  if (range === "quarter") {
+    const quarterStartMonth = Math.floor(now.getMonth() / 3) * 3;
+    return new Date(now.getFullYear(), quarterStartMonth, 1);
+  }
+  return null; // all time
+}
+
+/**
+ * Dashboard "Conversion Rate" KPI.
+ *
+ *   Conversion Rate = converted clients / total intake * 100
+ *
+ *   - total intake     = clients whose intake channel is Lead or Enquiry
+ *                        (Direct walk-ins are excluded). Reported split as
+ *                        totalLeads + totalEnquiries.
+ *   - converted clients = those intake clients that reached "Existing Client"
+ *                         (Active). Direct clients can never be "converted".
+ *
+ * Because the numerator is a strict subset of the denominator, the rate is
+ * always between 0 and 100. The rate is rounded to one decimal place.
+ *
+ * The optional `range` bounds clients by createdAt (intake date): this month,
+ * this quarter, or all time.
+ */
+export async function getClientConversionMetrics(
+  range: ConversionRange = "all",
+  now: Date = new Date(),
+) {
+  const db = getDb();
+  const start = conversionRangeStart(range, now);
+  const inRange = start ? gte(clients.createdAt, start) : undefined;
+
+  const fromFunnel = inArray(clients.convertedFrom, ["Lead", "Enquiry"]);
+
+  const [leadRow] = await db
+    .select({ count: count() })
+    .from(clients)
+    .where(and(eq(clients.convertedFrom, "Lead"), inRange));
+
+  const [enquiryRow] = await db
+    .select({ count: count() })
+    .from(clients)
+    .where(and(eq(clients.convertedFrom, "Enquiry"), inRange));
+
+  const [convertedRow] = await db
+    .select({ count: count() })
+    .from(clients)
+    .where(and(eq(clients.clientStatus, "Existing Client"), fromFunnel, inRange));
+
+  const totalLeads = Number(leadRow?.count ?? 0);
+  const totalEnquiries = Number(enquiryRow?.count ?? 0);
+  const totalIntake = totalLeads + totalEnquiries;
+  const convertedClients = Number(convertedRow?.count ?? 0);
+
+  const conversionRate =
+    totalIntake > 0
+      ? Math.round((convertedClients / totalIntake) * 1000) / 10 // 1 decimal place
+      : 0;
+
+  return {
+    range,
+    convertedClients,
+    totalLeads,
+    totalEnquiries,
+    totalIntake,
+    conversionRate,
+  };
 }
 
 // ─── Client Matters ───────────────────────────────────────────────────────────
@@ -1001,10 +1092,24 @@ export async function getClientMatters(clientId: number) {
     .orderBy(desc(clientMatters.createdAt));
 }
 
+// Case/whitespace-insensitive predicate for a client matter's status. Because
+// client_matters.matter_status is a free-text VARCHAR, stored values may vary in
+// casing/padding (e.g. "Active", "active", " On Hold "). Normalize both sides so
+// "Active" always matches regardless of how it was entered.
+function matterStatusEquals(status: string) {
+  return sql`lower(trim(${clientMatters.matterStatus})) = ${status.trim().toLowerCase()}`;
+}
+
+function isActiveMatterStatus() {
+  return matterStatusEquals("Active");
+}
+
 // Aggregated view across all clients with client name joined in. Used by the
-// global /matters list page.
-export async function getAllClientMatters() {
+// global /matters list page. An optional status filter is applied at the DB
+// layer (not in the frontend) so the list always matches the dashboard KPI.
+export async function getAllClientMatters(filters: { status?: string } = {}) {
   const db = getDb();
+  const status = filters.status?.trim();
   return db
     .select({
       id: clientMatters.id,
@@ -1025,6 +1130,7 @@ export async function getAllClientMatters() {
     })
     .from(clientMatters)
     .leftJoin(clients, eq(clientMatters.clientId, clients.id))
+    .where(status ? matterStatusEquals(status) : undefined)
     .orderBy(desc(clientMatters.createdAt));
 }
 

@@ -63,6 +63,10 @@ export default function Dashboard() {
   // "To Be Billed" breakdown view toggle
   const [tbbView, setTbbView] = useState<"client" | "matter">("client");
 
+  // Conversion Rate date range: this month / this quarter / all time
+  const [convRange, setConvRange] = useState<"month" | "quarter" | "all">("all");
+  const { data: conversion } = trpc.clients.conversionMetrics.useQuery({ range: convRange });
+
   const pendingTasks = tasks?.filter(t => t.status !== "done") ?? [];
   const overdueTasks = pendingTasks.filter(t => t.dueDate && new Date(t.dueDate) < new Date());
   const recentLeads = (leads ?? []).slice(0, 5);
@@ -114,20 +118,20 @@ export default function Dashboard() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <StatCard
-              title="Total Leads"
-              value={stats?.totalLeads ?? 0}
-              subtitle={`${stats?.newLeads ?? 0} new this month`}
+              title="Total Leads (Non-active)"
+              value={clientStats?.nonActive ?? 0}
+              subtitle="Leads + Rejected — clients not yet Active"
               icon={Users}
               color="bg-blue-500"
-              href="/leads"
+              href="/clients"
             />
             <StatCard
               title="Active Matters"
               value={stats?.activeMatters ?? 0}
-              subtitle="Open cases"
+              subtitle="Status = Active"
               icon={Briefcase}
               color="bg-indigo-500"
-              href="/matters"
+              href="/matters?status=Active"
             />
             <StatCard
               title="Pending Tasks"
@@ -137,13 +141,41 @@ export default function Dashboard() {
               color={overdueTasks.length > 0 ? "bg-orange-500" : "bg-green-500"}
               href="/tasks"
             />
-            <StatCard
-              title="Conversion Rate"
-              value={`${stats?.conversionRate ?? 0}%`}
-              subtitle={`${stats?.convertedLeads ?? 0} converted leads`}
-              icon={TrendingUp}
-              color="bg-purple-500"
-            />
+            <Card className="hover:shadow-md transition-shadow">
+              <CardContent className="pt-6">
+                <div className="flex items-start justify-between">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-muted-foreground">Conversion Rate</p>
+                    <p className="text-3xl font-bold mt-1">
+                      {(conversion?.conversionRate ?? 0).toFixed(1)}%
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {conversion?.convertedClients ?? 0} of {conversion?.totalIntake ?? 0} intake converted
+                    </p>
+                  </div>
+                  <div className="p-3 rounded-xl bg-purple-500">
+                    <TrendingUp className="h-6 w-6 text-white" />
+                  </div>
+                </div>
+                <div className="flex gap-1 mt-3">
+                  {([
+                    ["month", "Month"],
+                    ["quarter", "Quarter"],
+                    ["all", "All"],
+                  ] as const).map(([value, label]) => (
+                    <Button
+                      key={value}
+                      variant={convRange === value ? "secondary" : "ghost"}
+                      size="sm"
+                      className="h-6 px-2 text-xs"
+                      onClick={() => setConvRange(value)}
+                    >
+                      {label}
+                    </Button>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
           </div>
         )}
 
@@ -165,6 +197,7 @@ export default function Dashboard() {
                 <StatCard
                   title="Existing Clients"
                   value={clientStats.existing}
+                  subtitle="Active / converted clients"
                   icon={UserCheck}
                   color="bg-green-600"
                   href="/clients/existing"
@@ -172,6 +205,7 @@ export default function Dashboard() {
                 <StatCard
                   title="Leads Pipeline"
                   value={clientStats.leads}
+                  subtitle="In Lead status — needs follow-up"
                   icon={Users}
                   color="bg-blue-600"
                   href="/clients/leads"
