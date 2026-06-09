@@ -3,8 +3,9 @@ import { Link } from "wouter";
 import {
   Users, Briefcase, CheckSquare, TrendingUp, DollarSign,
   ArrowRight, Plus, Clock, AlertCircle, Building2, UserCheck,
-  UserX, Calendar, AlertTriangle, Receipt,
+  UserX, Calendar, AlertTriangle, Receipt, ShieldCheck,
 } from "lucide-react";
+import ConflictCheckDialog from "@/components/ConflictCheckDialog";
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -67,6 +68,9 @@ export default function Dashboard() {
   const [convRange, setConvRange] = useState<"month" | "quarter" | "all">("all");
   const { data: conversion } = trpc.clients.conversionMetrics.useQuery({ range: convRange });
 
+  // Conflict Check dialog
+  const [conflictOpen, setConflictOpen] = useState(false);
+
   const pendingTasks = tasks?.filter(t => t.status !== "done") ?? [];
   const overdueTasks = pendingTasks.filter(t => t.dueDate && new Date(t.dueDate) < new Date());
   const recentLeads = (leads ?? []).slice(0, 5);
@@ -88,6 +92,9 @@ export default function Dashboard() {
             </p>
           </div>
           <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => setConflictOpen(true)}>
+              <ShieldCheck className="h-4 w-4 mr-1" /> Run Conflict Check
+            </Button>
             {canViewClients && (
               <Link href="/clients/new">
                 <Button size="sm">
@@ -489,6 +496,8 @@ export default function Dashboard() {
           </Card>
         )}
       </div>
+
+      <ConflictCheckDialog open={conflictOpen} onClose={() => setConflictOpen(false)} />
     </DashboardLayout>
   );
 }
