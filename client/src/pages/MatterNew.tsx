@@ -11,12 +11,15 @@ import {
 } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import DashboardLayout from "@/components/DashboardLayout";
+import ConflictWarningDialog from "@/components/ConflictWarningDialog";
+import type { ConflictMatch } from "@/components/ConflictMatchTable";
 import { toast } from "sonner";
 
 type Priority = "low" | "medium" | "high" | "urgent";
 
 export default function MatterNew() {
   const [, navigate] = useLocation();
+  const utils = trpc.useUtils();
   const { data: clients = [], isLoading: clientsLoading } = trpc.clients.list.useQuery({});
 
   const [clientId, setClientId] = useState<string>("");
@@ -24,10 +27,14 @@ export default function MatterNew() {
     originalSerial: "", matterReference: "", matterType: "", leadPartner: "",
     leadPartnerFullName: "", supportLead: "", attorneyHead: "", attorney1: "",
     attorney2: "", attorney3: "", attorneyFullName: "",
-    matterDescription: "", matterStatus: "",
+    matterDescription: "", opposingParty: "", matterStatus: "",
     balanceWorkLeft: "", achievementPercentage: "", achievementStatus: "",
     priority: "medium" as Priority,
   });
+
+  // Conflict check state: the matches awaiting acknowledgement, if any.
+  const [pendingConflicts, setPendingConflicts] = useState<ConflictMatch[] | null>(null);
+  const [checking, setChecking] = useState(false);
 
   const create = trpc.clientMatters.create.useMutation({
     onSuccess: (matter) => {
@@ -37,20 +44,46 @@ export default function MatterNew() {
     onError: (e) => toast.error(e.message),
   });
 
-  const submit = () => {
-    if (!clientId) {
-      toast.error("Please select a client");
-      return;
-    }
+  function buildPayload(extra: Record<string, unknown> = {}): Record<string, unknown> {
     const payload: Record<string, unknown> = {
       clientId: Number(clientId),
       priority: form.priority,
+      ...extra,
     };
     for (const [k, v] of Object.entries(form)) {
       if (k === "priority") continue;
       if (typeof v === "string" && v.trim() !== "") payload[k] = v.trim();
     }
-    create.mutate(payload as any);
+    return payload;
+  }
+
+  const submit = async () => {
+    if (!clientId) {
+      toast.error("Please select a client");
+      return;
+    }
+    // Auto-run conflict check against matter name + opposing party.
+    setChecking(true);
+    try {
+      const conflicts = await utils.clientMatters.checkConflicts.fetch({
+        matterName: form.matterReference.trim() || undefined,
+        opposingParty: form.opposingParty.trim() || undefined,
+      });
+      if (conflicts.length > 0) {
+        setPendingConflicts(conflicts); // warn + require acknowledgement
+        return;
+      }
+      create.mutate(buildPayload() as any);
+    } catch (e: any) {
+      toast.error(e?.message ?? "Conflict check failed");
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const createAcknowledged = () => {
+    create.mutate(buildPayload({ acknowledgeConflicts: true }) as any);
+    setPendingConflicts(null);
   };
 
   return (
@@ -101,6 +134,7 @@ export default function MatterNew() {
                 ["attorney2", "Attorney 2"],
                 ["attorney3", "Attorney 3"],
                 ["attorneyFullName", "Attorney Full Name"],
+                ["opposingParty", "Opposing Party (for conflict check)"],
                 ["matterStatus", "Matter Status (short, e.g. Active)"],
                 ["balanceWorkLeft", "Balance Work Left (%)"],
                 ["achievementPercentage", "Achievement %"],
@@ -143,13 +177,21 @@ export default function MatterNew() {
               <Link href="/matters">
                 <Button variant="outline">Cancel</Button>
               </Link>
-              <Button onClick={submit} disabled={create.isPending}>
-                {create.isPending ? "Creating…" : "Create Matter"}
+              <Button onClick={submit} disabled={create.isPending || checking}>
+                {checking ? "Checking conflicts…" : create.isPending ? "Creating…" : "Create Matter"}
               </Button>
             </div>
           </CardContent>
         </Card>
       </div>
+
+      <ConflictWarningDialog
+        open={pendingConflicts !== null}
+        conflicts={pendingConflicts ?? []}
+        isCreating={create.isPending}
+        onCancel={() => setPendingConflicts(null)}
+        onAcknowledge={createAcknowledged}
+      />
     </DashboardLayout>
   );
 }

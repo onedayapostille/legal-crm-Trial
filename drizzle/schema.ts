@@ -450,6 +450,8 @@ export const clientMatters = pgTable("client_matters", {
   attorney3: varchar("attorney_3", { length: 100 }),
   attorneyFullName: varchar("attorney_full_name", { length: 255 }),
   matterDescription: text("matter_description"),
+  // Adverse / opposing party for conflict-of-interest checks.
+  opposingParty: varchar("opposing_party", { length: 255 }),
   matterStatus: varchar("matter_status", { length: 100 }),
   balanceWorkLeft: decimal("balance_work_left", { precision: 5, scale: 2 }),
   achievementPercentage: decimal("achievement_percentage", { precision: 5, scale: 2 }),

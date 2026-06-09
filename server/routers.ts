@@ -787,7 +787,7 @@ export const appRouter = router({
 
     conflictCheck: permissionProcedure("clients:view")
       .input(z.object({ query: z.string().min(1).max(255) }))
-      .query(async ({ input }) => db.checkConflict(input.query)),
+      .query(async ({ input }) => db.searchConflicts(input.query)),
   }),
 
   // ─── Client Matters ────────────────────────────────────────────────────────
@@ -796,6 +796,17 @@ export const appRouter = router({
     list: permissionProcedure("clients:view")
       .input(z.object({ clientId: z.number() }))
       .query(async ({ input }) => db.getClientMatters(input.clientId)),
+
+    // Conflict check for a (prospective) matter — by matter name and/or opposing
+    // party. Used by the Create Matter form before submitting.
+    checkConflicts: permissionProcedure("clients:view")
+      .input(z.object({
+        matterName: z.string().optional(),
+        opposingParty: z.string().optional(),
+      }))
+      .query(async ({ input }) =>
+        db.checkMatterConflicts({ matterName: input.matterName, opposingParty: input.opposingParty }),
+      ),
 
     listAll: permissionProcedure("clients:view")
       .input(z.object({ status: z.string().optional() }).optional())
@@ -828,13 +839,34 @@ export const appRouter = router({
         attorney3: z.string().optional(),
         attorneyFullName: z.string().optional(),
         matterDescription: z.string().optional(),
+        opposingParty: z.string().max(255).optional(),
         matterStatus: z.string().max(100).optional(),
         balanceWorkLeft: z.string().optional(),
         achievementPercentage: z.string().optional(),
         achievementStatus: z.string().max(100).optional(),
         priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
+        // When true, the user has reviewed the conflict check and chosen to
+        // proceed despite potential matches. Not persisted as a matter column.
+        acknowledgeConflicts: z.boolean().optional(),
       }))
-      .mutation(async ({ input, ctx }) => db.createClientMatter(input as any, ctx.user!.id)),
+      .mutation(async ({ input, ctx }) => {
+        const { acknowledgeConflicts, ...matterInput } = input;
+        // Backend enforcement (defense in depth): re-run the conflict check and
+        // refuse to create unless the user has acknowledged any matches.
+        const conflicts = await db.checkMatterConflicts({
+          matterName: matterInput.matterReference,
+          opposingParty: matterInput.opposingParty,
+        });
+        if (conflicts.length > 0 && !acknowledgeConflicts) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              `Potential conflict(s) found (${conflicts.length}). Review the conflict ` +
+              `check and acknowledge before creating this matter.`,
+          });
+        }
+        return db.createClientMatter(matterInput as any, ctx.user!.id, conflicts);
+      }),
 
     update: permissionProcedure("clients:manage")
       .input(z.object({
@@ -859,6 +891,7 @@ export const appRouter = router({
         attorney3: z.string().optional(),
         attorneyFullName: z.string().optional(),
         matterDescription: z.string().optional(),
+        opposingParty: z.string().max(255).optional(),
         matterStatus: z.string().max(100).optional(),
         balanceWorkLeft: z.string().optional(),
         achievementPercentage: z.string().optional(),
