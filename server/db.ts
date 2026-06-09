@@ -979,7 +979,7 @@ export async function getClientStatusCounts() {
     .select({ status: clients.clientStatus, count: count() })
     .from(clients)
     .groupBy(clients.clientStatus);
-  const result = { existing: 0, leads: 0, rejected: 0, total: 0 };
+  const result = { existing: 0, leads: 0, rejected: 0, total: 0, nonActive: 0 };
   for (const row of rows) {
     const n = Number(row.count);
     result.total += n;
@@ -987,6 +987,10 @@ export async function getClientStatusCounts() {
     else if (row.status === "Leads") result.leads = n;
     else if (row.status === "Rejected") result.rejected = n;
   }
+  // "Non-active" leads = every client that is NOT a converted Active ("Existing Client").
+  // This is the basis for the Dashboard "Total Leads" KPI, while "Leads Pipeline"
+  // counts only clients still in "Leads" status (i.e. requiring follow-up).
+  result.nonActive = result.leads + result.rejected;
   return result;
 }
 
