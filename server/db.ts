@@ -870,6 +870,30 @@ export async function getAllClients(filters?: {
   return query;
 }
 
+/**
+ * Most recent Lead-status clients, restricted to the last `days` days, newest
+ * first, capped at `limit`. Powers the dashboard "Recent Leads" widget.
+ *
+ * Timezone consistency: the cutoff is computed with the DATABASE clock — NOW()
+ * minus an interval — which is the same clock that stamps created_at (defaultNow
+ * = now()). The comparison therefore never depends on the app server's or the
+ * browser's timezone.
+ */
+export async function getRecentLeads(days = 30, limit = 5) {
+  const db = getDb();
+  return db
+    .select()
+    .from(clients)
+    .where(
+      and(
+        eq(clients.clientStatus, "Leads"),
+        gte(clients.createdAt, sql`NOW() - make_interval(days => ${days})`),
+      ),
+    )
+    .orderBy(desc(clients.createdAt))
+    .limit(limit);
+}
+
 export async function getClientById(id: number) {
   const db = getDb();
   const result = await db.select().from(clients).where(eq(clients.id, id)).limit(1);

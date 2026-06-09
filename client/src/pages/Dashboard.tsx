@@ -50,7 +50,6 @@ export default function Dashboard() {
   const { data: stats, isLoading } = trpc.dashboard.stats.useQuery();
   const { data: me } = trpc.auth.me.useQuery();
   const { data: recentActivity } = trpc.dashboard.recentActivity.useQuery({ limit: 8 });
-  const { data: leads } = trpc.leads.list.useQuery();
   const { data: tasks } = trpc.tasks.list.useQuery({});
   const { user } = useAuth();
 
@@ -58,6 +57,12 @@ export default function Dashboard() {
   const canViewClients = hasPermission(user?.role, "clients:view");
   const canViewFinancial = hasPermission(user?.role, "financial:view");
   const { data: clientStats } = trpc.clients.dashboardStats.useQuery(undefined, { enabled: canViewClients });
+  // Recent Leads = Lead-status clients created in the last 30 days (newest first,
+  // capped server-side). Date window uses the DB clock for timezone consistency.
+  const { data: recentLeads = [] } = trpc.clients.recentLeads.useQuery(
+    { days: 30, limit: 5 },
+    { enabled: canViewClients },
+  );
   const { data: financialSummary } = trpc.financial.summary.useQuery(undefined, { enabled: canViewFinancial });
   const { data: tbbBreakdown } = trpc.financial.toBeBilledBreakdown.useQuery(undefined, { enabled: canViewFinancial });
 
@@ -73,7 +78,6 @@ export default function Dashboard() {
 
   const pendingTasks = tasks?.filter(t => t.status !== "done") ?? [];
   const overdueTasks = pendingTasks.filter(t => t.dueDate && new Date(t.dueDate) < new Date());
-  const recentLeads = (leads ?? []).slice(0, 5);
 
   const formatSAR = (n: number) =>
     `SAR ${new Intl.NumberFormat("en-US", { minimumFractionDigits: 0 }).format(n)}`;
@@ -391,10 +395,16 @@ export default function Dashboard() {
           <Card>
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
-                <CardTitle className="text-base">Recent Leads</CardTitle>
-                <Link href="/leads">
+                <div>
+                  <CardTitle className="text-base">Recent Leads</CardTitle>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Showing leads from the last 30 days.
+                  </p>
+                </div>
+                {/* View All → full Leads Pipeline (no date restriction) */}
+                <Link href="/clients/leads">
                   <Button variant="ghost" size="sm" className="text-xs">
-                    View all <ArrowRight className="ml-1 h-3 w-3" />
+                    View All <ArrowRight className="ml-1 h-3 w-3" />
                   </Button>
                 </Link>
               </div>
@@ -402,21 +412,21 @@ export default function Dashboard() {
             <CardContent>
               {recentLeads.length === 0 ? (
                 <div className="text-center py-6 text-muted-foreground text-sm">
-                  No leads yet.{" "}
-                  <Link href="/leads/new" className="text-blue-600 hover:underline">Add the first one</Link>
+                  No new leads in the last 30 days.{" "}
+                  <Link href="/clients/new" className="text-blue-600 hover:underline">Add a lead</Link>
                 </div>
               ) : (
                 <div className="space-y-3">
                   {recentLeads.map(lead => (
-                    <Link key={lead.id} href={`/leads/${lead.id}`}>
+                    <Link key={lead.id} href={`/clients/${lead.id}`}>
                       <div className="flex items-center justify-between py-2 px-3 rounded-lg hover:bg-muted/50 transition-colors cursor-pointer">
                         <div className="min-w-0">
                           <p className="font-medium text-sm truncate">{lead.clientName}</p>
                           <p className="text-xs text-muted-foreground truncate">
-                            {lead.serviceRequested || lead.leadCode}
+                            {lead.clientNumber || lead.city || lead.matterType || "New lead"}
                           </p>
                         </div>
-                        <StatusBadge status={lead.currentStatus ?? "New"} />
+                        <StatusBadge status={lead.clientStatus ?? "Leads"} />
                       </div>
                     </Link>
                   ))}
@@ -505,6 +515,10 @@ export default function Dashboard() {
 function StatusBadge({ status }: { status: string }) {
   const map: Record<string, string> = {
     New: "bg-blue-100 text-blue-700",
+    // Client-module statuses (Recent Leads shows Lead-status clients)
+    Leads: "bg-blue-100 text-blue-700",
+    "Existing Client": "bg-green-100 text-green-700",
+    Rejected: "bg-red-100 text-red-700",
     Contacted: "bg-yellow-100 text-yellow-700",
     "Meeting Scheduled": "bg-purple-100 text-purple-700",
     "Proposal Sent": "bg-orange-100 text-orange-700",
