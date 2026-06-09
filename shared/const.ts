@@ -38,6 +38,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "clients:manage",
     "leads:manage",
     "matters:manage",
+    "matters:assign_lawyer",
     "tasks:manage",
     "analytics:view",
     "payments:view",

@@ -235,7 +235,7 @@ export default function FinancialRecords() {
     return [...map.values()]
       .map(({ _statuses, ...row }) => ({
         ...row,
-        toBeBilled: Math.max(0, row.agreedFees - row.billedAmount),
+        toBeBilled: Math.max(0, row.agreedFees - row.revenue),
         statuses:   [..._statuses],
       }))
       .sort((a, b) => a.clientName.localeCompare(b.clientName));
@@ -281,7 +281,7 @@ export default function FinancialRecords() {
     return [...map.values()]
       .map(({ _statuses, _lawyers, ...row }) => ({
         ...row,
-        toBeBilled:         Math.max(0, row.agreedFees - row.billedAmount),
+        toBeBilled:         Math.max(0, row.agreedFees - row.revenue),
         statuses:           [..._statuses],
         responsibleLawyers: [..._lawyers],
       }))
@@ -298,13 +298,13 @@ export default function FinancialRecords() {
   // ── Grand totals (follow the filtered set) ─────────────────────────────────
   const grandTotals = useMemo((): GrandTotals => {
     return filteredRecords.reduce((acc, r) => {
-      const agreed = Number(r.agreedFees)   || 0;
-      const billed = Number(r.billedAmount) || 0;
+      const agreed  = Number(r.agreedFees) || 0;
+      const revenue = Number(r.revenue)    || 0;
       acc.agreedFees        += agreed;
       acc.netFees           += Number(r.netFees)           || 0;
-      acc.revenue           += Number(r.revenue)           || 0;
-      acc.billedAmount      += billed;
-      acc.toBeBilled        += Math.max(0, agreed - billed);
+      acc.revenue           += revenue;
+      acc.billedAmount      += revenue; // billed mirrors revenue
+      acc.toBeBilled        += Math.max(0, agreed - revenue);
       acc.outstandingAmount += Number(r.outstandingAmount) || 0;
       acc.collectedAmount   += Number(r.collectedAmount)   || 0;
       return acc;
@@ -335,9 +335,9 @@ export default function FinancialRecords() {
     if (!m) return <span className="font-mono text-xs">#{r.clientMatterId}</span>;
     return (
       <span className="text-xs leading-tight">
-        <span className="font-medium">
+        <Link href={`/clients/${m.clientId}`} className="font-medium text-blue-600 hover:underline">
           {m.matterReference ?? m.originalSerial ?? `#${m.id}`}
-        </span>
+        </Link>
         {m.matterType && (
           <span className="text-muted-foreground"> · {m.matterType}</span>
         )}
@@ -566,7 +566,6 @@ export default function FinancialRecords() {
               <TotalPill label="Agreed"       value={fmt(grandTotals.agreedFees)} />
               <TotalPill label="Net Fees"     value={fmt(grandTotals.netFees)} />
               <TotalPill label="Revenue"      value={fmt(grandTotals.revenue)}      color="text-green-700" />
-              <TotalPill label="Billed"       value={fmt(grandTotals.billedAmount)} />
               <TotalPill label="To Be Billed" value={fmt(grandTotals.toBeBilled)}   color="text-amber-600 font-semibold" />
               <TotalPill label="Outstanding"  value={fmt(grandTotals.outstandingAmount)} color="text-red-600" />
             </div>
@@ -626,18 +625,21 @@ export default function FinancialRecords() {
                       {filteredRecords.map(r => (
                         <TableRow key={r.id}>
                           <TableCell className="font-medium text-sm">
-                            {clientMap[r.clientId] ?? `Client #${r.clientId}`}
+                            <Link href={`/clients/${r.clientId}`} className="text-blue-600 hover:underline">
+                              {clientMap[r.clientId] ?? `Client #${r.clientId}`}
+                            </Link>
                           </TableCell>
                           <TableCell className="min-w-[110px]">{matterCell(r)}</TableCell>
                           <TableCell className="text-sm">{r.feeType ?? "—"}</TableCell>
                           <TableCell className="text-sm">{formatCurrency(r.agreedFees)}</TableCell>
                           <TableCell className="text-sm">
                             {(() => {
-                              const agreed = Number(r.agreedFees)   || 0;
-                              const billed = Number(r.billedAmount) || 0;
-                              const tbb    = Math.max(0, agreed - billed);
-                              const over   = agreed > 0 && billed > agreed;
-                              if (over) return <span className="text-red-600 font-medium text-xs">Overbilled</span>;
+                              // Revenue is the single amount source (Billed Amount removed).
+                              const agreed  = Number(r.agreedFees) || 0;
+                              const revenue = Number(r.revenue)    || 0;
+                              const tbb     = Math.max(0, agreed - revenue);
+                              const over    = agreed > 0 && revenue > agreed;
+                              if (over) return <span className="text-red-600 font-medium text-xs">Over-recognized</span>;
                               if (tbb === 0 && agreed > 0) return <span className="text-green-700 text-xs font-medium">Fully billed</span>;
                               return <span className={tbb > 0 ? "text-amber-700 font-medium" : "text-muted-foreground"}>{formatCurrency(tbb)}</span>;
                             })()}
@@ -735,7 +737,7 @@ export default function FinancialRecords() {
                         <TableHead>Fee Type</TableHead>
                         <TableHead>Agreed Fees</TableHead>
                         <TableHead>Net Fees</TableHead>
-                        <TableHead>Billed</TableHead>
+                        <TableHead>Revenue</TableHead>
                         <TableHead>Collected</TableHead>
                         <TableHead>Outstanding</TableHead>
                         <TableHead>Invoice Status</TableHead>
@@ -757,13 +759,15 @@ export default function FinancialRecords() {
                         return (
                           <TableRow key={r.id} className="bg-red-50/20 hover:bg-red-50/40">
                             <TableCell className="font-medium text-sm">
-                              {clientMap[r.clientId] ?? `Client #${r.clientId}`}
+                              <Link href={`/clients/${r.clientId}`} className="text-blue-600 hover:underline">
+                                {clientMap[r.clientId] ?? `Client #${r.clientId}`}
+                              </Link>
                             </TableCell>
                             <TableCell className="min-w-[110px]">{matterCell(r)}</TableCell>
                             <TableCell className="text-sm">{r.feeType ?? "—"}</TableCell>
                             <TableCell className="text-sm">{formatCurrency(r.agreedFees)}</TableCell>
                             <TableCell className="text-sm">{formatCurrency(r.netFees)}</TableCell>
-                            <TableCell className="text-sm">{formatCurrency(r.billedAmount)}</TableCell>
+                            <TableCell className="text-sm">{formatCurrency(r.revenue)}</TableCell>
                             <TableCell className="text-sm">{formatCurrency(r.collectedAmount)}</TableCell>
                             <TableCell className="text-sm text-red-700 font-medium">
                               {formatCurrency(r.outstandingAmount)}
@@ -950,10 +954,10 @@ function StatusBadges({ statuses }: { statuses: string[] }) {
 
 // ─── TBB Cell ─────────────────────────────────────────────────────────────────
 
-function TbbCell({ agreed, billed }: { agreed: number; billed: number }) {
-  const tbb  = Math.max(0, agreed - billed);
-  const over = agreed > 0 && billed > agreed;
-  if (over)               return <span className="text-red-600 font-medium text-xs">Overbilled</span>;
+function TbbCell({ agreed, revenue }: { agreed: number; revenue: number }) {
+  const tbb  = Math.max(0, agreed - revenue);
+  const over = agreed > 0 && revenue > agreed;
+  if (over)               return <span className="text-red-600 font-medium text-xs">Over-recognized</span>;
   if (tbb === 0 && agreed > 0) return <span className="text-green-700 text-xs font-medium">Fully billed</span>;
   if (tbb === 0)          return <span className="text-muted-foreground text-xs">—</span>;
   return <span className="text-amber-700 font-semibold text-sm">{fmt(tbb)}</span>;
@@ -973,7 +977,6 @@ function ClientSummaryTable({ rows, totals }: { rows: ClientSummaryRow[]; totals
             <TableHead className="text-right">Agreed Fees</TableHead>
             <TableHead className="text-right">Net Fees</TableHead>
             <TableHead className="text-right">Revenue</TableHead>
-            <TableHead className="text-right">Billed</TableHead>
             <TableHead className="text-right text-amber-700">To Be Billed</TableHead>
             <TableHead className="text-right">Outstanding</TableHead>
             <TableHead className="min-w-[160px]">Invoice Status</TableHead>
@@ -993,9 +996,8 @@ function ClientSummaryTable({ rows, totals }: { rows: ClientSummaryRow[]; totals
               <TableCell className="text-right text-sm">{fmt(r.agreedFees)}</TableCell>
               <TableCell className="text-right text-sm">{fmt(r.netFees)}</TableCell>
               <TableCell className="text-right text-sm font-medium text-green-700">{fmt(r.revenue)}</TableCell>
-              <TableCell className="text-right text-sm">{fmt(r.billedAmount)}</TableCell>
               <TableCell className="text-right">
-                <TbbCell agreed={r.agreedFees} billed={r.billedAmount} />
+                <TbbCell agreed={r.agreedFees} revenue={r.revenue} />
               </TableCell>
               <TableCell className="text-right text-sm text-red-600">{fmt(r.outstandingAmount)}</TableCell>
               <TableCell><StatusBadges statuses={r.statuses} /></TableCell>
@@ -1010,7 +1012,6 @@ function ClientSummaryTable({ rows, totals }: { rows: ClientSummaryRow[]; totals
             <td className="px-4 py-2.5 text-right">{fmt(totals.agreedFees)}</td>
             <td className="px-4 py-2.5 text-right">{fmt(totals.netFees)}</td>
             <td className="px-4 py-2.5 text-right text-green-700">{fmt(totals.revenue)}</td>
-            <td className="px-4 py-2.5 text-right">{fmt(totals.billedAmount)}</td>
             <td className="px-4 py-2.5 text-right text-amber-700">{fmt(totals.toBeBilled)}</td>
             <td className="px-4 py-2.5 text-right text-red-600">{fmt(totals.outstandingAmount)}</td>
             <td className="px-4 py-2.5" />
@@ -1038,7 +1039,6 @@ function MatterSummaryTable({ rows, totals }: { rows: MatterSummaryRow[]; totals
             <TableHead className="text-right">Agreed Fees</TableHead>
             <TableHead className="text-right">Net Fees</TableHead>
             <TableHead className="text-right">Revenue</TableHead>
-            <TableHead className="text-right">Billed</TableHead>
             <TableHead className="text-right text-amber-700">To Be Billed</TableHead>
             <TableHead className="text-right">Outstanding</TableHead>
             <TableHead className="min-w-[160px]">Invoice Status</TableHead>
@@ -1060,9 +1060,9 @@ function MatterSummaryTable({ rows, totals }: { rows: MatterSummaryRow[]; totals
               <TableCell>
                 {r.clientMatterId ? (
                   <div className="text-xs leading-tight">
-                    <p className="font-semibold text-sm">
+                    <Link href={`/clients/${r.clientId}`} className="font-semibold text-sm text-blue-600 hover:underline">
                       {r.matterReference ?? `#${r.clientMatterId}`}
-                    </p>
+                    </Link>
                     {r.matterType && (
                       <p className="text-muted-foreground">{r.matterType}</p>
                     )}
@@ -1088,9 +1088,8 @@ function MatterSummaryTable({ rows, totals }: { rows: MatterSummaryRow[]; totals
               <TableCell className="text-right text-sm">{fmt(r.agreedFees)}</TableCell>
               <TableCell className="text-right text-sm">{fmt(r.netFees)}</TableCell>
               <TableCell className="text-right text-sm font-medium text-green-700">{fmt(r.revenue)}</TableCell>
-              <TableCell className="text-right text-sm">{fmt(r.billedAmount)}</TableCell>
               <TableCell className="text-right">
-                <TbbCell agreed={r.agreedFees} billed={r.billedAmount} />
+                <TbbCell agreed={r.agreedFees} revenue={r.revenue} />
               </TableCell>
               <TableCell className="text-right text-sm text-red-600">{fmt(r.outstandingAmount)}</TableCell>
               <TableCell><StatusBadges statuses={r.statuses} /></TableCell>
@@ -1105,7 +1104,6 @@ function MatterSummaryTable({ rows, totals }: { rows: MatterSummaryRow[]; totals
             <td className="px-4 py-2.5 text-right">{fmt(totals.agreedFees)}</td>
             <td className="px-4 py-2.5 text-right">{fmt(totals.netFees)}</td>
             <td className="px-4 py-2.5 text-right text-green-700">{fmt(totals.revenue)}</td>
-            <td className="px-4 py-2.5 text-right">{fmt(totals.billedAmount)}</td>
             <td className="px-4 py-2.5 text-right text-amber-700">{fmt(totals.toBeBilled)}</td>
             <td className="px-4 py-2.5 text-right text-red-600">{fmt(totals.outstandingAmount)}</td>
             <td className="px-4 py-2.5" />

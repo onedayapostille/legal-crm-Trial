@@ -472,6 +472,12 @@ export const appRouter = router({
       return all.map(safeUser);
     }),
 
+    // Active users who may be assigned to a matter as lead/co-lawyers. Available
+    // to anyone who can view clients so the Hourly Rate section can populate its
+    // user pickers (no free-text names).
+    assignableLawyers: permissionProcedure("clients:view")
+      .query(async () => db.getAssignableLawyers()),
+
     create: adminProcedure
       .input(z.object({
         name: z.string().trim().min(1, "Name is required").max(120),
@@ -797,6 +803,21 @@ export const appRouter = router({
       .input(z.object({ clientId: z.number() }))
       .query(async ({ input }) => db.getClientMatters(input.clientId)),
 
+    // Lead + co-lawyers billable on a matter, each with their effective hourly
+    // rate. The source of truth for the Hourly Rate section and billing logic.
+    billableLawyers: permissionProcedure("clients:view")
+      .input(z.object({ clientMatterId: z.number() }))
+      .query(async ({ input }) => db.getMatterBillableLawyers(input.clientMatterId)),
+
+    // Controlled "Reassign Lead Lawyer" action — restricted to Admin/Partner via
+    // the matters:assign_lawyer permission. The name is derived from the user.
+    reassignLeadLawyer: permissionProcedure("matters:assign_lawyer")
+      .input(z.object({ clientMatterId: z.number(), userId: z.number() }))
+      .mutation(async ({ input, ctx }) => {
+        await db.assertMatterClientNotRejected(input.clientMatterId);
+        return db.reassignLeadLawyer(input.clientMatterId, input.userId, ctx.user!.id);
+      }),
+
     // Conflict check for a (prospective) matter — by matter name and/or opposing
     // party. Used by the Create Matter form before submitting.
     checkConflicts: permissionProcedure("clients:view")
@@ -819,7 +840,7 @@ export const appRouter = router({
     create: permissionProcedure("clients:manage")
       .input(z.object({
         clientId: z.number(),
-        originalSerial: z.string().optional(),
+        originalSerial: z.string().max(50).optional(),
         matterReference: z.string().optional(),
         matterType: z.string().optional(),
         billingType: z.enum([
@@ -851,6 +872,8 @@ export const appRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         const { acknowledgeConflicts, ...matterInput } = input;
+        // Rejected clients are locked: no new matters.
+        await db.assertClientNotRejected(matterInput.clientId);
         // Backend enforcement (defense in depth): re-run the conflict check and
         // refuse to create unless the user has acknowledged any matches.
         const conflicts = await db.checkMatterConflicts({
@@ -871,7 +894,7 @@ export const appRouter = router({
     update: permissionProcedure("clients:manage")
       .input(z.object({
         id: z.number(),
-        originalSerial: z.string().optional(),
+        originalSerial: z.string().max(50).optional(),
         matterReference: z.string().optional(),
         matterType: z.string().optional(),
         billingType: z.enum([
@@ -900,12 +923,15 @@ export const appRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
+        // Rejected clients are locked: existing matters are read-only.
+        await db.assertMatterClientNotRejected(id);
         return db.updateClientMatter(id, data as any, ctx.user!.id);
       }),
 
     delete: permissionProcedure("clients:manage")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
+        await db.assertMatterClientNotRejected(input.id);
         await db.deleteClientMatter(input.id);
         return { success: true };
       }),
@@ -921,7 +947,9 @@ export const appRouter = router({
     create: permissionProcedure("clients:manage")
       .input(z.object({
         clientMatterId: z.number(),
-        lawyerName: z.string().min(1, "Lawyer name is required"),
+        // A rate must reference an assigned user. lawyerName is NOT accepted from
+        // the client — the server derives it from the user (no free-text names).
+        userId: z.number(),
         role: z.string().optional(),
         hourlyRate: z.string().refine(v => {
           const n = Number(v);
@@ -932,12 +960,17 @@ export const appRouter = router({
         effectiveDate: z.string().optional(),
         notes: z.string().optional(),
       }))
-      .mutation(async ({ input, ctx }) => db.createMatterLawyerRate(input as any, ctx.user!.id)),
+      .mutation(async ({ input, ctx }) => {
+        await db.assertMatterClientNotRejected(input.clientMatterId);
+        return db.createMatterLawyerRate(input as any, ctx.user!.id);
+      }),
 
     update: permissionProcedure("clients:manage")
       .input(z.object({
         id: z.number(),
-        lawyerName: z.string().min(1).optional(),
+        // lawyerName is intentionally absent — only the linked user (userId) can
+        // change a rate's lawyer, and the name is re-derived server-side.
+        userId: z.number().optional(),
         role: z.string().optional(),
         hourlyRate: z.string().refine(v => {
           const n = Number(v);
@@ -950,12 +983,14 @@ export const appRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
+        await db.assertRateClientNotRejected(id);
         return db.updateMatterLawyerRate(id, data as any, ctx.user!.id);
       }),
 
     delete: permissionProcedure("clients:manage")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
+        await db.assertRateClientNotRejected(input.id);
         await db.deleteMatterLawyerRate(input.id);
         return { success: true };
       }),
@@ -983,8 +1018,9 @@ export const appRouter = router({
         feeType: z.enum(["Billable Hours", "Fixed / Project-Based Fees", "Retainers", "Success Fees", "Advisory / Special Mandates", "Blended"]).optional(),
         agreedFees: z.string().optional(),
         discountApproval: z.enum(["N/A", "P&L Head Lawyers", "CEO", "Board"]).default("N/A"),
-        // discountPercentage, discountAmount, netFees are server-computed from discountApproval
-        billedAmount: z.string().optional(),
+        // discountPercentage, discountAmount, netFees are server-computed from discountApproval.
+        // billedAmount removed — Revenue is the single amount field; billed_amount is
+        // mirrored to revenue server-side for backward compatibility.
         revenue: z.string().optional(),
         collectedAmount: z.string().optional(),
         // remainingAdvanced, outstandingAmount are server-computed from billing fields
@@ -995,7 +1031,11 @@ export const appRouter = router({
         responsibleLawyer: z.string().optional(),
         financeNotes: z.string().optional(),
       }))
-      .mutation(async ({ input, ctx }) => db.createFinancialRecord(input as any, ctx.user!.id)),
+      .mutation(async ({ input, ctx }) => {
+        // Rejected clients are locked: no new financial records.
+        await db.assertClientNotRejected(input.clientId);
+        return db.createFinancialRecord(input as any, ctx.user!.id);
+      }),
 
     update: permissionProcedure("financial:manage")
       .input(z.object({
@@ -1004,8 +1044,8 @@ export const appRouter = router({
         feeType: z.enum(["Billable Hours", "Fixed / Project-Based Fees", "Retainers", "Success Fees", "Advisory / Special Mandates", "Blended"]).optional(),
         agreedFees: z.string().optional(),
         discountApproval: z.enum(["N/A", "P&L Head Lawyers", "CEO", "Board"]).optional(),
-        // discountPercentage, discountAmount, netFees are server-computed
-        billedAmount: z.string().optional(),
+        // discountPercentage, discountAmount, netFees are server-computed.
+        // billedAmount removed — mirrored to revenue server-side (compatibility).
         revenue: z.string().optional(),
         collectedAmount: z.string().optional(),
         // remainingAdvanced, outstandingAmount are server-computed
@@ -1018,12 +1058,15 @@ export const appRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
+        // Rejected clients are locked: existing financial records are read-only.
+        await db.assertFinancialRecordClientNotRejected(id);
         return db.updateFinancialRecord(id, data as any, ctx.user!.id);
       }),
 
     delete: permissionProcedure("financial:manage")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
+        await db.assertFinancialRecordClientNotRejected(input.id);
         await db.deleteFinancialRecord(input.id);
         return { success: true };
       }),
@@ -1075,7 +1118,11 @@ export const appRouter = router({
         actionType: z.string().optional(),
         actionDetails: z.string().optional(),
       }))
-      .mutation(async ({ input, ctx }) => db.createClientActionLog(input as any, ctx.user!.id)),
+      .mutation(async ({ input, ctx }) => {
+        // Rejected clients are locked: no new actions/tasks under them.
+        await db.assertClientNotRejected(input.clientId);
+        return db.createClientActionLog(input as any, ctx.user!.id);
+      }),
 
     update: permissionProcedure("actions:manage")
       .input(z.object({
@@ -1088,12 +1135,14 @@ export const appRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
+        await db.assertActionClientNotRejected(id);
         return db.updateClientActionLog(id, data as any, ctx.user!.id);
       }),
 
     delete: permissionProcedure("actions:manage")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
+        await db.assertActionClientNotRejected(input.id);
         await db.deleteClientActionLog(input.id);
         return { success: true };
       }),
