@@ -708,6 +708,7 @@ export const appRouter = router({
       .input(z.object({
         clientName: z.string().min(1),
         clientStatus: z.enum(["Existing Client", "Leads", "Rejected"]).default("Leads"),
+        convertedFrom: z.enum(["Lead", "Enquiry", "Direct"]).optional(),
         clientNumber: z.string().optional(),
         fileNumber: z.string().optional(),
         city: z.enum(["Riyadh", "Dammam", "Jeddah"]).optional(),
@@ -720,6 +721,7 @@ export const appRouter = router({
         id: z.number(),
         clientName: z.string().optional(),
         clientStatus: z.enum(["Existing Client", "Leads", "Rejected"]).optional(),
+        convertedFrom: z.enum(["Lead", "Enquiry", "Direct"]).optional(),
         clientNumber: z.string().optional(),
         fileNumber: z.string().optional(),
         city: z.enum(["Riyadh", "Dammam", "Jeddah"]).optional(),
@@ -740,6 +742,10 @@ export const appRouter = router({
     statusCounts: permissionProcedure("dashboard:view").query(async () => db.getClientStatusCounts()),
 
     dashboardStats: permissionProcedure("dashboard:view").query(async () => db.getClientDashboardStats()),
+
+    conversionMetrics: permissionProcedure("dashboard:view")
+      .input(z.object({ range: z.enum(["month", "quarter", "all"]).default("all") }).optional())
+      .query(async ({ input }) => db.getClientConversionMetrics(input?.range ?? "all")),
 
     // Lead details sub-resource
     getLeadDetail: permissionProcedure("clients:view")
