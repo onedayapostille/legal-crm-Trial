@@ -31,6 +31,8 @@ import DashboardLayout from "@/components/DashboardLayout";
 import FinancialDialog from "@/components/FinancialDialog";
 import { LawyerRatesDialog } from "@/components/LawyerRatesDialog";
 import { FinancialAuditTrail } from "@/components/FinancialAuditTrail";
+import ConflictWarningDialog from "@/components/ConflictWarningDialog";
+import type { ConflictMatch } from "@/components/ConflictMatchTable";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { hasPermission } from "@shared/const";
@@ -719,7 +721,7 @@ type MatterFormState = {
   billingType: string;
   leadPartner: string; leadPartnerFullName: string; supportLead: string;
   attorneyHead: string; attorney1: string; attorney2: string; attorney3: string;
-  attorneyFullName: string; matterDescription: string; matterStatus: string;
+  attorneyFullName: string; matterDescription: string; opposingParty: string; matterStatus: string;
   balanceWorkLeft: string; achievementPercentage: string; achievementStatus: string;
   priority: "low" | "medium" | "high" | "urgent";
 };
@@ -728,7 +730,7 @@ const MATTER_FORM_DEFAULT: MatterFormState = {
   originalSerial: "", matterReference: "", matterType: "", billingType: "",
   leadPartner: "", leadPartnerFullName: "", supportLead: "", attorneyHead: "",
   attorney1: "", attorney2: "", attorney3: "", attorneyFullName: "",
-  matterDescription: "", matterStatus: "",
+  matterDescription: "", opposingParty: "", matterStatus: "",
   balanceWorkLeft: "", achievementPercentage: "", achievementStatus: "",
   priority: "medium",
 };
@@ -745,6 +747,7 @@ const MATTER_TEXT_FIELDS: [keyof MatterFormState, string][] = [
   ["attorney2",            "Attorney 2"],
   ["attorney3",            "Attorney 3"],
   ["attorneyFullName",     "Attorney Full Name"],
+  ["opposingParty",        "Opposing Party (for conflict check)"],
   ["matterStatus",         "Matter Status (e.g. Active)"],
   ["balanceWorkLeft",      "Balance Work Left (%)"],
   ["achievementPercentage","Achievement %"],
@@ -835,6 +838,8 @@ function MatterFormFields({
 function MatterDialog({ open, onClose, clientId }: { open: boolean; onClose: () => void; clientId: number }) {
   const utils = trpc.useUtils();
   const [form, setForm] = useState<MatterFormState>(MATTER_FORM_DEFAULT);
+  const [pendingConflicts, setPendingConflicts] = useState<ConflictMatch[] | null>(null);
+  const [checking, setChecking] = useState(false);
 
   const create = trpc.clientMatters.create.useMutation({
     onSuccess: () => {
@@ -842,29 +847,60 @@ function MatterDialog({ open, onClose, clientId }: { open: boolean; onClose: () 
       utils.clientMatters.list.invalidate({ clientId });
       utils.clientMatters.listAll.invalidate();
       setForm(MATTER_FORM_DEFAULT);
+      setPendingConflicts(null);
       onClose();
     },
     onError: (e) => toast.error(e.message),
   });
 
+  const submit = async () => {
+    // Auto-run conflict check against matter name + opposing party.
+    setChecking(true);
+    try {
+      const conflicts = await utils.clientMatters.checkConflicts.fetch({
+        matterName: form.matterReference.trim() || undefined,
+        opposingParty: form.opposingParty.trim() || undefined,
+      });
+      if (conflicts.length > 0) {
+        setPendingConflicts(conflicts);
+        return;
+      }
+      create.mutate(buildMatterPayload(form, { clientId }) as any);
+    } catch (e: any) {
+      toast.error(e?.message ?? "Conflict check failed");
+    } finally {
+      setChecking(false);
+    }
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Add Matter</DialogTitle>
-        </DialogHeader>
-        <MatterFormFields form={form} setForm={setForm} />
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button
-            onClick={() => create.mutate(buildMatterPayload(form, { clientId }) as any)}
-            disabled={create.isPending}
-          >
-            Add Matter
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <>
+      <Dialog open={open} onOpenChange={onClose}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Add Matter</DialogTitle>
+          </DialogHeader>
+          <MatterFormFields form={form} setForm={setForm} />
+          <DialogFooter>
+            <Button variant="outline" onClick={onClose}>Cancel</Button>
+            <Button onClick={submit} disabled={create.isPending || checking}>
+              {checking ? "Checking conflicts…" : "Add Matter"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <ConflictWarningDialog
+        open={pendingConflicts !== null}
+        conflicts={pendingConflicts ?? []}
+        isCreating={create.isPending}
+        onCancel={() => setPendingConflicts(null)}
+        onAcknowledge={() => {
+          create.mutate(buildMatterPayload(form, { clientId, acknowledgeConflicts: true }) as any);
+          setPendingConflicts(null);
+        }}
+      />
+    </>
   );
 }
 
@@ -891,6 +927,7 @@ function MatterEditDialog({
     attorney3:             matter.attorney3             ?? "",
     attorneyFullName:      matter.attorneyFullName      ?? "",
     matterDescription:     matter.matterDescription     ?? "",
+    opposingParty:         matter.opposingParty         ?? "",
     matterStatus:          matter.matterStatus          ?? "",
     balanceWorkLeft:       matter.balanceWorkLeft       ?? "",
     achievementPercentage: matter.achievementPercentage ?? "",
