@@ -2,8 +2,13 @@ import { useState } from "react";
 import { useLocation } from "wouter";
 import {
   Users, Plus, Search, Filter, Building2, FileText, RefreshCw, ShieldCheck,
+  Download, Calendar, UserCog,
 } from "lucide-react";
+import * as XLSX from "xlsx";
+import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { hasPermission } from "@shared/const";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -26,11 +31,20 @@ const STATUS_COLORS: Record<string, string> = {
 
 export default function ClientList({ statusFilter }: { statusFilter?: string }) {
   const [, navigate] = useLocation();
+  const utils = trpc.useUtils();
+  const { user } = useAuth();
+  const canManage = hasPermission(user?.role, "clients:manage");
+
   // Filters live in the URL so they survive List → Detail → Back navigation.
   const [search, setSearch] = useQueryParam("search", "");
   const [city, setCity] = useQueryParam("city", "all");
   const [matterType, setMatterType] = useQueryParam("matterType", "all");
   const [status, setStatus] = useQueryParam("status", statusFilter ?? "all");
+  // Unified intake filters (Enquiry Log controls)
+  const [source, setSource] = useQueryParam("source", "all");      // origin: Lead/Enquiry/Direct
+  const [assignedLawyer, setAssignedLawyer] = useQueryParam("lawyer", "all");
+  const [dateFrom, setDateFrom] = useQueryParam("from", "");
+  const [dateTo, setDateTo] = useQueryParam("to", "");
   const [conflictCheckOpen, setConflictCheckOpen] = useState(false);
 
   const { data: clients = [], isLoading, refetch } = trpc.clients.list.useQuery({
@@ -38,11 +52,48 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
     city: city !== "all" ? city : undefined,
     matterType: matterType !== "all" ? matterType : undefined,
     search: search.trim() || undefined,
+    convertedFrom: source !== "all" ? (source as any) : undefined,
+    assignedLawyerId: assignedLawyer !== "all" ? Number(assignedLawyer) : undefined,
+    createdFrom: dateFrom || undefined,
+    createdTo: dateTo || undefined,
   });
 
   const { data: stats } = trpc.clients.statusCounts.useQuery();
+  const { data: lawyers = [] } = trpc.users.assignableLawyers.useQuery();
+
+  // Inline status/action update (Enquiry Log "action" control).
+  const updateStatus = trpc.clients.update.useMutation({
+    onSuccess: () => {
+      toast.success("Status updated");
+      utils.clients.list.invalidate();
+      utils.clients.statusCounts.invalidate();
+      utils.clients.recentLeads.invalidate();
+      utils.clients.dashboardStats.invalidate();
+      utils.clients.conversionMetrics.invalidate();
+    },
+    onError: (e) => toast.error(e.message),
+  });
 
   const handleRowClick = (id: number) => navigate(`/clients/${id}`);
+
+  function handleExport() {
+    const rows = clients.map(c => ({
+      "Client #":        c.clientNumber ?? "",
+      "File #":          c.fileNumber ?? "",
+      "Client Name":     c.clientName,
+      "Status":          c.clientStatus,
+      "Source":          (c as any).convertedFrom ?? "",
+      "City":            c.city ?? "",
+      "Matter Type":     c.matterType ?? "",
+      "Assigned Lawyer": (c as any).assignedLawyerName ?? "",
+      "Created":         new Date(c.createdAt).toLocaleDateString(),
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Intake");
+    const today = new Date().toISOString().split("T")[0];
+    XLSX.writeFile(wb, `intake_export_${today}.xlsx`);
+  }
 
   const pageTitle = statusFilter
     ? statusFilter === "Existing Client"
@@ -67,6 +118,10 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
             <Button variant="outline" size="sm" onClick={() => refetch()}>
               <RefreshCw className="h-4 w-4 mr-1" />
               Refresh
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleExport} disabled={clients.length === 0}>
+              <Download className="h-4 w-4 mr-1" />
+              Export
             </Button>
             <Button variant="outline" size="sm" onClick={() => setConflictCheckOpen(true)}>
               <ShieldCheck className="h-4 w-4 mr-1" />
@@ -116,8 +171,8 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
         {/* Filters */}
         <Card>
           <CardContent className="pt-4 pb-4">
-            <div className="flex flex-col sm:flex-row gap-3">
-              <div className="relative flex-1">
+            <div className="flex flex-col sm:flex-row sm:flex-wrap gap-3">
+              <div className="relative flex-1 min-w-[200px]">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
                   placeholder="Search by name, client #, file #…"
@@ -163,6 +218,50 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
                   <SelectItem value="Litigation">Litigation</SelectItem>
                 </SelectContent>
               </Select>
+              {/* Source (origin): Enquiry vs Direct lead creation */}
+              <Select value={source} onValueChange={setSource}>
+                <SelectTrigger className="w-36">
+                  <SelectValue placeholder="Source" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Sources</SelectItem>
+                  <SelectItem value="Lead">Lead</SelectItem>
+                  <SelectItem value="Enquiry">Enquiry</SelectItem>
+                  <SelectItem value="Direct">Direct</SelectItem>
+                </SelectContent>
+              </Select>
+              {/* Assigned lawyer */}
+              <Select value={assignedLawyer} onValueChange={setAssignedLawyer}>
+                <SelectTrigger className="w-44">
+                  <UserCog className="h-4 w-4 mr-2" />
+                  <SelectValue placeholder="Assigned Lawyer" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Lawyers</SelectItem>
+                  {lawyers.map(l => (
+                    <SelectItem key={l.id} value={String(l.id)}>{l.name ?? `User #${l.id}`}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {/* Date range (created_at) */}
+              <div className="flex items-center gap-1">
+                <Calendar className="h-4 w-4 text-muted-foreground" />
+                <Input
+                  type="date"
+                  value={dateFrom}
+                  onChange={e => setDateFrom(e.target.value)}
+                  className="w-36"
+                  aria-label="Created from"
+                />
+                <span className="text-muted-foreground text-sm">–</span>
+                <Input
+                  type="date"
+                  value={dateTo}
+                  onChange={e => setDateTo(e.target.value)}
+                  className="w-36"
+                  aria-label="Created to"
+                />
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -189,6 +288,7 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
                 </p>
               </div>
             ) : (
+              <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -196,6 +296,8 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
                     <TableHead>File #</TableHead>
                     <TableHead>Client Name</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead>Source</TableHead>
+                    <TableHead>Assigned Lawyer</TableHead>
                     <TableHead>City</TableHead>
                     <TableHead>Matter Type</TableHead>
                     <TableHead>Created</TableHead>
@@ -215,13 +317,35 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
                         {client.fileNumber ?? "—"}
                       </TableCell>
                       <TableCell className="font-semibold">{client.clientName}</TableCell>
+                      {/* Status with inline action/update (stop row navigation) */}
+                      <TableCell onClick={e => e.stopPropagation()}>
+                        {canManage ? (
+                          <Select
+                            value={client.clientStatus}
+                            onValueChange={v => updateStatus.mutate({ id: client.id, clientStatus: v as any })}
+                          >
+                            <SelectTrigger className="h-7 w-36 text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="Existing Client">Existing Client</SelectItem>
+                              <SelectItem value="Leads">Leads</SelectItem>
+                              <SelectItem value="Rejected">Rejected</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <Badge variant="outline" className={STATUS_COLORS[client.clientStatus]}>
+                            {client.clientStatus}
+                          </Badge>
+                        )}
+                      </TableCell>
                       <TableCell>
-                        <Badge
-                          variant="outline"
-                          className={STATUS_COLORS[client.clientStatus]}
-                        >
-                          {client.clientStatus}
+                        <Badge variant="outline" className="text-xs">
+                          {(client as any).convertedFrom ?? "—"}
                         </Badge>
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {(client as any).assignedLawyerName ?? "—"}
                       </TableCell>
                       <TableCell>{client.city ?? "—"}</TableCell>
                       <TableCell>{client.matterType ?? "—"}</TableCell>
@@ -232,6 +356,7 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
                   ))}
                 </TableBody>
               </Table>
+              </div>
             )}
           </CardContent>
         </Card>

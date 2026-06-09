@@ -442,20 +442,38 @@ function DataItem({ label, value }: { label: string; value: string }) {
 
 function LeadDetailCard({ clientId, detail, canManage }: { clientId: number; detail: any; canManage: boolean }) {
   const utils = trpc.useUtils();
+  const { data: lawyers = [] } = trpc.users.assignableLawyers.useQuery();
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({
     clientSource: detail?.clientSource ?? "",
     nextActionDate: detail?.nextActionDate ?? "",
     nextActionDate2: detail?.nextActionDate2 ?? "",
     nextActionOwner: detail?.nextActionOwner ?? "",
+    assignedLawyerId: detail?.assignedLawyerId ? String(detail.assignedLawyerId) : "",
     nextAction: detail?.nextAction ?? "",
     priority: detail?.priority ?? "medium",
     leadStatus: detail?.leadStatus ?? "",
   });
+  const assignedLawyerName =
+    lawyers.find(l => l.id === detail?.assignedLawyerId)?.name ?? null;
   const upsert = trpc.clients.upsertLeadDetail.useMutation({
-    onSuccess: () => { toast.success("Lead details saved"); setEditing(false); utils.clients.getLeadDetail.invalidate({ clientId }); },
+    onSuccess: () => {
+      toast.success("Lead details saved");
+      setEditing(false);
+      utils.clients.getLeadDetail.invalidate({ clientId });
+      utils.clients.list.invalidate(); // refresh the intake page's assigned-lawyer column/filter
+    },
     onError: (e) => toast.error(e.message),
   });
+
+  function save() {
+    const { assignedLawyerId, ...rest } = form;
+    upsert.mutate({
+      clientId,
+      ...(rest as any),
+      assignedLawyerId: assignedLawyerId ? Number(assignedLawyerId) : null,
+    });
+  }
 
   return (
     <Card>
@@ -477,6 +495,21 @@ function LeadDetailCard({ clientId, detail, canManage }: { clientId: number; det
               <div><Label>Next Action Date 2</Label><Input type="date" value={form.nextActionDate2} onChange={e => setForm(f => ({ ...f, nextActionDate2: e.target.value }))} /></div>
               <div><Label>Next Action Owner</Label><Input value={form.nextActionOwner} onChange={e => setForm(f => ({ ...f, nextActionOwner: e.target.value }))} /></div>
               <div>
+                <Label>Assigned Lawyer</Label>
+                <Select
+                  value={form.assignedLawyerId || "none"}
+                  onValueChange={v => setForm(f => ({ ...f, assignedLawyerId: v === "none" ? "" : v }))}
+                >
+                  <SelectTrigger><SelectValue placeholder="— None —" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">— None —</SelectItem>
+                    {lawyers.map(l => (
+                      <SelectItem key={l.id} value={String(l.id)}>{l.name ?? `User #${l.id}`}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
                 <Label>Priority</Label>
                 <Select value={form.priority} onValueChange={v => setForm(f => ({ ...f, priority: v as any }))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -491,7 +524,7 @@ function LeadDetailCard({ clientId, detail, canManage }: { clientId: number; det
             </div>
             <div><Label>Next Action</Label><Textarea value={form.nextAction} onChange={e => setForm(f => ({ ...f, nextAction: e.target.value }))} rows={2} /></div>
             <div className="flex gap-2">
-              <Button size="sm" onClick={() => upsert.mutate({ clientId, ...form as any })} disabled={upsert.isPending}>
+              <Button size="sm" onClick={save} disabled={upsert.isPending}>
                 <Save className="h-4 w-4 mr-1" />Save
               </Button>
               <Button size="sm" variant="outline" onClick={() => setEditing(false)}>Cancel</Button>
@@ -504,6 +537,7 @@ function LeadDetailCard({ clientId, detail, canManage }: { clientId: number; det
             <DataItem label="Priority" value={detail.priority ?? "—"} />
             <DataItem label="Next Action Date" value={detail.nextActionDate ?? "—"} />
             <DataItem label="Next Action Owner" value={detail.nextActionOwner ?? "—"} />
+            <DataItem label="Assigned Lawyer" value={assignedLawyerName ?? "—"} />
             <DataItem label="Next Action" value={detail.nextAction ?? "—"} />
           </dl>
         ) : (

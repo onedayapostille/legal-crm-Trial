@@ -142,6 +142,9 @@ export const appRouter = router({
         dateOfEnquiry: z.string(),
         clientName: z.string().min(1),
         time: z.string().optional(),
+        // Canonical UTC instant (ISO 8601) + the browser timezone captured at entry.
+        enquiryAt: z.string().datetime().optional(),
+        enquiryTimezone: z.string().optional(),
         communicationChannel: z.string().optional(),
         receivedBy: z.string().optional(),
         clientType: z.string().optional(),
@@ -178,6 +181,8 @@ export const appRouter = router({
         dateOfEnquiry: z.string().optional(),
         clientName: z.string().optional(),
         time: z.string().optional(),
+        enquiryAt: z.string().datetime().optional(),
+        enquiryTimezone: z.string().optional(),
         communicationChannel: z.string().optional(),
         receivedBy: z.string().optional(),
         clientType: z.string().optional(),
@@ -704,6 +709,11 @@ export const appRouter = router({
       city: z.string().optional(),
       matterType: z.string().optional(),
       search: z.string().optional(),
+      // Unified intake filters
+      convertedFrom: z.enum(["Lead", "Enquiry", "Direct"]).optional(),
+      assignedLawyerId: z.number().optional(),
+      createdFrom: z.string().optional(),
+      createdTo: z.string().optional(),
     }).optional()).query(async ({ input }) => db.getAllClients(input ?? {})),
 
     get: permissionProcedure("clients:view")
@@ -774,6 +784,7 @@ export const appRouter = router({
         nextActionDate: z.string().optional(),
         nextActionDate2: z.string().optional(),
         nextActionOwner: z.string().optional(),
+        assignedLawyerId: z.number().nullable().optional(),
         nextAction: z.string().optional(),
         priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
         leadStatus: z.string().optional(),
