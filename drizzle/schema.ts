@@ -370,6 +370,15 @@ export const clientStatusEnum = pgEnum("client_status", [
   "Rejected",
 ]);
 
+// Intake channel a client originated from. Drives the Conversion Rate KPI:
+//   Lead / Enquiry  → part of the intake funnel (denominator)
+//   Direct          → walked in already a client; not part of the funnel
+export const clientConvertedFromEnum = pgEnum("client_converted_from", [
+  "Lead",
+  "Enquiry",
+  "Direct",
+]);
+
 export const cityEnum = pgEnum("city", ["Riyadh", "Dammam", "Jeddah"]);
 
 export const clientMatterTypeEnum = pgEnum("client_matter_type", [
@@ -412,6 +421,7 @@ export const clients = pgTable("clients", {
   fileNumber: varchar("file_number", { length: 50 }).unique(),
   clientName: varchar("client_name", { length: 255 }).notNull(),
   clientStatus: clientStatusEnum("client_status").notNull().default("Leads"),
+  convertedFrom: clientConvertedFromEnum("converted_from").notNull().default("Lead"),
   city: cityEnum("city"),
   matterType: clientMatterTypeEnum("matter_type"),
   createdBy: integer("created_by").references(() => users.id),
