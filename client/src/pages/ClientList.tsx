@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/table";
 import DashboardLayout from "@/components/DashboardLayout";
 import ConflictCheckDialog from "@/components/ConflictCheckDialog";
+import { useQueryParam } from "@/hooks/useQueryParam";
 
 const STATUS_COLORS: Record<string, string> = {
   "Existing Client": "bg-green-100 text-green-800 border-green-200",
@@ -25,10 +26,11 @@ const STATUS_COLORS: Record<string, string> = {
 
 export default function ClientList({ statusFilter }: { statusFilter?: string }) {
   const [, navigate] = useLocation();
-  const [search, setSearch] = useState("");
-  const [city, setCity] = useState("all");
-  const [matterType, setMatterType] = useState("all");
-  const [status, setStatus] = useState(statusFilter ?? "all");
+  // Filters live in the URL so they survive List → Detail → Back navigation.
+  const [search, setSearch] = useQueryParam("search", "");
+  const [city, setCity] = useQueryParam("city", "all");
+  const [matterType, setMatterType] = useQueryParam("matterType", "all");
+  const [status, setStatus] = useQueryParam("status", statusFilter ?? "all");
   const [conflictCheckOpen, setConflictCheckOpen] = useState(false);
 
   const { data: clients = [], isLoading, refetch } = trpc.clients.list.useQuery({

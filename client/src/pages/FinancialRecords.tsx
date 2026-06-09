@@ -21,6 +21,7 @@ import type { MatterOption, ClientOption } from "@/components/FinancialDialog";
 import { FinancialAuditTrail } from "@/components/FinancialAuditTrail";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { hasPermission } from "@shared/const";
+import { useQueryParam } from "@/hooks/useQueryParam";
 
 // ─── Shared constants ─────────────────────────────────────────────────────────
 
@@ -103,17 +104,19 @@ export default function FinancialRecords() {
   const canManage      = hasPermission(user?.role, "financial:manage");
   const canViewClients = hasPermission(user?.role, "clients:view");   // NC-10
 
-  // ── View / tab state ───────────────────────────────────────────────────────
-  const [viewMode, setViewMode]   = useState<"records" | "overdue" | "summary">("records");
-  const [summaryTab, setSummaryTab] = useState<"client" | "matter">("client");
+  // ── View / tab state (URL-backed so it survives Back navigation) ────────────
+  const [viewModeRaw, setViewMode]   = useQueryParam("view", "records");
+  const viewMode = viewModeRaw as "records" | "overdue" | "summary";
+  const [summaryTabRaw, setSummaryTab] = useQueryParam("tab", "client");
+  const summaryTab = summaryTabRaw as "client" | "matter";
 
-  // ── Filter state ───────────────────────────────────────────────────────────
-  const [invoiceStatus, setInvoiceStatus] = useState("all");
-  const [clientFilter, setClientFilter]   = useState("all");
-  const [matterFilter, setMatterFilter]   = useState("all");
-  const [searchQuery, setSearchQuery]     = useState("");
-  const [dateFrom, setDateFrom]           = useState("");
-  const [dateTo,   setDateTo]             = useState("");
+  // ── Filter state (URL-backed) ───────────────────────────────────────────────
+  const [invoiceStatus, setInvoiceStatus] = useQueryParam("status", "all");
+  const [clientFilter, setClientFilter]   = useQueryParam("client", "all");
+  const [matterFilter, setMatterFilter]   = useQueryParam("matter", "all");
+  const [searchQuery, setSearchQuery]     = useQueryParam("q", "");
+  const [dateFrom, setDateFrom]           = useQueryParam("from", "");
+  const [dateTo,   setDateTo]             = useQueryParam("to", "");
 
   // ── Edit / add / audit state ───────────────────────────────────────────────
   const [addDialogOpen,  setAddDialogOpen]  = useState(false);
