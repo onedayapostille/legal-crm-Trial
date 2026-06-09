@@ -870,14 +870,34 @@ export async function getClientById(id: number) {
   return result[0] ?? null;
 }
 
-export async function checkConflict(rawQuery: string) {
+// ─── Conflict Check ───────────────────────────────────────────────────────────
+
+export type ConflictMatchType = "Client" | "Matter" | "Opposing Party";
+
+export interface ConflictMatch {
+  matchType: ConflictMatchType; // what kind of record matched
+  recordId: number;             // client id (Client) or matter id (Matter/Opposing Party)
+  name: string;                 // the matched text (client/matter name or opposing party)
+  status: string;               // current status of the matched record
+  clientId: number;             // owning client id (for navigation)
+  clientName: string;           // owning client name
+}
+
+/**
+ * Search clients, matters, and opposing-party fields for a single free-text
+ * term and return a flat, normalized list of conflict matches. Each match
+ * carries: match type, matched record id, matched name, and current status.
+ * Case-insensitive partial match; internal whitespace is collapsed.
+ */
+export async function searchConflicts(rawQuery: string): Promise<ConflictMatch[]> {
   const db = getDb();
-  // Normalize: trim and collapse internal whitespace
   const normalized = rawQuery.trim().replace(/\s+/g, " ");
   if (!normalized) return [];
-
   const term = `%${normalized}%`;
+  const needle = normalized.toLowerCase();
+  const contains = (v: string | null | undefined) => !!v && v.toLowerCase().includes(needle);
 
+  // 1) Clients — name / client # / file #
   const matchedClients = await db
     .select()
     .from(clients)
@@ -886,42 +906,101 @@ export async function checkConflict(rawQuery: string) {
         ilike(clients.clientName, term),
         ilike(clients.clientNumber, term),
         ilike(clients.fileNumber, term),
-      )
+      ),
     )
     .orderBy(desc(clients.createdAt));
 
-  if (matchedClients.length === 0) return [];
-
-  const ids = matchedClients.map((c) => c.id);
-
-  const relatedMatters = await db
+  // 2) + 3) Matters — name/reference/type, and opposing party — joined to the
+  //         owning client so we can show the client context.
+  const matchedMatters = await db
     .select({
       id: clientMatters.id,
       clientId: clientMatters.clientId,
       matterReference: clientMatters.matterReference,
       matterType: clientMatters.matterType,
+      matterDescription: clientMatters.matterDescription,
       matterStatus: clientMatters.matterStatus,
-      leadPartnerFullName: clientMatters.leadPartnerFullName,
-      attorney1: clientMatters.attorney1,
-      attorney2: clientMatters.attorney2,
-      attorney3: clientMatters.attorney3,
-      priority: clientMatters.priority,
-      achievementStatus: clientMatters.achievementStatus,
+      opposingParty: clientMatters.opposingParty,
+      clientName: clients.clientName,
     })
     .from(clientMatters)
-    .where(inArray(clientMatters.clientId, ids));
+    .leftJoin(clients, eq(clientMatters.clientId, clients.id))
+    .where(
+      or(
+        ilike(clientMatters.matterReference, term),
+        ilike(clientMatters.matterType, term),
+        ilike(clientMatters.matterDescription, term),
+        ilike(clientMatters.opposingParty, term),
+      ),
+    )
+    .orderBy(desc(clientMatters.createdAt));
 
-  const mattersByClientId = new Map<number, typeof relatedMatters>();
-  for (const m of relatedMatters) {
-    const list = mattersByClientId.get(m.clientId) ?? [];
-    list.push(m);
-    mattersByClientId.set(m.clientId, list);
+  const matches: ConflictMatch[] = [];
+
+  for (const c of matchedClients) {
+    matches.push({
+      matchType: "Client",
+      recordId: c.id,
+      name: c.clientName,
+      status: c.clientStatus,
+      clientId: c.id,
+      clientName: c.clientName,
+    });
   }
 
-  return matchedClients.map((c) => ({
-    ...c,
-    matters: mattersByClientId.get(c.id) ?? [],
-  }));
+  for (const m of matchedMatters) {
+    const ownerName = m.clientName ?? `Client #${m.clientId}`;
+    const status = m.matterStatus ?? "—";
+    // Opposing-party hit (a conflict signal in its own right)
+    if (contains(m.opposingParty)) {
+      matches.push({
+        matchType: "Opposing Party",
+        recordId: m.id,
+        name: m.opposingParty as string,
+        status,
+        clientId: m.clientId,
+        clientName: ownerName,
+      });
+    }
+    // Matter-name/type/description hit
+    if (contains(m.matterReference) || contains(m.matterType) || contains(m.matterDescription)) {
+      matches.push({
+        matchType: "Matter",
+        recordId: m.id,
+        name: m.matterReference ?? m.matterDescription ?? `Matter #${m.id}`,
+        status,
+        clientId: m.clientId,
+        clientName: ownerName,
+      });
+    }
+  }
+
+  return matches;
+}
+
+/**
+ * Run a conflict check for a (prospective) matter using its name and opposing
+ * party. Searches each provided term and de-duplicates by (matchType, recordId).
+ */
+export async function checkMatterConflicts(opts: {
+  matterName?: string | null;
+  opposingParty?: string | null;
+}): Promise<ConflictMatch[]> {
+  const terms = [opts.matterName, opts.opposingParty]
+    .map(t => (t ?? "").trim())
+    .filter(t => t.length > 0);
+  if (terms.length === 0) return [];
+
+  const all: ConflictMatch[] = [];
+  for (const t of terms) all.push(...(await searchConflicts(t)));
+
+  const seen = new Set<string>();
+  return all.filter(m => {
+    const key = `${m.matchType}:${m.recordId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export async function createClient(data: InsertClient, userId: number) {
@@ -1140,13 +1219,35 @@ export async function getClientMatterById(id: number) {
   return result[0] ?? null;
 }
 
-export async function createClientMatter(data: Record<string, unknown>, userId: number) {
+export async function createClientMatter(
+  data: Record<string, unknown>,
+  userId: number,
+  conflicts: ConflictMatch[] = [],
+) {
   const db = getDb();
   const clean = sanitizeClientMatterInput(data) as Partial<InsertClientMatter>;
   const [matter] = await db
     .insert(clientMatters)
     .values({ ...clean, clientId: (data as any).clientId, createdBy: userId } as InsertClientMatter)
     .returning();
+
+  // Auditable record of the conflict check performed at creation time. When
+  // conflicts were present, the matter was created with explicit acknowledgement.
+  const ref = matter.matterReference ?? matter.originalSerial ?? `#${matter.id}`;
+  const description =
+    conflicts.length > 0
+      ? `Client matter ${ref} created — CONFLICT CHECK: ${conflicts.length} potential match(es) acknowledged [` +
+        conflicts.map(c => `${c.matchType}: ${c.name} (${c.status})`).join("; ") +
+        `]`
+      : `Client matter ${ref} created — conflict check clear`;
+  await createAuditLog({
+    entityType: "client_matter",
+    entityId: matter.id,
+    userId,
+    action: "created",
+    description,
+  });
+
   return matter;
 }
 
