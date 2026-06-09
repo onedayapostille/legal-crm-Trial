@@ -86,6 +86,12 @@ export default function ClientDetail({ id }: { id: number }) {
       toast.success("Client updated");
       utils.clients.get.invalidate({ id });
       utils.clients.statusCounts.invalidate();
+      // Keep the Leads Pipeline, Recent Leads widget and client list in sync when
+      // a status change moves a client in/out of the Leads pipeline.
+      utils.clients.list.invalidate();
+      utils.clients.recentLeads.invalidate();
+      utils.clients.dashboardStats.invalidate();
+      utils.clients.conversionMetrics.invalidate();
       setEditingStatus(false);
     },
     onError: (err) => toast.error(err.message),

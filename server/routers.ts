@@ -753,6 +753,15 @@ export const appRouter = router({
       .input(z.object({ range: z.enum(["month", "quarter", "all"]).default("all") }).optional())
       .query(async ({ input }) => db.getClientConversionMetrics(input?.range ?? "all")),
 
+    // Recent Lead-status clients within the last N days (default 30), newest first.
+    // Powers the dashboard "Recent Leads" widget; date window uses the DB clock.
+    recentLeads: permissionProcedure("clients:view")
+      .input(z.object({
+        days: z.number().int().positive().max(365).default(30),
+        limit: z.number().int().positive().max(50).default(5),
+      }).optional())
+      .query(async ({ input }) => db.getRecentLeads(input?.days ?? 30, input?.limit ?? 5)),
+
     // Lead details sub-resource
     getLeadDetail: permissionProcedure("clients:view")
       .input(z.object({ clientId: z.number() }))

@@ -23,6 +23,7 @@ export default function ClientForm({ id }: Props) {
 
 function NewClientForm() {
   const [, navigate] = useLocation();
+  const utils = trpc.useUtils();
   const [form, setForm] = useState({
     clientName: "",
     clientStatus: "Leads" as "Existing Client" | "Leads" | "Rejected",
@@ -36,6 +37,14 @@ function NewClientForm() {
   const createClient = trpc.clients.create.useMutation({
     onSuccess: (client) => {
       toast.success("Client created successfully");
+      // Refresh every cache that reflects the new client so the Leads Pipeline,
+      // the Recent Leads widget, and the client list update without a manual
+      // refresh. Refetch (not optimistic merge) → no duplicate rows.
+      utils.clients.list.invalidate();
+      utils.clients.recentLeads.invalidate();
+      utils.clients.statusCounts.invalidate();
+      utils.clients.dashboardStats.invalidate();
+      utils.clients.conversionMetrics.invalidate();
       navigate(`/clients/${client.id}`);
     },
     onError: (err) => toast.error(err.message),
