@@ -124,10 +124,10 @@ export default function Dashboard() {
             <StatCard
               title="Active Matters"
               value={stats?.activeMatters ?? 0}
-              subtitle="Open cases"
+              subtitle="Status = Active"
               icon={Briefcase}
               color="bg-indigo-500"
-              href="/matters"
+              href="/matters?status=Active"
             />
             <StatCard
               title="Pending Tasks"
