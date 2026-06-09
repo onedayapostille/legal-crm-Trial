@@ -27,14 +27,17 @@ export default function EnquiriesLog() {
   const [channelType, setChannelType] = useQueryParam("channelType", "all");
   const [channelMedium, setChannelMedium] = useQueryParam("channelMedium", "all");
   const [status, setStatus] = useQueryParam("status", "all");
+  const [assignedTo, setAssignedTo] = useQueryParam("assignedTo", "all");
 
   const { data: leads = [], isLoading } = trpc.leads.list.useQuery({
     channelType: channelType !== "all" ? channelType : undefined,
     channelMedium: channelMedium !== "all" ? channelMedium : undefined,
     status: status !== "all" ? status : undefined,
     search: search.trim() || undefined,
+    assignedTo: assignedTo !== "all" ? Number(assignedTo) : undefined,
   });
   const { data: channelOptions } = trpc.leads.channelOptions.useQuery();
+  const { data: leadLawyers = [] } = trpc.users.leadLawyers.useQuery();
 
   return (
     <DashboardLayout>
@@ -81,6 +84,15 @@ export default function EnquiriesLog() {
                   {LEAD_STATUSES.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
                 </SelectContent>
               </Select>
+              <Select value={assignedTo} onValueChange={setAssignedTo}>
+                <SelectTrigger className="w-44"><SelectValue placeholder="Assigned To" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Assignees</SelectItem>
+                  {leadLawyers.map(l => (
+                    <SelectItem key={l.id} value={String(l.id)}>{l.name ?? `User #${l.id}`}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </CardContent>
         </Card>
@@ -108,6 +120,7 @@ export default function EnquiriesLog() {
                       <TableHead>Client Name</TableHead>
                       <TableHead>Channel Type</TableHead>
                       <TableHead>Channel Medium</TableHead>
+                      <TableHead>Assigned To</TableHead>
                       <TableHead>Status</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -122,6 +135,7 @@ export default function EnquiriesLog() {
                         <TableCell className="font-semibold">{l.clientName}</TableCell>
                         <TableCell>{l.channelType ? <Badge variant="outline">{l.channelType}</Badge> : "—"}</TableCell>
                         <TableCell className="text-sm">{l.channelMedium ?? "—"}</TableCell>
+                        <TableCell className="text-sm">{l.assignedToName ?? "—"}</TableCell>
                         <TableCell><Badge variant="outline">{l.currentStatus ?? "New"}</Badge></TableCell>
                       </TableRow>
                     ))}

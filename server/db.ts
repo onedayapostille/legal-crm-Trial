@@ -9,6 +9,7 @@ import {
   activityLogs, auditLogs, chatSubmissions,
   clients, clientMatters, clientLeadDetails, rejectedClients,
   financialRecords, clientActionLogs, matterLawyerRates, systemSettings,
+  userNotifications,
   type InsertUser, type InsertLead, type InsertMatter,
   type InsertTask, type InsertNote, type InsertPayment,
   type InsertCompany, type InsertActivityLog, type InsertChatSubmission,
@@ -18,6 +19,7 @@ import {
 } from "../drizzle/schema";
 import { hashPassword } from "./_core/auth";
 import { channelMediumRequired } from "../shared/const";
+import { notifyLawyerAssignment } from "./emailNotifications";
 import type { UserRole, UserStatus } from "../shared/const";
 
 /**
@@ -412,17 +414,24 @@ export async function getAllLeads(filters?: {
   channelMedium?: string;
   status?: string;
   search?: string;
+  assignedTo?: number;
 }) {
   const db = getDb();
   const conditions = [];
   if (filters?.channelType) conditions.push(eq(leads.channelType, filters.channelType));
   if (filters?.channelMedium) conditions.push(ilike(leads.channelMedium, `%${filters.channelMedium}%`));
   if (filters?.status) conditions.push(eq(leads.currentStatus, filters.status as any));
+  if (filters?.assignedTo) conditions.push(eq(leads.assignedTo, filters.assignedTo));
   if (filters?.search) {
     const t = `%${filters.search}%`;
     conditions.push(or(ilike(leads.clientName, t), ilike(leads.leadCode, t), ilike(leads.email, t)));
   }
-  const q = db.select().from(leads).orderBy(desc(leads.createdAt));
+  // Join the assigned user so the list can show/report the lead lawyer's name.
+  const q = db
+    .select({ ...getTableColumns(leads), assignedToName: users.name })
+    .from(leads)
+    .leftJoin(users, eq(users.id, leads.assignedTo))
+    .orderBy(desc(leads.createdAt));
   return conditions.length ? q.where(and(...conditions)) : q;
 }
 
@@ -447,10 +456,121 @@ export async function getLeadById(id: number) {
   return result[0] ?? null;
 }
 
+// Roles that may be assigned as a lead lawyer on an enquiry.
+const LEAD_LAWYER_ROLES = ["partner", "lawyer"] as const;
+
+/** Active Partners/Lawyers for the "Suggested Lead Lawyer" dropdown. */
+export async function getLeadLawyers() {
+  const db = getDb();
+  return db
+    .select({ id: users.id, name: users.name, email: users.email, role: users.role })
+    .from(users)
+    .where(and(eq(users.status, "active"), inArray(users.role, [...LEAD_LAWYER_ROLES] as any)))
+    .orderBy(users.name);
+}
+
+/** Validate an assigned lead-lawyer id; throws on invalid/inactive/wrong-role. */
+export async function assertLeadLawyer(userId: number) {
+  const db = getDb();
+  const [u] = await db
+    .select({ id: users.id, name: users.name, email: users.email, role: users.role, status: users.status })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!u) throw new TRPCError({ code: "BAD_REQUEST", message: "Selected lead lawyer does not exist." });
+  if (u.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "Selected lead lawyer is not active." });
+  if (!(LEAD_LAWYER_ROLES as readonly string[]).includes(u.role)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Lead lawyer must be a Partner or Lawyer." });
+  }
+  return u;
+}
+
+// ─── In-app notifications ─────────────────────────────────────────────────────
+
+export async function createNotification(data: {
+  userId: number; title: string; body?: string; entityType?: string; entityId?: number;
+}) {
+  const db = getDb();
+  const [n] = await db.insert(userNotifications).values(data).returning();
+  return n;
+}
+
+export async function getUserNotifications(userId: number, limit = 20) {
+  const db = getDb();
+  return db
+    .select()
+    .from(userNotifications)
+    .where(eq(userNotifications.userId, userId))
+    .orderBy(desc(userNotifications.createdAt))
+    .limit(limit);
+}
+
+export async function getUnreadNotificationCount(userId: number) {
+  const db = getDb();
+  const [row] = await db
+    .select({ count: count() })
+    .from(userNotifications)
+    .where(and(eq(userNotifications.userId, userId), eq(userNotifications.isRead, false)));
+  return Number(row?.count ?? 0);
+}
+
+export async function markNotificationRead(id: number, userId: number) {
+  const db = getDb();
+  await db
+    .update(userNotifications)
+    .set({ isRead: true })
+    .where(and(eq(userNotifications.id, id), eq(userNotifications.userId, userId)));
+  return { success: true };
+}
+
+export async function markAllNotificationsRead(userId: number) {
+  const db = getDb();
+  await db
+    .update(userNotifications)
+    .set({ isRead: true })
+    .where(and(eq(userNotifications.userId, userId), eq(userNotifications.isRead, false)));
+  return { success: true };
+}
+
+/**
+ * Notify a newly assigned lead lawyer: in-app notification (stored) + email
+ * (via the pluggable email utility). Email is best-effort and never blocks/throws.
+ */
+async function notifyLeadAssignment(
+  lawyer: { id: number; name: string | null; email: string },
+  lead: { id: number; leadCode: string | null; serviceRequested?: string | null; urgencyLevel?: string | null },
+  clientName: string,
+) {
+  await createNotification({
+    userId: lawyer.id,
+    title: "New lead assignment",
+    body: `You have been assigned as lead lawyer on a new enquiry: ${clientName}.`,
+    entityType: "lead",
+    entityId: lead.id,
+  });
+  // Best-effort email to the lawyer's registered address.
+  void notifyLawyerAssignment(
+    lawyer.email,
+    lawyer.name ?? "Lawyer",
+    lead.leadCode ?? `Lead #${lead.id}`,
+    clientName,
+    lead.serviceRequested ?? "—",
+    lead.urgencyLevel ?? "—",
+    "email",
+  ).catch(err => console.error("[notifyLeadAssignment] email failed:", err));
+}
+
 export async function createLead(data: Record<string, unknown>, userId: number) {
   const db = getDb();
   const leadCode = await generateLeadCode();
   const sanitized = sanitizeLeadInput(data);
+
+  // Validate + denormalize the assigned lead lawyer's name (store id + name).
+  let lawyer: Awaited<ReturnType<typeof assertLeadLawyer>> | null = null;
+  if (sanitized.assignedTo != null) {
+    lawyer = await assertLeadLawyer(Number(sanitized.assignedTo));
+    sanitized.suggestedLeadLawyer = lawyer.name ?? undefined;
+  }
 
   const [lead] = await db
     .insert(leads)
@@ -465,23 +585,38 @@ export async function createLead(data: Record<string, unknown>, userId: number) 
     performedBy: userId,
   });
 
+  if (lawyer) await notifyLeadAssignment(lawyer, lead, String(data.clientName ?? lead.clientName));
+
   return lead;
 }
 
 export async function updateLead(id: number, data: Record<string, unknown>) {
   const db = getDb();
   const sanitized = sanitizeLeadInput(data);
+  const existing = await getLeadById(id);
+
   if ((sanitized.currentStatus === "Converted" || sanitized.conversionDate) && !sanitized.matterCode) {
-    const existing = await getLeadById(id);
     if (!existing?.matterCode) {
       sanitized.matterCode = await generateMatterCode();
     }
   }
+
+  // Validate + denormalize lead-lawyer name; notify only on a *change* of assignee.
+  let newlyAssigned: Awaited<ReturnType<typeof assertLeadLawyer>> | null = null;
+  if (sanitized.assignedTo != null) {
+    const lawyer = await assertLeadLawyer(Number(sanitized.assignedTo));
+    sanitized.suggestedLeadLawyer = lawyer.name ?? undefined;
+    if (existing?.assignedTo !== lawyer.id) newlyAssigned = lawyer;
+  }
+
   const [lead] = await db
     .update(leads)
     .set({ ...(sanitized as Partial<InsertLead>), updatedAt: new Date() })
     .where(eq(leads.id, id))
     .returning();
+
+  if (newlyAssigned) await notifyLeadAssignment(newlyAssigned, lead, String(lead.clientName ?? ""));
+
   return lead;
 }
 

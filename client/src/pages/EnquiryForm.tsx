@@ -48,7 +48,8 @@ interface FormData {
   competitorInvolvement?: string;
   competitorName?: string;
   assignedDepartment?: string;
-  suggestedLeadLawyer?: string;
+  suggestedLeadLawyer?: string; // legacy display name (server-derived from assignedTo)
+  assignedTo?: number;          // selected lead-lawyer user id
   currentStatus?: string;
   nextAction?: string;
   deadline?: string;
@@ -74,6 +75,9 @@ export default function EnquiryForm({ id }: EnquiryFormProps) {
     { id: id! },
     { enabled: !!id }
   );
+
+  // Active Partners/Lawyers for the Suggested Lead Lawyer dropdown.
+  const { data: leadLawyers = [] } = trpc.users.leadLawyers.useQuery();
 
   const createMutation = trpc.leads.create.useMutation({
     onSuccess: () => {
@@ -143,7 +147,9 @@ export default function EnquiryForm({ id }: EnquiryFormProps) {
     const enquiryTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     // Keep the legacy flat column populated for back-compat.
     const communicationChannel = data.channelMedium?.trim() || data.channelType;
-    const { enquiryDateTime: _omit, ...rest } = data;
+    // suggestedLeadLawyer is derived server-side from assignedTo — never send the
+    // free-text name (avoids misspellings / stale values).
+    const { enquiryDateTime: _omit, suggestedLeadLawyer: _omit2, ...rest } = data;
     const payload = { ...rest, communicationChannel, dateOfEnquiry, time, enquiryAt, enquiryTimezone };
     if (id) {
       updateMutation.mutate({ id, ...payload });
@@ -421,8 +427,26 @@ export default function EnquiryForm({ id }: EnquiryFormProps) {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="suggestedLeadLawyer">Suggested Lead Lawyer</Label>
-              <Input id="suggestedLeadLawyer" {...register("suggestedLeadLawyer")} />
+              <Label htmlFor="assignedTo">Suggested Lead Lawyer</Label>
+              <Select
+                value={watch("assignedTo") ? String(watch("assignedTo")) : "none"}
+                onValueChange={(value) => setValue("assignedTo", value === "none" ? undefined : Number(value))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a lawyer" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">— Unassigned —</SelectItem>
+                  {leadLawyers.map(l => (
+                    <SelectItem key={l.id} value={String(l.id)}>
+                      {l.name ?? `User #${l.id}`} · <span className="capitalize">{l.role}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Active Partners/Lawyers only. The selected lawyer is notified on save.
+              </p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="currentStatus">Current Status</Label>
