@@ -4,6 +4,7 @@ import NotFound from "@/pages/NotFound";
 import { Redirect, Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import ProtectedRoute from "./components/ProtectedRoute";
+import ScrollRestoration from "./components/ScrollRestoration";
 import { ThemeProvider } from "./contexts/ThemeContext";
 
 // Pages
@@ -34,7 +35,9 @@ import ImportPage from "@/pages/ImportPage";
 
 function Router() {
   return (
-    <Switch>
+    <>
+      <ScrollRestoration />
+      <Switch>
       {/* Public routes */}
       <Route path="/login" component={Login} />
 
@@ -182,7 +185,8 @@ function Router() {
 
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />
-    </Switch>
+      </Switch>
+    </>
   );
 }
 
