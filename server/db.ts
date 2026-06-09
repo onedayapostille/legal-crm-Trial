@@ -633,7 +633,7 @@ export async function getLeadStatusSummary() {
     .groupBy(leads.currentStatus);
 }
 
-export async function getLeadKpiMetrics() {
+export async function getLeadKpiMetrics(viewer?: TaskViewer) {
   const db = getDb();
   const [totalRow] = await db.select({ count: count() }).from(leads);
   const total = Number(totalRow?.count ?? 0);
@@ -669,10 +669,16 @@ export async function getLeadKpiMetrics() {
     .where(isActiveMatterStatus());
   const activeMatters = Number(activeMatterRow?.count ?? 0);
 
+  // Pending-tasks KPI respects the same role-based visibility as the task list.
+  const pendingConds = [ne(tasks.status, "done")];
+  if (viewer) {
+    const vis = await taskVisibilityCondition(viewer);
+    if (vis) pendingConds.push(vis);
+  }
   const [pendingTaskRow] = await db
     .select({ count: count() })
     .from(tasks)
-    .where(ne(tasks.status, "done"));
+    .where(and(...pendingConds));
   const pendingTasks = Number(pendingTaskRow?.count ?? 0);
 
   return {
@@ -788,13 +794,68 @@ export async function deleteMatter(id: number) {
 
 // ─── Tasks ────────────────────────────────────────────────────────────────────
 
-export async function getAllTasks(filters?: {
-  matterId?: number;
-  assignedTo?: number;
-  status?: string;
-  clientId?: number;
-  clientMatterId?: number;
-}) {
+// ─── Role-based task visibility (backend enforced) ────────────────────────────
+
+export type TaskViewer = { id: number; role: string };
+
+/** Active user ids whose supervisor (reports_to_id) is the given partner. */
+export async function getReportingUserIds(partnerId: number): Promise<number[]> {
+  const db = getDb();
+  const rows = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.reportsToId, partnerId), eq(users.status, "active")));
+  return rows.map(r => r.id);
+}
+
+/**
+ * SQL WHERE condition restricting tasks to those the viewer may see:
+ *   - admin / manager → null (no restriction; see all)
+ *   - partner → own (assignee/creator) OR assigned to a lawyer reporting to them
+ *   - everyone else (lawyer, staff, …) → own only (assignee or creator)
+ * Returns null only for admin/manager.
+ */
+export async function taskVisibilityCondition(viewer: TaskViewer) {
+  if (viewer.role === "admin" || viewer.role === "manager") return null;
+  const own = or(eq(tasks.assignedTo, viewer.id), eq(tasks.createdBy, viewer.id));
+  if (viewer.role === "partner") {
+    const ids = await getReportingUserIds(viewer.id);
+    if (ids.length > 0) return or(own, inArray(tasks.assignedTo, ids));
+  }
+  return own;
+}
+
+/** Whether a single task row is visible to the viewer (same rules as the SQL filter). */
+export async function isTaskVisibleTo(
+  task: { assignedTo: number | null; createdBy: number | null },
+  viewer: TaskViewer,
+): Promise<boolean> {
+  if (viewer.role === "admin" || viewer.role === "manager") return true;
+  if (task.assignedTo === viewer.id || task.createdBy === viewer.id) return true;
+  if (viewer.role === "partner" && task.assignedTo != null) {
+    const ids = await getReportingUserIds(viewer.id);
+    if (ids.includes(task.assignedTo)) return true;
+  }
+  return false;
+}
+
+/** Throw NOT_FOUND if the task is missing OR not visible to the viewer (used by mutations). */
+export async function assertTaskVisible(id: number, viewer: TaskViewer) {
+  const task = await getTaskById(id, viewer);
+  if (!task) throw new TRPCError({ code: "NOT_FOUND", message: "Task not found." });
+  return task;
+}
+
+export async function getAllTasks(
+  filters?: {
+    matterId?: number;
+    assignedTo?: number;
+    status?: string;
+    clientId?: number;
+    clientMatterId?: number;
+  },
+  viewer?: TaskViewer,
+) {
   const db = getDb();
   const conditions = [];
   if (filters?.matterId) conditions.push(eq(tasks.matterId, filters.matterId));
@@ -802,6 +863,12 @@ export async function getAllTasks(filters?: {
   if (filters?.status) conditions.push(eq(tasks.status, filters.status as typeof tasks.status._.data));
   if (filters?.clientId) conditions.push(eq(tasks.clientId, filters.clientId));
   if (filters?.clientMatterId) conditions.push(eq(tasks.clientMatterId, filters.clientMatterId));
+
+  // Backend-enforced role-based visibility (applies in addition to any filters).
+  if (viewer) {
+    const vis = await taskVisibilityCondition(viewer);
+    if (vis) conditions.push(vis);
+  }
 
   // Join assignee + client matter so the per-client/per-matter task lists can show
   // names without extra round-trips.
@@ -818,10 +885,12 @@ export async function getAllTasks(filters?: {
     .orderBy(tasks.dueDate, desc(tasks.createdAt));
 }
 
-export async function getTaskById(id: number) {
+export async function getTaskById(id: number, viewer?: TaskViewer) {
   const db = getDb();
   const result = await db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
-  return result[0] ?? null;
+  const task = result[0] ?? null;
+  if (task && viewer && !(await isTaskVisibleTo(task, viewer))) return null;
+  return task;
 }
 
 export async function createTask(data: Record<string, unknown>, userId: number) {
@@ -1030,8 +1099,8 @@ export async function updateChatSubmissionStatus(id: number, status: "new" | "re
 
 // ─── Dashboard Stats ──────────────────────────────────────────────────────────
 
-export async function getDashboardStats() {
-  return getLeadKpiMetrics();
+export async function getDashboardStats(viewer?: TaskViewer) {
+  return getLeadKpiMetrics(viewer);
 }
 
 export async function getUserActivityStats(userId: number) {

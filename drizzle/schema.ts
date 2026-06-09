@@ -77,6 +77,9 @@ export const users = pgTable("users", {
   passwordHash: text("password_hash"),
   role: userRoleEnum("role").default("staff").notNull(),
   status: userStatusEnum("status").default("active").notNull(),
+  // Supervising partner (self-reference). Drives partner task-visibility:
+  // a partner sees tasks of lawyers whose reportsToId = the partner's id.
+  reportsToId: integer("reports_to_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
   lastLoginAt: timestamp("last_login_at"),

@@ -45,6 +45,7 @@ type UserFormState = {
   password: string;
   role: UserRole;
   status: UserStatus;
+  reportsToId: number | null; // supervising partner (lawyers)
 };
 
 const emptyForm: UserFormState = {
@@ -53,6 +54,7 @@ const emptyForm: UserFormState = {
   password: "",
   role: "staff",
   status: "active",
+  reportsToId: null,
 };
 
 const statusLabels: Record<UserStatus, string> = {
@@ -147,6 +149,7 @@ export default function UserManagement() {
       password: "",
       role: user.role as UserRole,
       status: user.status as UserStatus,
+      reportsToId: (user as any).reportsToId ?? null,
     });
     setFormOpen(true);
   };
@@ -167,7 +170,10 @@ export default function UserManagement() {
         toast.error(passwordError);
         return;
       }
-      createMutation.mutate({ ...form, email, name: form.name.trim() });
+      createMutation.mutate({
+        ...form, email, name: form.name.trim(),
+        reportsToId: form.role === "lawyer" ? form.reportsToId : null,
+      });
       return;
     }
 
@@ -177,6 +183,7 @@ export default function UserManagement() {
       email,
       role: form.role,
       status: form.status,
+      reportsToId: form.role === "lawyer" ? form.reportsToId : null,
     });
   };
 
@@ -392,6 +399,29 @@ export default function UserManagement() {
                 </Select>
               </div>
             </div>
+            {/* Supervising partner — only for lawyers; drives task visibility */}
+            {form.role === "lawyer" && (
+              <div className="grid gap-2">
+                <Label>Reports To (Partner)</Label>
+                <Select
+                  value={form.reportsToId ? String(form.reportsToId) : "none"}
+                  onValueChange={value => setForm({ ...form, reportsToId: value === "none" ? null : Number(value) })}
+                >
+                  <SelectTrigger><SelectValue placeholder="— None —" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">— None —</SelectItem>
+                    {(users ?? [])
+                      .filter(u => u.role === "partner" && u.status === "active")
+                      .map(u => (
+                        <SelectItem key={u.id} value={String(u.id)}>{u.name ?? u.email}</SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  The partner who supervises this lawyer (used for task visibility).
+                </p>
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setFormOpen(false)}>Cancel</Button>

@@ -117,8 +117,8 @@ export const appRouter = router({
   // ─── Dashboard ────────────────────────────────────────────────────────────
 
   dashboard: router({
-    stats: permissionProcedure("dashboard:view").query(async () => {
-      return db.getDashboardStats();
+    stats: permissionProcedure("dashboard:view").query(async ({ ctx }) => {
+      return db.getDashboardStats(ctx.user!);
     }),
 
     recentActivity: permissionProcedure("dashboard:view")
@@ -252,7 +252,7 @@ export const appRouter = router({
       }),
 
     statusSummary: permissionProcedure("analytics:view").query(async () => db.getLeadStatusSummary()),
-    kpiMetrics: permissionProcedure("analytics:view").query(async () => db.getLeadKpiMetrics()),
+    kpiMetrics: permissionProcedure("analytics:view").query(async ({ ctx }) => db.getLeadKpiMetrics(ctx.user!)),
     pipelineForecast: permissionProcedure("analytics:view").query(async () => db.getPipelineForecast()),
   }),
 
@@ -330,11 +330,12 @@ export const appRouter = router({
         clientId: z.number().optional(),
         clientMatterId: z.number().optional(),
       }).optional())
-      .query(async ({ input }) => db.getAllTasks(input ?? {})),
+      // Visibility is enforced server-side from the session user (role + id).
+      .query(async ({ input, ctx }) => db.getAllTasks(input ?? {}, ctx.user!)),
 
     get: permissionProcedure("tasks:manage")
       .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => db.getTaskById(input.id)),
+      .query(async ({ input, ctx }) => db.getTaskById(input.id, ctx.user!)),
 
     create: permissionProcedure("tasks:manage")
       .input(z.object({
@@ -368,14 +369,17 @@ export const appRouter = router({
         assignedTo: z.number().optional(),
         dueDate: z.string().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
+        // Can only modify a task the viewer is allowed to see.
+        await db.assertTaskVisible(id, ctx.user!);
         return db.updateTask(id, data);
       }),
 
     delete: permissionProcedure("tasks:manage")
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
+        await db.assertTaskVisible(input.id, ctx.user!);
         await db.deleteTask(input.id);
         return { success: true };
       }),
@@ -520,6 +524,7 @@ export const appRouter = router({
         password: passwordSchema,
         role: roleSchema.default("staff"),
         status: statusSchema.default("active"),
+        reportsToId: z.number().nullable().optional(), // supervising partner
       }))
       .mutation(async ({ input, ctx }) => {
         const existing = await db.getUserByEmail(input.email);
@@ -534,6 +539,7 @@ export const appRouter = router({
           passwordHash,
           role: input.role,
           status: input.status,
+          reportsToId: input.reportsToId ?? null,
         });
 
         await db.createAuditLog({
@@ -554,6 +560,7 @@ export const appRouter = router({
         email: emailSchema,
         role: roleSchema,
         status: statusSchema,
+        reportsToId: z.number().nullable().optional(), // supervising partner
       }))
       .mutation(async ({ input, ctx }) => {
         const target = await db.getUserById(input.userId);
@@ -583,6 +590,7 @@ export const appRouter = router({
           email: input.email,
           role: input.role,
           status: input.status,
+          ...(input.reportsToId !== undefined ? { reportsToId: input.reportsToId } : {}),
         });
 
         if (target.role !== input.role) {
