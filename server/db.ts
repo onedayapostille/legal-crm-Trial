@@ -926,9 +926,15 @@ export async function checkConflict(rawQuery: string) {
 
 export async function createClient(data: InsertClient, userId: number) {
   const db = getDb();
+  // Infer the intake channel when the caller didn't specify one:
+  //  - created straight as "Existing Client" → "Direct" (walk-in, not funnel)
+  //  - otherwise (Leads/Rejected) → "Lead" (entered the intake funnel)
+  const convertedFrom =
+    data.convertedFrom ??
+    (data.clientStatus === "Existing Client" ? "Direct" : "Lead");
   const [client] = await db
     .insert(clients)
-    .values({ ...data, createdBy: userId })
+    .values({ ...data, convertedFrom, createdBy: userId })
     .returning();
   await createAuditLog({
     entityType: "client",
@@ -996,6 +1002,83 @@ export async function getClientStatusCounts() {
   // counts only clients still in "Leads" status (i.e. requiring follow-up).
   result.nonActive = result.leads + result.rejected;
   return result;
+}
+
+export type ConversionRange = "month" | "quarter" | "all";
+
+// Inclusive lower-bound date for a conversion range, or null for "all time".
+// Exported for reuse/testing.
+export function conversionRangeStart(range: ConversionRange, now: Date): Date | null {
+  if (range === "month") {
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  }
+  if (range === "quarter") {
+    const quarterStartMonth = Math.floor(now.getMonth() / 3) * 3;
+    return new Date(now.getFullYear(), quarterStartMonth, 1);
+  }
+  return null; // all time
+}
+
+/**
+ * Dashboard "Conversion Rate" KPI.
+ *
+ *   Conversion Rate = converted clients / total intake * 100
+ *
+ *   - total intake     = clients whose intake channel is Lead or Enquiry
+ *                        (Direct walk-ins are excluded). Reported split as
+ *                        totalLeads + totalEnquiries.
+ *   - converted clients = those intake clients that reached "Existing Client"
+ *                         (Active). Direct clients can never be "converted".
+ *
+ * Because the numerator is a strict subset of the denominator, the rate is
+ * always between 0 and 100. The rate is rounded to one decimal place.
+ *
+ * The optional `range` bounds clients by createdAt (intake date): this month,
+ * this quarter, or all time.
+ */
+export async function getClientConversionMetrics(
+  range: ConversionRange = "all",
+  now: Date = new Date(),
+) {
+  const db = getDb();
+  const start = conversionRangeStart(range, now);
+  const inRange = start ? gte(clients.createdAt, start) : undefined;
+
+  const fromFunnel = inArray(clients.convertedFrom, ["Lead", "Enquiry"]);
+
+  const [leadRow] = await db
+    .select({ count: count() })
+    .from(clients)
+    .where(and(eq(clients.convertedFrom, "Lead"), inRange));
+
+  const [enquiryRow] = await db
+    .select({ count: count() })
+    .from(clients)
+    .where(and(eq(clients.convertedFrom, "Enquiry"), inRange));
+
+  const [convertedRow] = await db
+    .select({ count: count() })
+    .from(clients)
+    .where(and(eq(clients.clientStatus, "Existing Client"), fromFunnel, inRange));
+
+  const totalLeads = Number(leadRow?.count ?? 0);
+  const totalEnquiries = Number(enquiryRow?.count ?? 0);
+  const totalIntake = totalLeads + totalEnquiries;
+  const convertedClients = Number(convertedRow?.count ?? 0);
+
+  const conversionRate =
+    totalIntake > 0
+      ? Math.round((convertedClients / totalIntake) * 1000) / 10 // 1 decimal place
+      : 0;
+
+  return {
+    range,
+    convertedClients,
+    totalLeads,
+    totalEnquiries,
+    totalIntake,
+    conversionRate,
+  };
 }
 
 // ─── Client Matters ───────────────────────────────────────────────────────────
