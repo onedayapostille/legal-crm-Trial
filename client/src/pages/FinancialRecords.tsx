@@ -162,14 +162,14 @@ export default function FinancialRecords() {
 
   /** Client IDs that appear in at least one record (for the client dropdown) */
   const activeClientIds = useMemo(
-    () => [...new Set(records.map(r => r.clientId))],
+    () => Array.from(new Set(records.map(r => r.clientId))),
     [records],
   );
 
   /** Matter IDs that appear in at least one record (for the matter dropdown).
    *  Type guard narrows `number | null` → `number` so downstream `!` casts are safe. */
   const activeMatterIds = useMemo(
-    () => [...new Set(records.map(r => r.clientMatterId).filter((id): id is number => id !== null))],
+    () => Array.from(new Set(records.map(r => r.clientMatterId).filter((id): id is number => id !== null))),
     [records],
   );
 
@@ -232,11 +232,11 @@ export default function FinancialRecords() {
       row.collectedAmount   += Number(r.collectedAmount)   || 0;
       if (r.collectionStatus) row._statuses.add(r.collectionStatus);
     }
-    return [...map.values()]
+    return Array.from(map.values())
       .map(({ _statuses, ...row }) => ({
         ...row,
         toBeBilled: Math.max(0, row.agreedFees - row.revenue),
-        statuses:   [..._statuses],
+        statuses:   Array.from(_statuses),
       }))
       .sort((a, b) => a.clientName.localeCompare(b.clientName));
   }, [filteredRecords, clientMap]);
@@ -278,12 +278,12 @@ export default function FinancialRecords() {
       if (r.collectionStatus)  row._statuses.add(r.collectionStatus);
       if (r.responsibleLawyer) row._lawyers.add(r.responsibleLawyer);
     }
-    return [...map.values()]
+    return Array.from(map.values())
       .map(({ _statuses, _lawyers, ...row }) => ({
         ...row,
         toBeBilled:         Math.max(0, row.agreedFees - row.revenue),
-        statuses:           [..._statuses],
-        responsibleLawyers: [..._lawyers],
+        statuses:           Array.from(_statuses),
+        responsibleLawyers: Array.from(_lawyers),
       }))
       .sort((a, b) => {
         const c = a.clientName.localeCompare(b.clientName);
