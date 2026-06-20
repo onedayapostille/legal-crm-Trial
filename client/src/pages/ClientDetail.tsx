@@ -1382,10 +1382,12 @@ function FinancialSection({
                       <TableCell className="text-sm">{fmtSAR(r.agreedFees)}</TableCell>
                       <TableCell className="text-sm">
                         {(() => {
-                          const agreed  = Number(r.agreedFees)  || 0;
-                          const billed  = Number(r.billedAmount) || 0;
-                          const tbb     = Math.max(0, agreed - billed);
-                          const over    = agreed > 0 && billed > agreed;
+                          // Revenue is the single active amount field (Billed Amount
+                          // is legacy/read-only — CRM-012). To Be Billed = agreed − revenue.
+                          const agreed  = Number(r.agreedFees) || 0;
+                          const revenue = Number(r.revenue)    || 0;
+                          const tbb     = Math.max(0, agreed - revenue);
+                          const over    = agreed > 0 && revenue > agreed;
                           if (over) return <span className="text-red-600 font-medium text-xs">Overbilled</span>;
                           if (tbb === 0 && agreed > 0) return <span className="text-green-700 text-xs font-medium">Fully billed</span>;
                           return <span className="text-amber-700 font-medium">{agreed > 0 ? fmtSAR(tbb) : "—"}</span>;

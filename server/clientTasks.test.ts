@@ -29,7 +29,7 @@ describe("Client tasks — client/matter scoping, filters, rejected lock", () =>
     const caller = adminCaller();
     const stamp = Date.now();
     const client = await caller.clients.create({ clientName: `TaskClient ${stamp}`, clientStatus: "Existing Client" });
-    const matter = await caller.clientMatters.create({ clientId: client.id, matterReference: `TM-${stamp}` });
+    const matter = await caller.clientMatters.create({ clientId: client.id, matterType: "Corporate", matterReference: `TM-${stamp}` });
     const ids: number[] = [];
     try {
       const withMatter = await caller.tasks.create({
@@ -60,7 +60,7 @@ describe("Client tasks — client/matter scoping, filters, rejected lock", () =>
     const caller = adminCaller();
     const stamp = Date.now();
     const client = await caller.clients.create({ clientName: `FilterClient ${stamp}`, clientStatus: "Existing Client" });
-    const m1 = await caller.clientMatters.create({ clientId: client.id, matterReference: `M1-${stamp}` });
+    const m1 = await caller.clientMatters.create({ clientId: client.id, matterType: "Corporate", matterReference: `M1-${stamp}` });
     const ids: number[] = [];
     try {
       const a = await caller.tasks.create({ title: `A ${stamp}`, clientId: client.id, clientMatterId: m1.id, status: "todo" });
@@ -85,7 +85,7 @@ describe("Client tasks — client/matter scoping, filters, rejected lock", () =>
     const caller = adminCaller();
     const stamp = Date.now();
     const client = await caller.clients.create({ clientName: `RelClient ${stamp}`, clientStatus: "Existing Client" });
-    const matter = await caller.clientMatters.create({ clientId: client.id, matterReference: `RM-${stamp}` });
+    const matter = await caller.clientMatters.create({ clientId: client.id, matterType: "Corporate", matterReference: `RM-${stamp}` });
     let taskId: number | undefined;
     try {
       const t = await caller.tasks.create({ title: `Rel ${stamp}`, clientId: client.id, clientMatterId: matter.id });
