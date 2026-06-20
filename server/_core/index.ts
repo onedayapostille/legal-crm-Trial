@@ -20,9 +20,12 @@ if (!process.env.DATABASE_URL && process.env.POSTGRES_PASSWORD) {
   const host         = explicitHost ?? "localhost";
   const port         = process.env.POSTGRES_PORT ?? "5432";
   const db           = process.env.POSTGRES_DB   ?? "app";
-  const sslParam     = "";
+  // Supabase (direct or pooler) requires SSL; local/other hosts usually don't.
+  // The password is URL-encoded above, so POSTGRES_PASSWORD can be the RAW value
+  // (special characters like '#' are handled — no manual %23 needed).
+  const sslParam     = /\.supabase\.(co|com)\b/.test(host) ? "?sslmode=require" : "";
   process.env.DATABASE_URL = `postgresql://${user}:${password}@${host}:${port}/${db}${sslParam}`;
-  console.log(`[Server] DATABASE_URL built from POSTGRES_* vars — host: ${host}, ssl: ${!explicitHost}`);
+  console.log(`[Server] DATABASE_URL built from POSTGRES_* vars — host: ${host}, ssl: ${sslParam ? "require" : "off"}`);
 }
 
 import express from "express";
