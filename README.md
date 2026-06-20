@@ -143,20 +143,31 @@ corepack pnpm local:db
 # .env: DATABASE_URL=postgresql://postgres:postgres@localhost:5433/app
 ```
 
-### Manual PostgreSQL setup
+### Manual PostgreSQL setup (no Docker)
 
-If Docker is unavailable, install PostgreSQL 16 and start its service. Using
-`psql` or a PostgreSQL administration tool, set the local password and create
-the database:
+If Docker is unavailable, run a native PostgreSQL instead.
+
+**Windows via scoop (no admin — verified path):**
+
+```powershell
+scoop install postgresql
+$PG = "$env:USERPROFILE\scoop\apps\postgresql\current"
+& "$PG\bin\pg_ctl" -D "$PG\data" start
+& "$PG\bin\psql" -h 127.0.0.1 -U postgres -d postgres -c "ALTER USER postgres PASSWORD 'postgres';"
+& "$PG\bin\createdb" -h 127.0.0.1 -U postgres app
+```
+
+**Any platform with a native PostgreSQL 16+ install:** start its service, then in
+`psql` or a PostgreSQL admin tool:
 
 ```sql
 ALTER ROLE postgres PASSWORD 'postgres';
 CREATE DATABASE app OWNER postgres;
 ```
 
-Keep the default `DATABASE_URL` in `.env`, then run
-`corepack pnpm local:migrate`, `corepack pnpm db:seed`, and
-`corepack pnpm local:dev`.
+Either way, keep the default `DATABASE_URL` in `.env`, then run
+`corepack pnpm db:migrate`, `corepack pnpm db:seed`, and `corepack pnpm dev`.
+(On the native path, start PostgreSQL with `pg_ctl` above — `local:db` is Docker-only.)
 
 ## Troubleshooting
 
