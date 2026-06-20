@@ -14,8 +14,10 @@ services:
       - "3000:3000"
     environment:
       # Either provide DATABASE_URL directly...
-      DATABASE_URL: ${DATABASE_URL:-}
-      JWT_SECRET: ${JWT_SECRET:-}
+      # Do not silently replace missing production secrets with empty strings.
+      # A failed deployment is actionable; a running app with a broken login is not.
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set in App Settings}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in App Settings}
       AUTH_SECRET: ${AUTH_SECRET:-}
       # ...or provide the parts and the app builds DATABASE_URL (URL-encoding the
       # password, so POSTGRES_PASSWORD can contain raw special chars like '#').

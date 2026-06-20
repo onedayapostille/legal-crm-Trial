@@ -15,7 +15,7 @@ FROM node:22-alpine
 WORKDIR /app
 
 ENV NODE_ENV=production
-ENV APP_RELEASE="auth-cache-fix-2026-04-27"
+ENV APP_RELEASE="db-env-runtime-fix-2026-06-20"
 
 # SECURITY: Secrets (DATABASE_URL, JWT_SECRET, etc.) are NOT baked into the image.
 # They must be supplied at runtime via environment variables, e.g.:
