@@ -1807,6 +1807,13 @@ export async function createClientMatter(
     throw new TRPCError({ code: "BAD_REQUEST", message: "Matter Type is required when creating a matter." });
   }
 
+  // Matter Reference is the matter-level identifier and is required for new
+  // matters (CRM-007). Checked against the raw input because the sanitizer drops
+  // blank strings.
+  if (!(typeof data.matterReference === "string" && data.matterReference.trim() !== "")) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Matter Reference is required when creating a matter." });
+  }
+
   // Original Serial = inherited client number. If not provided, default it from
   // the parent client. If provided, use it as-is (NOT unique, no format).
   const providedSerial = typeof clean.originalSerial === "string" ? clean.originalSerial.trim() : "";
@@ -1872,9 +1879,19 @@ export async function updateClientMatter(id: number, data: Record<string, unknow
     }
   }
 
-  // Matter Reference stays unique per client when changed.
-  if (clean.matterReference !== undefined && existing) {
-    await assertMatterReferenceUniqueForClient(existing.clientId, clean.matterReference, id);
+  // Matter Reference is required going forward (CRM-007): when an update touches
+  // it, it cannot be blanked. Detected on the RAW input (the sanitizer drops blank
+  // strings, so a blank submission would otherwise look like "not provided").
+  // Updates that do NOT include matterReference are left alone, so editing other
+  // fields on a legacy record with a blank reference is not blocked or overwritten.
+  if (data.matterReference !== undefined) {
+    const rawRef = typeof data.matterReference === "string" ? data.matterReference.trim() : "";
+    if (!rawRef) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "Matter Reference is required and cannot be cleared." });
+    }
+    if (existing) {
+      await assertMatterReferenceUniqueForClient(existing.clientId, rawRef, id);
+    }
   }
 
   let matter: typeof clientMatters.$inferSelect;

@@ -854,8 +854,8 @@ const MATTER_FORM_DEFAULT: MatterFormState = {
 };
 
 const MATTER_TEXT_FIELDS: [keyof MatterFormState, string][] = [
-  ["originalSerial",       "Original Serial (optional — auto MAT-####)"],
-  ["matterReference",      "Matter Reference"],
+  ["originalSerial",       "Original Serial (optional — defaults to client number)"],
+  ["matterReference",      "Matter Reference * (unique per client)"],
   ["matterType",           "Matter Type"],
   ["leadPartner",          "Lead Partner (Code)"],
   ["leadPartnerFullName",  "Lead Partner (Full Name)"],
@@ -972,6 +972,11 @@ function MatterDialog({ open, onClose, clientId }: { open: boolean; onClose: () 
   });
 
   const submit = async () => {
+    // Matter Reference is the required matter-level identifier (CRM-007).
+    if (!form.matterReference.trim()) {
+      toast.error("Matter Reference is required");
+      return;
+    }
     // Auto-run conflict check against matter name + opposing party.
     setChecking(true);
     try {
@@ -1080,7 +1085,14 @@ function MatterEditDialog({
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button
-            onClick={() => update.mutate({ id: matter.id, ...buildMatterPayload(form) } as any)}
+            onClick={() => {
+              // Matter Reference is required and cannot be cleared (CRM-007).
+              if (!form.matterReference.trim()) {
+                toast.error("Matter Reference is required");
+                return;
+              }
+              update.mutate({ id: matter.id, ...buildMatterPayload(form) } as any);
+            }}
             disabled={update.isPending}
           >
             Save Changes

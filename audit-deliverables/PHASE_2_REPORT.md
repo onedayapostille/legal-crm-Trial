@@ -72,10 +72,16 @@ REPORTS duplicates first (STEP 1) and provides a commented, opt-in resolution
     as-is. On edit, the existing value is preserved; if cleared it is refilled from
     the client number (never left blank).
 - **Matter Reference = matter-level identifier (CRM-007)**
+  - **Required going forward** on Add/Edit Matter — enforced server-side: create
+    rejects a blank/missing reference (`400`); update rejects clearing it to blank
+    (`400`). Updates that don't touch the reference are left alone, so editing
+    other fields on a legacy record with a blank reference is **not** blocked or
+    auto-overwritten (legacy reads/displays are unaffected). Frontend Add/Edit
+    Matter forms (ClientDetail dialogs + MatterNew) also require it.
   - `UNIQUE(client_id, matter_reference)` (partial; blank references exempt):
     a client cannot have two matters with the same reference; different clients
     may reuse one. Enforced in app code on create/update with a DB `23505` backstop
-    mapped to `409 CONFLICT`.
+    mapped to `409 CONFLICT`. Not globally unique (intentional).
 - **Matter Type (CRM-006)** — required server-side on matter create; owned by the
   matter. Multiple matters under one client can hold different types. Client-level
   Matter Type removed from the New Client form (column/API kept for compat).
@@ -124,7 +130,7 @@ Run via local binaries (no `pnpm` on PATH): `node_modules/.bin/tsc`, `.../vitest
 | Check | Command | Result |
 | --- | --- | --- |
 | Typecheck | `tsc --noEmit` | **PASS** (exit 0) |
-| Full suite | `vitest run` | 9 pass / 85 fail — **every failure is `DATABASE_URL environment variable is required`** (verified: no other error cause appears). No logic regressions. |
+| Full suite | `vitest run` | 9 pass / 87 fail — **every failure is `DATABASE_URL environment variable is required`** (verified: no other error cause appears). No logic regressions. |
 
 **Pure (DB-free) tests passing now:** `mapLeadStatusToClientStatus` (4, Phase 1),
 `conversionRangeStart` (3), + 2 others. (CRM-007 is now entirely DB-backed —
@@ -160,9 +166,10 @@ pnpm exec vitest run server/originalSerial.test.ts server/financialRevenue.test.
   dedup scripts are run. This is intentional (never auto-overwrite), but means
   uniqueness is not guaranteed until remediation is done. (`original_serial`
   duplicates are allowed by design and are never deduped.)
-- **Matter Reference is not required** (blank references are allowed and not
-  constrained). If the business wants every matter to carry a unique reference,
-  make it required — a small follow-up.
+- **Matter Reference is required** for new/updated matters (enforced server-side +
+  in the forms). Legacy records with a blank reference are not auto-fixed: they
+  still read/display, and are only required to gain a reference when they are next
+  edited. A backfill of legacy blanks (if desired) is a separate, reviewed step.
 - **Global matter_reference uniqueness** is intentionally NOT enforced (different
   clients may reuse a reference). Switch to a global unique index only if the
   business later confirms it.
@@ -183,7 +190,11 @@ pnpm exec vitest run server/originalSerial.test.ts server/financialRevenue.test.
 - [ ] Client with no Client Number → matter serial falls back to `CL-<clientId>`.
 - [ ] Edit a matter and clear the serial → it refills from the client number.
 
-**Matter Reference (unique per client)**
+**Matter Reference (required + unique per client)**
+- [ ] Add Matter with a blank Matter Reference → blocked (form + server 400).
+- [ ] Edit Matter and clear the reference → blocked (server 400). Editing another
+      field on a legacy blank-reference matter without touching the reference →
+      still saves (legacy not broken).
 - [ ] Same client, second matter with an existing reference → rejected (409).
 - [ ] Two different clients with the same reference → both allowed.
 - [ ] After migrations on a clean DB, confirm `\d client_matters` shows
