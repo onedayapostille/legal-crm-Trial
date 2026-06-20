@@ -1,21 +1,34 @@
 # Secrets (DATABASE_URL, JWT_SECRET, …) are passed at RUNTIME, never baked into
-# the image. `env_file: .env` loads them from your git-ignored .env file. You can
-# also inject them from your orchestrator/secret store instead of a file.
+# the image.
+#
+# IMPORTANT: Docker Compose does NOT forward the host/platform environment into
+# the container automatically — each variable must be listed under `environment:`.
+# The `${VAR}` values below are interpolated from:
+#   - the platform's injected env (e.g. Dublyo "App Settings"), or
+#   - a local, git-ignored `.env` file (Compose auto-loads it for interpolation).
+# Either source works; nothing is hard-coded here.
 services:
   app:
     build: .
     ports:
       - "3000:3000"
-    # Loads DATABASE_URL / JWT_SECRET / etc. from .env at run time.
-    env_file: .env
-    # Alternatively (or in addition) pass individual values explicitly:
-    # environment:
-    #   DATABASE_URL: ${DATABASE_URL}
-    #   JWT_SECRET: ${JWT_SECRET}
+    environment:
+      # Either provide DATABASE_URL directly...
+      DATABASE_URL: ${DATABASE_URL:-}
+      JWT_SECRET: ${JWT_SECRET:-}
+      AUTH_SECRET: ${AUTH_SECRET:-}
+      # ...or provide the parts and the app builds DATABASE_URL (URL-encoding the
+      # password, so POSTGRES_PASSWORD can contain raw special chars like '#').
+      POSTGRES_USER: ${POSTGRES_USER:-}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_HOST: ${POSTGRES_HOST:-}
+      POSTGRES_PORT: ${POSTGRES_PORT:-}
+      POSTGRES_DB: ${POSTGRES_DB:-}
+      # Server
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: ${PORT:-3000}
+      APP_URL: ${APP_URL:-}
     restart: unless-stopped
-    # Uncomment `depends_on` if you enable the local `db` service below.
-    # depends_on:
-    #   - db
 
   # ── Optional local PostgreSQL for development ────────────────────────────────
   # Uncomment to run a throwaway local database. Then set, in your .env:
