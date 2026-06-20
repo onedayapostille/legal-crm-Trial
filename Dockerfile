@@ -15,7 +15,7 @@ FROM node:22-alpine
 WORKDIR /app
 
 ENV NODE_ENV=production
-ENV APP_RELEASE="crm-runtime-iptest-2026-06-20"
+ENV APP_RELEASE="crm-runtime-svcname-2026-06-20"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TEMPORARY EMERGENCY CONFIG — REMOVE AFTER DUBLYO ENV INJECTION IS FIXED
@@ -40,7 +40,7 @@ ENV APP_RELEASE="crm-runtime-iptest-2026-06-20"
 #   3) only as a last resort, paste real values here and commit.
 #
 # >>> INSERT REAL VALUES HERE (replace the <…> placeholders; keep the quotes) <<<
-ENV DATABASE_URL="postgresql://postgres:a75cd31b330923a0bd5a469e31e5e3d1@178.105.55.30:5432/app?sslmode=require"
+ENV DATABASE_URL="postgresql://postgres:a75cd31b330923a0bd5a469e31e5e3d1@crm-data:5432/app?sslmode=require"
 ENV JWT_SECRET="27b608e605d8d4396f0b2f124ae4f43587dd223a52cc55988c05f33a169bca95"
 # ═══════════════════════════════════════════════════════════════════════════════
 #  END TEMPORARY EMERGENCY CONFIG
