@@ -1,219 +1,124 @@
 import { describe, expect, it } from "vitest";
 import { appRouter } from "./routers";
+import { mapLeadStatusToClientStatus } from "./db";
 import type { TrpcContext } from "./_core/context";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
 
-function createAuthContext(): { ctx: TrpcContext } {
+function adminCaller() {
   const user: AuthenticatedUser = {
     id: 1,
-    openId: "test-user",
-    email: "test@example.com",
-    name: "Test User",
+    openId: "test-admin",
+    email: "admin@example.com",
+    name: "Admin",
     loginMethod: "manus",
     role: "admin",
+    status: "active",
     createdAt: new Date(),
     updatedAt: new Date(),
     lastSignedIn: new Date(),
   };
-
-  const ctx: TrpcContext = {
+  return appRouter.createCaller({
     user,
-    req: {
-      protocol: "https",
-      headers: {},
-    } as TrpcContext["req"],
-    res: {
-      clearCookie: () => {},
-    } as TrpcContext["res"],
-  };
-
-  return { ctx };
+    req: { protocol: "https", headers: {} } as TrpcContext["req"],
+    res: { clearCookie: () => {} } as TrpcContext["res"],
+  });
 }
 
-describe("enquiries.create", () => {
-  it("creates an enquiry with auto-generated enquiry ID", async () => {
-    const { ctx } = createAuthContext();
-    const caller = appRouter.createCaller(ctx);
-
-    const result = await caller.enquiries.create({
-      dateOfEnquiry: "2025-01-15",
-      clientName: "Test Client " + Date.now(),
-      serviceRequested: "Corporate / M&A",
-      urgencyLevel: "High",
-      currentStatus: "Pending",
-    });
-
-    expect(result).toHaveProperty("enquiryId");
-    expect(result.enquiryId).toMatch(/^ENQ-\d{4}$/);
-    expect(result).toHaveProperty("id");
-    expect(typeof result.id).toBe("number");
+// ─── Lead → canonical client status mapping (pure, no DB) ─────────────────────
+// The canonical intake model is clients + client_lead_details. Every enquiry
+// (legacy `leads` row) is mirrored into a canonical client; this is the mapping
+// the mirror uses for clients.client_status.
+describe("mapLeadStatusToClientStatus", () => {
+  it("Converted → Existing Client", () => {
+    expect(mapLeadStatusToClientStatus("Converted")).toBe("Existing Client");
   });
 
-  it("generates sequential enquiry IDs", async () => {
-    const { ctx } = createAuthContext();
-    const caller = appRouter.createCaller(ctx);
+  it("Lost → Rejected", () => {
+    expect(mapLeadStatusToClientStatus("Lost")).toBe("Rejected");
+  });
 
-    const result1 = await caller.enquiries.create({
-      dateOfEnquiry: "2025-01-15",
-      clientName: "Client One " + Date.now(),
-    });
+  it("in-pipeline statuses → Leads", () => {
+    for (const s of ["New", "Contacted", "Meeting Scheduled", "Proposal Sent", "On Hold"]) {
+      expect(mapLeadStatusToClientStatus(s)).toBe("Leads");
+    }
+  });
 
-    // Small delay to ensure different timestamps
-    await new Promise(resolve => setTimeout(resolve, 10));
-
-    const result2 = await caller.enquiries.create({
-      dateOfEnquiry: "2025-01-16",
-      clientName: "Client Two " + Date.now(),
-    });
-
-    const id1Num = parseInt(result1.enquiryId.split("-")[1] || "0");
-    const id2Num = parseInt(result2.enquiryId.split("-")[1] || "0");
-
-    expect(id2Num).toBeGreaterThan(id1Num);
+  it("null / unknown → Leads (safe default, stays in pipeline)", () => {
+    expect(mapLeadStatusToClientStatus(null)).toBe("Leads");
+    expect(mapLeadStatusToClientStatus(undefined)).toBe("Leads");
+    expect(mapLeadStatusToClientStatus("Whatever")).toBe("Leads");
   });
 });
 
-describe("enquiries.update", () => {
-  it("auto-generates matter code when conversion date is set", async () => {
-    const { ctx } = createAuthContext();
-    const caller = appRouter.createCaller(ctx);
+// ─── Enquiry intake → canonical mirror (integration; needs DATABASE_URL) ──────
+// A new enquiry must (1) get a LEAD-#### code and (2) immediately appear in the
+// canonical Leads Pipeline (clients.list) exactly once, tagged convertedFrom
+// "Enquiry", with its channel fields preserved.
+describe("leads.create mirrors a canonical client", () => {
+  async function findMirror(caller: ReturnType<typeof adminCaller>, clientName: string) {
+    const clients = await caller.clients.list({ clientStatus: "Leads" });
+    return clients.filter(c => c.clientName === clientName);
+  }
 
-    const created = await caller.enquiries.create({
-      dateOfEnquiry: "2025-01-15",
-      clientName: "Test Client " + Date.now(),
-      currentStatus: "Pending",
+  it("creates a LEAD-#### enquiry and a single canonical Leads client", async () => {
+    const caller = adminCaller();
+    const clientName = `Enquiry Mirror ${Date.now()}`;
+    const lead = await caller.leads.create({
+      dateOfEnquiry: "2026-01-15",
+      clientName,
+      channelType: "Digital Channels",
+      channelMedium: "Email",
+      currentStatus: "New",
     });
 
-    const updated = await caller.enquiries.update({
-      id: created.id,
-      conversionDate: "2025-01-20",
-      currentStatus: "Converted",
-    });
+    try {
+      expect(lead.leadCode).toMatch(/^LEAD-\d{4}$/);
 
-    expect(updated).toHaveProperty("matterCode");
-    expect(updated?.matterCode).toMatch(/^MAT-\d{4}-\d{3}$/);
+      const mirrors = await findMirror(caller, clientName);
+      expect(mirrors).toHaveLength(1); // mirrored exactly once
+      expect(mirrors[0]?.clientStatus).toBe("Leads");
+      expect(mirrors[0]?.convertedFrom).toBe("Enquiry");
+      // Channel fields are carried onto the canonical lead detail.
+      expect(mirrors[0]?.channelType).toBe("Digital Channels");
+      expect(mirrors[0]?.channelMedium).toBe("Email");
+    } finally {
+      const mirrors = await findMirror(caller, clientName);
+      for (const m of mirrors) await caller.clients.delete({ id: m.id });
+      await caller.leads.delete({ id: lead.id });
+    }
   });
 
-  it("updates enquiry fields correctly", async () => {
-    const { ctx } = createAuthContext();
-    const caller = appRouter.createCaller(ctx);
-
-    const created = await caller.enquiries.create({
-      dateOfEnquiry: "2025-01-15",
-      clientName: "Original Name " + Date.now(),
-      currentStatus: "Pending",
+  it("converting the enquiry promotes the mirror to Existing Client", async () => {
+    const caller = adminCaller();
+    const clientName = `Enquiry Convert ${Date.now()}`;
+    const lead = await caller.leads.create({
+      dateOfEnquiry: "2026-01-15",
+      clientName,
+      channelType: "Walk-in",
+      currentStatus: "New",
     });
 
-    const updated = await caller.enquiries.update({
-      id: created.id,
-      clientName: "Updated Name",
-      currentStatus: "Contacted",
-      urgencyLevel: "Critical",
-    });
+    try {
+      await caller.leads.update({ id: lead.id, currentStatus: "Converted" });
 
-    expect(updated?.clientName).toBe("Updated Name");
-    expect(updated?.currentStatus).toBe("Contacted");
-    expect(updated?.urgencyLevel).toBe("Critical");
-  });
-});
+      // No longer in the Leads pipeline...
+      const stillLeads = (await caller.clients.list({ clientStatus: "Leads" }))
+        .filter(c => c.clientName === clientName);
+      expect(stillLeads).toHaveLength(0);
 
-describe("enquiries.list", () => {
-  it("returns all enquiries", async () => {
-    const { ctx } = createAuthContext();
-    const caller = appRouter.createCaller(ctx);
-
-    await caller.enquiries.create({
-      dateOfEnquiry: "2025-01-15",
-      clientName: "Client A " + Date.now(),
-    });
-
-    await new Promise(resolve => setTimeout(resolve, 10));
-
-    await caller.enquiries.create({
-      dateOfEnquiry: "2025-01-16",
-      clientName: "Client B " + Date.now(),
-    });
-
-    const list = await caller.enquiries.list();
-
-    expect(Array.isArray(list)).toBe(true);
-    expect(list.length).toBeGreaterThanOrEqual(2);
-  });
-});
-
-describe("enquiries.get", () => {
-  it("retrieves a specific enquiry by ID", async () => {
-    const { ctx } = createAuthContext();
-    const caller = appRouter.createCaller(ctx);
-
-    const created = await caller.enquiries.create({
-      dateOfEnquiry: "2025-01-15",
-      clientName: "Specific Client " + Date.now(),
-      email: "specific" + Date.now() + "@example.com",
-    });
-
-    const retrieved = await caller.enquiries.get({ id: created.id });
-
-    expect(retrieved).not.toBeNull();
-    expect(retrieved?.clientName).toBe("Specific Client");
-    expect(retrieved?.email).toBe("specific@example.com");
-    expect(retrieved?.enquiryId).toBe(created.enquiryId);
-  });
-});
-
-describe("enquiries.statusSummary", () => {
-  it("returns status distribution", async () => {
-    const { ctx } = createAuthContext();
-    const caller = appRouter.createCaller(ctx);
-
-    const summary = await caller.enquiries.statusSummary();
-
-    expect(Array.isArray(summary)).toBe(true);
-    summary.forEach(item => {
-      expect(item).toHaveProperty("status");
-      expect(item).toHaveProperty("count");
-      expect(typeof item.count).toBe("number");
-    });
-  });
-});
-
-describe("enquiries.kpiMetrics", () => {
-  it("returns KPI metrics with correct structure", async () => {
-    const { ctx } = createAuthContext();
-    const caller = appRouter.createCaller(ctx);
-
-    const metrics = await caller.enquiries.kpiMetrics();
-
-    expect(metrics).toHaveProperty("totalEnquiries");
-    expect(metrics).toHaveProperty("convertedEnquiries");
-    expect(metrics).toHaveProperty("conversionRate");
-    expect(metrics).toHaveProperty("thisMonthEnquiries");
-    expect(metrics).toHaveProperty("totalRevenue");
-
-    expect(typeof metrics.totalEnquiries).toBe("number");
-    expect(typeof metrics.conversionRate).toBe("number");
-    expect(metrics.conversionRate).toBeGreaterThanOrEqual(0);
-    expect(metrics.conversionRate).toBeLessThanOrEqual(100);
-  });
-});
-
-describe("enquiries.pipelineForecast", () => {
-  it("returns pipeline forecast with probability weights", async () => {
-    const { ctx } = createAuthContext();
-    const caller = appRouter.createCaller(ctx);
-
-    const forecast = await caller.enquiries.pipelineForecast();
-
-    expect(Array.isArray(forecast)).toBe(true);
-    forecast.forEach(item => {
-      expect(item).toHaveProperty("status");
-      expect(item).toHaveProperty("count");
-      expect(item).toHaveProperty("totalValue");
-      expect(item).toHaveProperty("probability");
-      expect(item).toHaveProperty("weightedValue");
-      expect(item.probability).toBeGreaterThanOrEqual(0);
-      expect(item.probability).toBeLessThanOrEqual(1);
-    });
+      // ...now an Existing Client (counts toward Conversion Rate).
+      const existing = (await caller.clients.list({ clientStatus: "Existing Client" }))
+        .filter(c => c.clientName === clientName);
+      expect(existing).toHaveLength(1);
+      expect(existing[0]?.convertedFrom).toBe("Enquiry");
+    } finally {
+      for (const status of ["Leads", "Existing Client", "Rejected"] as const) {
+        const rows = (await caller.clients.list({ clientStatus: status }))
+          .filter(c => c.clientName === clientName);
+        for (const r of rows) await caller.clients.delete({ id: r.id });
+      }
+      await caller.leads.delete({ id: lead.id });
+    }
   });
 });

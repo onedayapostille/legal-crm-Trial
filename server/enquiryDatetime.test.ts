@@ -31,6 +31,7 @@ describe("Enquiry datetime — UTC storage, local override, report correctness",
     const enquiryAt = "2026-06-09T11:30:00.000Z"; // explicit UTC
     const created = await caller.leads.create({
       clientName: `Enq ${stamp}`,
+      channelType: "Walk-in",
       dateOfEnquiry: "2026-06-09",
       time: "14:30",
       enquiryAt,
@@ -52,6 +53,7 @@ describe("Enquiry datetime — UTC storage, local override, report correctness",
     const past = "2019-01-15T08:00:00.000Z";
     const created = await caller.leads.create({
       clientName: `Past ${stamp}`,
+      channelType: "Walk-in",
       dateOfEnquiry: "2019-01-15",
       time: "11:00",
       enquiryAt: past,
@@ -74,12 +76,14 @@ describe("Enquiry datetime — UTC storage, local override, report correctness",
     // An old enquiry (years ago) must NOT count toward this month.
     const old = await caller.leads.create({
       clientName: `OldKpi ${stamp}`,
+      channelType: "Walk-in",
       dateOfEnquiry: "2019-01-15",
       enquiryAt: "2019-01-15T08:00:00.000Z",
     });
     // A current enquiry MUST count toward this month.
     const now = await caller.leads.create({
       clientName: `NowKpi ${stamp}`,
+      channelType: "Walk-in",
       dateOfEnquiry: new Date().toISOString().split("T")[0],
       enquiryAt: new Date().toISOString(),
     });
