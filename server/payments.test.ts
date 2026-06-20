@@ -37,18 +37,19 @@ describe("payments.create", () => {
     const caller = appRouter.createCaller(ctx);
 
     // Create and convert an enquiry
-    const enquiry = await caller.enquiries.create({
+    const enquiry = await caller.leads.create({
       dateOfEnquiry: "2025-01-15",
       clientName: "Payment Test Client " + Date.now(),
+      channelType: "Walk-in",
     });
 
-    await caller.enquiries.update({
+    await caller.leads.update({
       id: enquiry.id,
       conversionDate: "2025-01-20",
       currentStatus: "Converted",
     });
 
-    const updatedEnquiry = await caller.enquiries.get({ id: enquiry.id });
+    const updatedEnquiry = await caller.leads.get({ id: enquiry.id });
 
     // Create payment record
     const payment = await caller.payments.create({
@@ -66,18 +67,19 @@ describe("payments.create", () => {
     const { ctx } = createAuthContext();
     const caller = appRouter.createCaller(ctx);
 
-    const enquiry = await caller.enquiries.create({
+    const enquiry = await caller.leads.create({
       dateOfEnquiry: "2025-01-15",
       clientName: "Milestone Test Client " + Date.now(),
+      channelType: "Walk-in",
     });
 
-    await caller.enquiries.update({
+    await caller.leads.update({
       id: enquiry.id,
       conversionDate: "2025-01-20",
       currentStatus: "Converted",
     });
 
-    const updatedEnquiry = await caller.enquiries.get({ id: enquiry.id });
+    const updatedEnquiry = await caller.leads.get({ id: enquiry.id });
 
     const payment = await caller.payments.create({
       enquiryId: enquiry.id,
@@ -99,18 +101,19 @@ describe("payments.update", () => {
     const { ctx } = createAuthContext();
     const caller = appRouter.createCaller(ctx);
 
-    const enquiry = await caller.enquiries.create({
+    const enquiry = await caller.leads.create({
       dateOfEnquiry: "2025-01-15",
       clientName: "Update Test Client " + Date.now(),
+      channelType: "Walk-in",
     });
 
-    await caller.enquiries.update({
+    await caller.leads.update({
       id: enquiry.id,
       conversionDate: "2025-01-20",
       currentStatus: "Converted",
     });
 
-    const updatedEnquiry = await caller.enquiries.get({ id: enquiry.id });
+    const updatedEnquiry = await caller.leads.get({ id: enquiry.id });
 
     const payment = await caller.payments.create({
       enquiryId: enquiry.id,
@@ -135,18 +138,19 @@ describe("payments.getByEnquiry", () => {
     const { ctx } = createAuthContext();
     const caller = appRouter.createCaller(ctx);
 
-    const enquiry = await caller.enquiries.create({
+    const enquiry = await caller.leads.create({
       dateOfEnquiry: "2025-01-15",
       clientName: "Retrieve Test Client " + Date.now(),
+      channelType: "Walk-in",
     });
 
-    await caller.enquiries.update({
+    await caller.leads.update({
       id: enquiry.id,
       conversionDate: "2025-01-20",
       currentStatus: "Converted",
     });
 
-    const updatedEnquiry = await caller.enquiries.get({ id: enquiry.id });
+    const updatedEnquiry = await caller.leads.get({ id: enquiry.id });
 
     await caller.payments.create({
       enquiryId: enquiry.id,

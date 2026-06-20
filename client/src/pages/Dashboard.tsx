@@ -129,12 +129,12 @@ export default function Dashboard() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <StatCard
-              title="Total Leads (Non-active)"
-              value={clientStats?.nonActive ?? 0}
-              subtitle="Leads + Rejected — clients not yet Active"
+              title="Active Leads"
+              value={clientStats?.leads ?? 0}
+              subtitle="In Lead status — excludes Rejected"
               icon={Users}
               color="bg-blue-500"
-              href="/clients"
+              href="/clients/leads"
             />
             <StatCard
               title="Active Matters"

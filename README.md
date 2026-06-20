@@ -53,6 +53,31 @@ The seed script creates an admin only when the users table is empty. After the f
 | `ADMIN_NAME` | No | Initial admin display name |
 | `PORT` | No | Defaults to `3000` |
 
+## Secrets & Security
+
+Secrets are read **only** from environment variables at runtime. They are never
+hard-coded in source, the `Dockerfile`, or any committed file:
+
+- The `Dockerfile` builds a secret-free image. Supply secrets at run time, e.g.
+  `docker run -e DATABASE_URL=... -e JWT_SECRET=... ...`, or via
+  `docker-compose` (`env_file: .env`).
+- `.env` and its variants are git-ignored; commit only `.env.example` with
+  placeholder values.
+- The server fails fast when `DATABASE_URL` is missing and warns loudly when
+  `JWT_SECRET`/`AUTH_SECRET` is unset. Startup logs print only `SET ✓ / NOT SET ✗`
+  markers — never the secret values themselves.
+
+> **⚠️ Credential rotation (action required outside the codebase).**
+> Earlier commits baked a real `DATABASE_URL` (Supabase) and `JWT_SECRET` into
+> the `Dockerfile`. Removing them from the working tree does **not** remove them
+> from git history or from any image already built. Before delivery you MUST:
+> 1. Rotate the Supabase database password (and re-issue the connection string).
+> 2. Generate a new `JWT_SECRET` (`openssl rand -hex 32`). Rotating it
+>    invalidates existing sessions, which is the desired effect.
+> 3. Update the deployment secret store / `.env` with the new values.
+> 4. Optionally purge the secrets from git history (e.g. `git filter-repo`) and
+>    force-push, coordinating with the team.
+
 ## Local Development
 
 ```bash
