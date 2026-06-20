@@ -55,6 +55,32 @@ async function startServer() {
   console.log("[Server] DATABASE_URL:", process.env.DATABASE_URL ? "SET ✓" : "NOT SET ✗");
   console.log("[Server] JWT_SECRET:", process.env.JWT_SECRET ? "SET ✓" : "NOT SET ✗");
 
+  // Surface missing configuration loudly at startup (not only when the first
+  // query runs on the login page). Secrets are read from the environment ONLY —
+  // never hard-coded. We warn rather than exit so /health stays reachable for
+  // diagnostics, but every DB-backed request will fail until this is set.
+  if (!process.env.DATABASE_URL) {
+    console.error(
+      "\n┌─────────────────────────────────────────────────────────────────────┐\n" +
+      "│  CONFIG ERROR: DATABASE_URL is not set.                              │\n" +
+      "│  The app cannot reach the database until you configure it.          │\n" +
+      "│                                                                     │\n" +
+      "│    1) cp .env.example .env                                          │\n" +
+      "│    2) set DATABASE_URL=postgresql://USER:PASS@HOST:5432/legal_crm   │\n" +
+      "│    3) restart (pnpm dev)  — Docker: pass it via env_file / -e       │\n" +
+      "│                                                                     │\n" +
+      "│  Secrets are read from the environment only — never hard-coded.     │\n" +
+      "│  See README.md → \"Troubleshooting\".                                 │\n" +
+      "└─────────────────────────────────────────────────────────────────────┘\n",
+    );
+  }
+  if (!process.env.JWT_SECRET && !process.env.AUTH_SECRET) {
+    console.warn(
+      "[Server] WARNING: JWT_SECRET (or AUTH_SECRET) is not set — sessions use an " +
+      "insecure dev fallback. Set JWT_SECRET in .env (generate: openssl rand -hex 32).",
+    );
+  }
+
   const app = express();
   const server = createServer(app);
 

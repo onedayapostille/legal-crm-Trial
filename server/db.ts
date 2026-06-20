@@ -194,11 +194,21 @@ export function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
+export const DATABASE_URL_HELP =
+  "DATABASE_URL is not set. The app reads it only from the environment — it is " +
+  "never hard-coded. To fix:\n" +
+  "  1. Copy the template:   cp .env.example .env\n" +
+  "  2. Edit .env and set DATABASE_URL to your PostgreSQL connection string, e.g.\n" +
+  "       DATABASE_URL=postgresql://USER:PASSWORD@localhost:5432/legal_crm\n" +
+  "     (add ?sslmode=require for managed/remote databases)\n" +
+  "  3. Restart the app (pnpm dev) or, with Docker, pass it via env_file/-e.\n" +
+  "  See README.md → \"Secrets & Security\" / \"Troubleshooting\".";
+
 export function getDb() {
   if (!_db) {
     const url = process.env.DATABASE_URL;
     if (!url) {
-      throw new Error("DATABASE_URL environment variable is required");
+      throw new Error(`DATABASE_URL environment variable is required.\n${DATABASE_URL_HELP}`);
     }
     _client = postgres(url, {
       max: 10,

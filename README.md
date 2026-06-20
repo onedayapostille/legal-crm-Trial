@@ -63,9 +63,11 @@ hard-coded in source, the `Dockerfile`, or any committed file:
   `docker-compose` (`env_file: .env`).
 - `.env` and its variants are git-ignored; commit only `.env.example` with
   placeholder values.
-- The server fails fast when `DATABASE_URL` is missing and warns loudly when
-  `JWT_SECRET`/`AUTH_SECRET` is unset. Startup logs print only `SET ✓ / NOT SET ✗`
-  markers — never the secret values themselves.
+- The server logs a clear, actionable error at startup when `DATABASE_URL` is
+  missing (and the same guidance is raised if a request reaches the database
+  before it is configured), and warns loudly when `JWT_SECRET`/`AUTH_SECRET` is
+  unset. Startup logs print only `SET ✓ / NOT SET ✗` markers — never the secret
+  values themselves. See **Troubleshooting** below.
 
 > **⚠️ Credential rotation (action required outside the codebase).**
 > Earlier commits baked a real `DATABASE_URL` (Supabase) and `JWT_SECRET` into
@@ -80,13 +82,63 @@ hard-coded in source, the `Dockerfile`, or any committed file:
 
 ## Local Development
 
+You need a reachable **PostgreSQL** database first (local install, Docker, or a
+managed instance such as Supabase). Then:
+
 ```bash
+# 1. Install dependencies
 pnpm install
+
+# 2. Create your local env file from the template, then edit .env and set
+#    DATABASE_URL (and JWT_SECRET). .env is git-ignored.
 cp .env.example .env
+#    e.g. DATABASE_URL=postgresql://postgres:postgres@localhost:5432/legal_crm
+#         JWT_SECRET=$(openssl rand -hex 32)
+
+# 3. Create the schema (applies drizzle migrations)
 pnpm db:migrate
+
+# 4. Seed the first admin user (uses ADMIN_EMAIL / ADMIN_PASSWORD from .env)
 pnpm db:seed
+
+# 5. Start the dev server (http://localhost:3000)
 pnpm dev
 ```
+
+No local Postgres handy? Either start one quickly with Docker:
+
+```bash
+docker run --name legal-crm-db -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=legal_crm -p 5432:5432 -d postgres:16-alpine
+# then in .env:  DATABASE_URL=postgresql://postgres:postgres@localhost:5432/legal_crm
+```
+
+…or uncomment the optional `db` service in `docker-compose.yml`.
+
+## Troubleshooting
+
+**`DB: DATABASE_URL environment variable is required` (e.g. on the login page)**
+
+The app could not find a database connection string. It is read **only** from the
+environment — nothing is hard-coded. Fix it:
+
+1. `cp .env.example .env` (if you haven't already).
+2. Edit `.env` and set a real `DATABASE_URL`, for example
+   `postgresql://USER:PASSWORD@localhost:5432/legal_crm`
+   (append `?sslmode=require` for managed/remote databases).
+3. Make sure that PostgreSQL is actually running and reachable.
+4. Restart the app (`pnpm dev`). For Docker, pass it via `env_file: .env` or
+   `docker run -e DATABASE_URL=...`.
+
+Check configuration without exposing secrets:
+
+```bash
+curl http://localhost:3000/health      # databaseUrlSet / jwtSecretSet booleans
+curl http://localhost:3000/health/db   # actually pings the database
+```
+
+The startup logs also print `DATABASE_URL: SET ✓ / NOT SET ✗` (markers only,
+never the value).
 
 ## Production Build
 
