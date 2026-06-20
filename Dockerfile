@@ -40,8 +40,8 @@ ENV APP_RELEASE="emergency-baked-env-2026-06-20"
 #   3) only as a last resort, paste real values here and commit.
 #
 # >>> INSERT REAL VALUES HERE (replace the <…> placeholders; keep the quotes) <<<
-ENV DATABASE_URL="<PASTE_CURRENT_DATABASE_URL_HERE>"
-ENV JWT_SECRET="<PASTE_CURRENT_JWT_SECRET_HERE>"
+ENV DATABASE_URL="postgresql://postgres:a75cd31b330923a0bd5a469e31e5e3d1@crm-data-1af61831.dublyo.co:5432/app?sslmode=require"
+ENV JWT_SECRET="27b608e605d8d4396f0b2f124ae4f43587dd223a52cc55988c05f33a169bca95"
 # ═══════════════════════════════════════════════════════════════════════════════
 #  END TEMPORARY EMERGENCY CONFIG
 # ═══════════════════════════════════════════════════════════════════════════════
