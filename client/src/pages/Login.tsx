@@ -29,7 +29,16 @@ export default function Login() {
       navigate("/dashboard");
     },
     onError: (err) => {
-      setServerError(err.message || "Login failed. Please try again.");
+      // Show real, user-meaningful auth errors (e.g. "Invalid email or password"),
+      // but never surface internal/infrastructure errors (DB down, misconfig) as
+      // raw text on the public login screen — show a clean generic message instead.
+      const code = err.data?.code;
+      const isInternal = !code || code === "INTERNAL_SERVER_ERROR" || code === "TIMEOUT";
+      setServerError(
+        isInternal
+          ? "We couldn't sign you in right now. Please try again in a moment, or contact your administrator if the problem persists."
+          : err.message || "Login failed. Please try again.",
+      );
     },
   });
 
