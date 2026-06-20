@@ -62,6 +62,14 @@ function Router() {
           <DashboardLayout><EnquiryForm /></DashboardLayout>
         </ProtectedRoute>
       </Route>
+      {/* Explicit edit alias (kept alongside /leads/:id for deep-link compat). */}
+      <Route path="/leads/:id/edit">
+        {(params) => (
+          <ProtectedRoute>
+            <DashboardLayout><EnquiryForm id={parseInt(params.id)} /></DashboardLayout>
+          </ProtectedRoute>
+        )}
+      </Route>
       <Route path="/leads/:id">
         {(params) => (
           <ProtectedRoute>
@@ -82,6 +90,15 @@ function Router() {
         <ProtectedRoute>
           <DashboardLayout><EnquiryForm /></DashboardLayout>
         </ProtectedRoute>
+      </Route>
+      {/* Canonical edit path for an enquiry (was previously missing, causing a
+          404 on /enquiries/:id/edit deep links). */}
+      <Route path="/enquiries/:id/edit">
+        {(params) => (
+          <ProtectedRoute>
+            <DashboardLayout><EnquiryForm id={parseInt(params.id)} /></DashboardLayout>
+          </ProtectedRoute>
+        )}
       </Route>
       <Route path="/enquiries/:id">
         {(params) => (

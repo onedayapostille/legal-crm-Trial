@@ -10,7 +10,7 @@ import {
   clients, clientMatters, clientLeadDetails, rejectedClients,
   financialRecords, clientActionLogs, matterLawyerRates, systemSettings,
   userNotifications,
-  type InsertUser, type InsertLead, type InsertMatter,
+  type Lead, type InsertUser, type InsertLead, type InsertMatter,
   type InsertTask, type InsertNote, type InsertPayment,
   type InsertCompany, type InsertActivityLog, type InsertChatSubmission,
   type InsertClient, type InsertClientMatter, type InsertClientLeadDetail,
@@ -560,6 +560,101 @@ async function notifyLeadAssignment(
   ).catch(err => console.error("[notifyLeadAssignment] email failed:", err));
 }
 
+// ─── Canonical intake mirror (lead → client) ──────────────────────────────────
+//
+// CANONICAL INTAKE MODEL: clients + client_lead_details.
+//
+// The legacy `leads` table remains the rich enquiry record and powers the
+// Enquiries Log, but it is NOT the source of truth for the Leads Pipeline,
+// dashboard lead metrics, Recent Leads, or Conversion Rate — those all read
+// `clients`. To keep a single canonical source while preserving the legacy
+// enquiry data, every lead create/update mirrors a linked canonical client
+// (clients.source_lead_id = leads.id) plus its client_lead_details row.
+
+/** Map a legacy enquiry `currentStatus` to a canonical `clientStatus`. */
+export function mapLeadStatusToClientStatus(
+  currentStatus: string | null | undefined,
+): "Existing Client" | "Leads" | "Rejected" {
+  switch (currentStatus) {
+    case "Converted":
+      return "Existing Client";
+    case "Lost":
+      return "Rejected";
+    default:
+      // New / Contacted / Meeting Scheduled / Proposal Sent / On Hold → still in pipeline
+      return "Leads";
+  }
+}
+
+/**
+ * Create or update the canonical client mirror for a legacy lead, keyed by
+ * clients.source_lead_id. Idempotent: safe to call on every lead create/update.
+ *
+ * Status handling is conservative — it never auto-resurrects a client that was
+ * manually moved to "Rejected": a Rejected mirror is only promoted (e.g. when
+ * the enquiry is later Converted), never silently dropped back to "Leads".
+ */
+export async function syncLeadToClient(lead: Lead): Promise<void> {
+  const db = getDb();
+  const mappedStatus = mapLeadStatusToClientStatus(lead.currentStatus);
+
+  const [existing] = await db
+    .select()
+    .from(clients)
+    .where(eq(clients.sourceLeadId, lead.id))
+    .limit(1);
+
+  let clientId: number;
+  if (existing) {
+    // Never auto-un-reject: keep a manual "Rejected" unless the enquiry itself
+    // reached "Existing Client" (Converted).
+    const nextStatus =
+      existing.clientStatus === "Rejected" && mappedStatus === "Leads"
+        ? "Rejected"
+        : mappedStatus;
+    await db
+      .update(clients)
+      .set({
+        clientName: lead.clientName,
+        clientStatus: nextStatus,
+        updatedAt: new Date(),
+      })
+      .where(eq(clients.id, existing.id));
+    clientId = existing.id;
+  } else {
+    const [created] = await db
+      .insert(clients)
+      .values({
+        clientName: lead.clientName,
+        clientStatus: mappedStatus,
+        convertedFrom: "Enquiry",
+        sourceLeadId: lead.id,
+        createdBy: lead.createdBy ?? null,
+      })
+      .returning();
+    clientId = created.id;
+    // Audit only when we have a valid actor (audit_logs.user_id is an FK).
+    if (lead.createdBy != null) {
+      await createAuditLog({
+        entityType: "client",
+        entityId: clientId,
+        userId: lead.createdBy,
+        action: "created",
+        description: `Client ${lead.clientName} mirrored from enquiry ${lead.leadCode ?? lead.id}`,
+      });
+    }
+  }
+
+  // Mirror the shared intake fields into client_lead_details (1:1 with client).
+  await upsertClientLeadDetail(clientId, {
+    channelType: lead.channelType ?? undefined,
+    channelMedium: lead.channelMedium ?? undefined,
+    assignedLawyerId: lead.assignedTo ?? null,
+    clientSource: lead.referralSourceName ?? undefined,
+    leadStatus: lead.currentStatus ?? undefined,
+  });
+}
+
 export async function createLead(data: Record<string, unknown>, userId: number) {
   const db = getDb();
   const leadCode = await generateLeadCode();
@@ -576,6 +671,10 @@ export async function createLead(data: Record<string, unknown>, userId: number) 
     .insert(leads)
     .values({ ...(sanitized as InsertLead), leadCode, createdBy: userId })
     .returning();
+
+  // Mirror into the canonical client model so the enquiry is immediately visible
+  // in the Leads Pipeline, dashboard metrics, Recent Leads, and Conversion Rate.
+  await syncLeadToClient(lead);
 
   await logActivity({
     entityType: "lead",
@@ -614,6 +713,9 @@ export async function updateLead(id: number, data: Record<string, unknown>) {
     .set({ ...(sanitized as Partial<InsertLead>), updatedAt: new Date() })
     .where(eq(leads.id, id))
     .returning();
+
+  // Keep the canonical client mirror in sync (status, name, channel, assignee).
+  await syncLeadToClient(lead);
 
   if (newlyAssigned) await notifyLeadAssignment(newlyAssigned, lead, String(lead.clientName ?? ""));
 

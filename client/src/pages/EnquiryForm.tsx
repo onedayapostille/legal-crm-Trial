@@ -79,10 +79,23 @@ export default function EnquiryForm({ id }: EnquiryFormProps) {
   // Active Partners/Lawyers for the Suggested Lead Lawyer dropdown.
   const { data: leadLawyers = [] } = trpc.users.leadLawyers.useQuery();
 
+  // Every enquiry create/update mirrors a canonical client (see syncLeadToClient
+  // on the server). Invalidate both the legacy leads list AND the canonical
+  // client queries that back the Leads Pipeline + dashboard, so the new/updated
+  // intake is visible immediately without a manual refresh (same-user real-time).
+  const invalidateCanonicalIntake = () => {
+    utils.leads.list.invalidate();
+    utils.clients.list.invalidate();
+    utils.clients.recentLeads.invalidate();
+    utils.clients.dashboardStats.invalidate();
+    utils.clients.statusCounts.invalidate();
+    utils.clients.conversionMetrics.invalidate();
+  };
+
   const createMutation = trpc.leads.create.useMutation({
     onSuccess: () => {
       toast.success("Enquiry created successfully");
-      utils.leads.list.invalidate();
+      invalidateCanonicalIntake();
       navigate("/enquiries");
     },
     onError: (error) => {
@@ -93,7 +106,7 @@ export default function EnquiryForm({ id }: EnquiryFormProps) {
   const updateMutation = trpc.leads.update.useMutation({
     onSuccess: () => {
       toast.success("Enquiry updated successfully");
-      utils.leads.list.invalidate();
+      invalidateCanonicalIntake();
       utils.leads.get.invalidate({ id: id! });
     },
     onError: (error) => {

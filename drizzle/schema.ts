@@ -451,6 +451,12 @@ export const clients = pgTable("clients", {
   convertedFrom: clientConvertedFromEnum("converted_from").notNull().default("Lead"),
   city: cityEnum("city"),
   matterType: clientMatterTypeEnum("matter_type"),
+  // Canonical link back to the legacy enquiry (leads) row this client was
+  // mirrored from, when intake originated through the Enquiry form. Nullable:
+  // clients created directly (ClientForm) or before unification have no source
+  // lead. Used to keep the canonical client in sync with the legacy enquiry and
+  // to prevent duplicate mirrors.
+  sourceLeadId: integer("source_lead_id").references(() => leads.id, { onDelete: "set null" }),
   createdBy: integer("created_by").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
