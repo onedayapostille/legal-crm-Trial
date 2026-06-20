@@ -1737,88 +1737,60 @@ export async function getClientMatterById(id: number) {
   return result[0] ?? null;
 }
 
-// ─── Original Serial (matter-specific identifier) ─────────────────────────────
-
-export const ORIGINAL_SERIAL_PREFIX = "MAT-";
-// Accepted canonical format: MAT- followed by 4+ digits (e.g. MAT-0001).
-export const ORIGINAL_SERIAL_RE = /^MAT-\d{4,}$/;
-
-// A constant key for the transaction-scoped advisory lock that serializes
-// Original Serial allocation. Any concurrent matter create that auto-generates a
-// serial waits on this lock, so max+1 allocation cannot race. The DB UNIQUE index
-// (migration 0018) is the hard backstop even if a write bypasses this path.
-const ORIGINAL_SERIAL_LOCK_KEY = 778_011;
+// ─── Original Serial (inherited client number) + Matter Reference ─────────────
+//
+// CONFIRMED BUSINESS RULE (CRM-007):
+//   * client_matters.original_serial = the PARENT CLIENT's Original Serial /
+//     Client Number. It represents the client, NOT the matter. Multiple matters
+//     under the same client SHARE the same original_serial. It is therefore NOT
+//     unique, has NO MAT-#### format, and is never max+1 allocated.
+//   * matter_reference is the matter-level identifier. Uniqueness is enforced on
+//     (client_id, matter_reference) — a client cannot have two matters with the
+//     same reference. Different clients may reuse a reference.
 
 /** True if a Postgres unique-violation (used to map races to a friendly error). */
 function isUniqueViolation(err: unknown): boolean {
   return !!err && typeof err === "object" && (err as { code?: string }).code === "23505";
 }
 
-/** Validate a user-supplied Original Serial's format. Throws BAD_REQUEST. */
-export function assertValidOriginalSerialFormat(serial: string): void {
-  if (!ORIGINAL_SERIAL_RE.test(serial)) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: `Original Serial must look like "MAT-0001" (prefix "MAT-" followed by at least 4 digits). Got "${serial}".`,
-    });
-  }
+/**
+ * The Original Serial a new/blank matter should inherit from its parent client:
+ * the client's Original Serial / Client Number. Fallbacks when the client has no
+ * client number (documented): file number, else "CL-<clientId>" so the column is
+ * never left blank and still ties back to the client.
+ */
+export async function defaultOriginalSerialFromClient(clientId: number): Promise<string> {
+  const client = await getClientById(clientId);
+  const fromNumber = (client?.clientNumber ?? "").trim();
+  if (fromNumber) return fromNumber;
+  const fromFile = (client?.fileNumber ?? "").trim();
+  if (fromFile) return fromFile;
+  return `CL-${clientId}`;
 }
 
 /**
- * Next auto-generated Original Serial, independent of the client number.
- * Scans existing MAT-#### serials and increments the highest. Format: MAT-0001.
- * Callers MUST hold the advisory lock so concurrent allocations cannot collide.
+ * Enforce that a client does not already have another matter with the same
+ * matter_reference (CRM-007). Blank references are not constrained (a client may
+ * have several matters with no reference yet). Application-level check that
+ * mirrors the (client_id, matter_reference) unique index.
  */
-export async function nextOriginalSerial(): Promise<string> {
+export async function assertMatterReferenceUniqueForClient(
+  clientId: number,
+  matterReference: string | null | undefined,
+  excludeId?: number,
+): Promise<void> {
+  const ref = (matterReference ?? "").trim();
+  if (!ref) return; // blank reference → not constrained
   const db = getDb();
-  const rows = await db
-    .select({ s: clientMatters.originalSerial })
-    .from(clientMatters)
-    .where(ilike(clientMatters.originalSerial, `${ORIGINAL_SERIAL_PREFIX}%`));
-  let max = 0;
-  for (const { s } of rows) {
-    const m = /^MAT-(\d+)$/.exec((s ?? "").trim());
-    if (m) max = Math.max(max, parseInt(m[1], 10));
-  }
-  return `${ORIGINAL_SERIAL_PREFIX}${String(max + 1).padStart(4, "0")}`;
-}
-
-/** True if `serial` is already used by another matter (optionally excluding one id). */
-export async function isOriginalSerialTaken(serial: string, excludeId?: number): Promise<boolean> {
-  const db = getDb();
-  const where = excludeId
-    ? and(eq(clientMatters.originalSerial, serial), ne(clientMatters.id, excludeId))
-    : eq(clientMatters.originalSerial, serial);
-  const rows = await db.select({ id: clientMatters.id }).from(clientMatters).where(where).limit(1);
-  return rows.length > 0;
-}
-
-/**
- * Resolve the Original Serial for an insert/update:
- *  - blank → auto-generate an independent MAT-#### serial (caller holds the lock)
- *  - provided → enforce the canonical format + uniqueness across all matters
- * Never derived from the client number.
- */
-async function resolveOriginalSerial(
-  raw: unknown,
-  opts: { excludeId?: number } = {},
-): Promise<string | undefined> {
-  const provided = typeof raw === "string" ? raw.trim() : "";
-  if (!provided) {
-    return opts.excludeId ? undefined : nextOriginalSerial();
-  }
-  if (provided.length > 50) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "Original Serial must be 50 characters or fewer." });
-  }
-  // Enforce the declared format for manually-entered serials (CRM-007).
-  assertValidOriginalSerialFormat(provided);
-  if (await isOriginalSerialTaken(provided, opts.excludeId)) {
+  const conds = [eq(clientMatters.clientId, clientId), eq(clientMatters.matterReference, ref)];
+  if (excludeId) conds.push(ne(clientMatters.id, excludeId));
+  const rows = await db.select({ id: clientMatters.id }).from(clientMatters).where(and(...conds)).limit(1);
+  if (rows.length > 0) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: `Original Serial "${provided}" is already used by another matter. It must be unique.`,
+      message: `Matter Reference "${ref}" is already used by another matter for this client. It must be unique per client.`,
     });
   }
-  return provided;
 }
 
 export async function createClientMatter(
@@ -1828,32 +1800,33 @@ export async function createClientMatter(
 ) {
   const db = getDb();
   const clean = sanitizeClientMatterInput(data) as Partial<InsertClientMatter>;
+  const clientId = (data as any).clientId as number;
 
   // Matter Type is authoritative at the matter level (CRM-006): require it.
   if (!clean.matterType || String(clean.matterType).trim() === "") {
     throw new TRPCError({ code: "BAD_REQUEST", message: "Matter Type is required when creating a matter." });
   }
 
-  // Concurrency-safe serial allocation: serialize allocation with a
-  // transaction-scoped advisory lock so the max+1 generator cannot race. The DB
-  // UNIQUE index is the hard backstop; a races-through duplicate maps to a 409.
+  // Original Serial = inherited client number. If not provided, default it from
+  // the parent client. If provided, use it as-is (NOT unique, no format).
+  const providedSerial = typeof clean.originalSerial === "string" ? clean.originalSerial.trim() : "";
+  clean.originalSerial = providedSerial || (await defaultOriginalSerialFromClient(clientId));
+
+  // Matter Reference is the matter-level identifier and must be unique per client.
+  await assertMatterReferenceUniqueForClient(clientId, clean.matterReference);
+
   let matter: typeof clientMatters.$inferSelect;
   try {
-    matter = await db.transaction(async (tx) => {
-      await tx.execute(sql`SELECT pg_advisory_xact_lock(${ORIGINAL_SERIAL_LOCK_KEY})`);
-      // Original Serial is generated/validated independently of the client number.
-      clean.originalSerial = await resolveOriginalSerial(clean.originalSerial);
-      const [row] = await tx
-        .insert(clientMatters)
-        .values({ ...clean, clientId: (data as any).clientId, createdBy: userId } as InsertClientMatter)
-        .returning();
-      return row;
-    });
+    [matter] = await db
+      .insert(clientMatters)
+      .values({ ...clean, clientId, createdBy: userId } as InsertClientMatter)
+      .returning();
   } catch (err) {
+    // DB backstop for the (client_id, matter_reference) unique index.
     if (isUniqueViolation(err)) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: `Original Serial "${clean.originalSerial}" is already used by another matter. It must be unique.`,
+        message: `Matter Reference "${clean.matterReference}" is already used by another matter for this client.`,
       });
     }
     throw err;
@@ -1882,21 +1855,28 @@ export async function createClientMatter(
 export async function updateClientMatter(id: number, data: Record<string, unknown>, userId: number) {
   const db = getDb();
   const clean = sanitizeClientMatterInput(data) as Partial<InsertClientMatter>;
-  // If the Original Serial is being changed, validate format + uniqueness
-  // (excluding this row). Legacy/imported serials are grandfathered: re-saving a
-  // matter without changing its serial does NOT re-run format validation, so
-  // editing other fields on a pre-existing non-conforming matter still works.
+  const existing = await getClientMatterById(id);
+
+  // Original Serial: preserve the existing value. If it is being cleared (blank),
+  // refill it from the parent client's Original Serial / Client Number — it is
+  // never left empty and never re-allocated. A non-blank provided value is kept.
   if (clean.originalSerial !== undefined) {
-    const existing = await getClientMatterById(id);
     const provided = String(clean.originalSerial ?? "").trim();
-    if (!provided) {
-      delete clean.originalSerial; // blank on update → leave unchanged
-    } else if (existing && provided === (existing.originalSerial ?? "")) {
-      delete clean.originalSerial; // unchanged → no re-validation (grandfathered)
+    if (provided) {
+      clean.originalSerial = provided;
+    } else if (existing) {
+      clean.originalSerial = (existing.originalSerial ?? "").trim()
+        || (await defaultOriginalSerialFromClient(existing.clientId));
     } else {
-      clean.originalSerial = await resolveOriginalSerial(clean.originalSerial, { excludeId: id });
+      delete clean.originalSerial;
     }
   }
+
+  // Matter Reference stays unique per client when changed.
+  if (clean.matterReference !== undefined && existing) {
+    await assertMatterReferenceUniqueForClient(existing.clientId, clean.matterReference, id);
+  }
+
   let matter: typeof clientMatters.$inferSelect;
   try {
     [matter] = await db
@@ -1908,7 +1888,7 @@ export async function updateClientMatter(id: number, data: Record<string, unknow
     if (isUniqueViolation(err)) {
       throw new TRPCError({
         code: "CONFLICT",
-        message: `Original Serial "${clean.originalSerial}" is already used by another matter. It must be unique.`,
+        message: `Matter Reference "${clean.matterReference}" is already used by another matter for this client.`,
       });
     }
     throw err;
