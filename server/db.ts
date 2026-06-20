@@ -163,16 +163,18 @@ export function applyDiscountRules(data: Record<string, unknown>): Record<string
   out.discountAmount     = String(discountAmt);
   out.netFees            = String(netFees);
 
-  // "Revenue" is now the single amount field. "Billed Amount" was removed from the
-  // forms (it duplicated Revenue). We keep the billed_amount COLUMN as a
-  // compatibility alias — always mirrored to revenue on write — so historical
-  // readers and any missed report keep working and stay consistent.
+  // "Revenue" is the single active amount field. "Billed Amount" and
+  // "Remaining Advanced" are LEGACY, READ-ONLY columns (CRM-012): the application
+  // no longer writes them. Previously billed_amount was mirrored to revenue on
+  // every write, which overwrote genuine historical billed values and forced
+  // remaining_advanced to 0 — corrupting prior accounting meaning. We now leave
+  // both columns untouched so historical data is preserved; new rows leave them
+  // NULL. The `financial_billed_revenue_discrepancies` view (migration 0011)
+  // surfaces any pre-existing rows where the two still differ, for finance review.
   const revenue   = toNum(out.revenue)         ?? 0;
-  const billed    = revenue; // alias
   const collected = toNum(out.collectedAmount) ?? 0;
 
-  out.billedAmount      = String(round2(billed)); // mirror revenue
-  out.remainingAdvanced = String(round2(billed - revenue)); // = 0 (kept for the column)
+  // Outstanding remains an active derived field, computed from Revenue.
   out.outstandingAmount = String(round2(Math.max(0, revenue - collected)));
 
   return out;
@@ -1738,11 +1740,34 @@ export async function getClientMatterById(id: number) {
 // ─── Original Serial (matter-specific identifier) ─────────────────────────────
 
 export const ORIGINAL_SERIAL_PREFIX = "MAT-";
-const ORIGINAL_SERIAL_RE = /^MAT-\d{4,}$/;
+// Accepted canonical format: MAT- followed by 4+ digits (e.g. MAT-0001).
+export const ORIGINAL_SERIAL_RE = /^MAT-\d{4,}$/;
+
+// A constant key for the transaction-scoped advisory lock that serializes
+// Original Serial allocation. Any concurrent matter create that auto-generates a
+// serial waits on this lock, so max+1 allocation cannot race. The DB UNIQUE index
+// (migration 0018) is the hard backstop even if a write bypasses this path.
+const ORIGINAL_SERIAL_LOCK_KEY = 778_011;
+
+/** True if a Postgres unique-violation (used to map races to a friendly error). */
+function isUniqueViolation(err: unknown): boolean {
+  return !!err && typeof err === "object" && (err as { code?: string }).code === "23505";
+}
+
+/** Validate a user-supplied Original Serial's format. Throws BAD_REQUEST. */
+export function assertValidOriginalSerialFormat(serial: string): void {
+  if (!ORIGINAL_SERIAL_RE.test(serial)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `Original Serial must look like "MAT-0001" (prefix "MAT-" followed by at least 4 digits). Got "${serial}".`,
+    });
+  }
+}
 
 /**
  * Next auto-generated Original Serial, independent of the client number.
  * Scans existing MAT-#### serials and increments the highest. Format: MAT-0001.
+ * Callers MUST hold the advisory lock so concurrent allocations cannot collide.
  */
 export async function nextOriginalSerial(): Promise<string> {
   const db = getDb();
@@ -1770,8 +1795,8 @@ export async function isOriginalSerialTaken(serial: string, excludeId?: number):
 
 /**
  * Resolve the Original Serial for an insert/update:
- *  - blank → auto-generate an independent MAT-#### serial
- *  - provided → validate format + enforce uniqueness across all matters
+ *  - blank → auto-generate an independent MAT-#### serial (caller holds the lock)
+ *  - provided → enforce the canonical format + uniqueness across all matters
  * Never derived from the client number.
  */
 async function resolveOriginalSerial(
@@ -1785,6 +1810,8 @@ async function resolveOriginalSerial(
   if (provided.length > 50) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "Original Serial must be 50 characters or fewer." });
   }
+  // Enforce the declared format for manually-entered serials (CRM-007).
+  assertValidOriginalSerialFormat(provided);
   if (await isOriginalSerialTaken(provided, opts.excludeId)) {
     throw new TRPCError({
       code: "CONFLICT",
@@ -1801,12 +1828,36 @@ export async function createClientMatter(
 ) {
   const db = getDb();
   const clean = sanitizeClientMatterInput(data) as Partial<InsertClientMatter>;
-  // Original Serial is generated/validated independently of the client number.
-  clean.originalSerial = await resolveOriginalSerial(clean.originalSerial);
-  const [matter] = await db
-    .insert(clientMatters)
-    .values({ ...clean, clientId: (data as any).clientId, createdBy: userId } as InsertClientMatter)
-    .returning();
+
+  // Matter Type is authoritative at the matter level (CRM-006): require it.
+  if (!clean.matterType || String(clean.matterType).trim() === "") {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Matter Type is required when creating a matter." });
+  }
+
+  // Concurrency-safe serial allocation: serialize allocation with a
+  // transaction-scoped advisory lock so the max+1 generator cannot race. The DB
+  // UNIQUE index is the hard backstop; a races-through duplicate maps to a 409.
+  let matter: typeof clientMatters.$inferSelect;
+  try {
+    matter = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${ORIGINAL_SERIAL_LOCK_KEY})`);
+      // Original Serial is generated/validated independently of the client number.
+      clean.originalSerial = await resolveOriginalSerial(clean.originalSerial);
+      const [row] = await tx
+        .insert(clientMatters)
+        .values({ ...clean, clientId: (data as any).clientId, createdBy: userId } as InsertClientMatter)
+        .returning();
+      return row;
+    });
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: `Original Serial "${clean.originalSerial}" is already used by another matter. It must be unique.`,
+      });
+    }
+    throw err;
+  }
 
   // Auditable record of the conflict check performed at creation time. When
   // conflicts were present, the matter was created with explicit acknowledgement.
@@ -1831,17 +1882,37 @@ export async function createClientMatter(
 export async function updateClientMatter(id: number, data: Record<string, unknown>, userId: number) {
   const db = getDb();
   const clean = sanitizeClientMatterInput(data) as Partial<InsertClientMatter>;
-  // If the Original Serial is being changed, validate uniqueness (excluding this row).
+  // If the Original Serial is being changed, validate format + uniqueness
+  // (excluding this row). Legacy/imported serials are grandfathered: re-saving a
+  // matter without changing its serial does NOT re-run format validation, so
+  // editing other fields on a pre-existing non-conforming matter still works.
   if (clean.originalSerial !== undefined) {
-    const resolved = await resolveOriginalSerial(clean.originalSerial, { excludeId: id });
-    if (resolved === undefined) delete clean.originalSerial; // blank on update → leave unchanged
-    else clean.originalSerial = resolved;
+    const existing = await getClientMatterById(id);
+    const provided = String(clean.originalSerial ?? "").trim();
+    if (!provided) {
+      delete clean.originalSerial; // blank on update → leave unchanged
+    } else if (existing && provided === (existing.originalSerial ?? "")) {
+      delete clean.originalSerial; // unchanged → no re-validation (grandfathered)
+    } else {
+      clean.originalSerial = await resolveOriginalSerial(clean.originalSerial, { excludeId: id });
+    }
   }
-  const [matter] = await db
-    .update(clientMatters)
-    .set({ ...clean, updatedAt: new Date() })
-    .where(eq(clientMatters.id, id))
-    .returning();
+  let matter: typeof clientMatters.$inferSelect;
+  try {
+    [matter] = await db
+      .update(clientMatters)
+      .set({ ...clean, updatedAt: new Date() })
+      .where(eq(clientMatters.id, id))
+      .returning();
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: `Original Serial "${clean.originalSerial}" is already used by another matter. It must be unique.`,
+      });
+    }
+    throw err;
+  }
   await createAuditLog({
     entityType: "client_matter",
     entityId: id,
@@ -1940,22 +2011,31 @@ export async function createMatterLawyerRate(data: Record<string, unknown>, user
     throw new TRPCError({ code: "CONFLICT", message: `${lawyer.name ?? "This lawyer"} already has a rate on this matter.` });
   }
 
-  const [rate] = await db
-    .insert(matterLawyerRates)
-    .values({
-      clientMatterId,
-      userId:        assignedUserId,
-      lawyerName:    (lawyer.name ?? "Unknown").trim(), // server-derived, not free text
-      role:          data.role ? String(data.role).trim() || undefined : (lawyer.role ?? undefined),
-      hourlyRate:    String(hourlyRate),
-      currency:      data.currency ? String(data.currency).trim() : "SAR",
-      isActive:      data.isActive !== undefined ? Boolean(data.isActive) : true,
-      effectiveDate: data.effectiveDate ? String(data.effectiveDate) : undefined,
-      notes:         data.notes ? String(data.notes).trim() || undefined : undefined,
-      createdBy:     userId,
-    } as InsertMatterLawyerRate)
-    .returning();
-  return rate;
+  try {
+    const [rate] = await db
+      .insert(matterLawyerRates)
+      .values({
+        clientMatterId,
+        userId:        assignedUserId,
+        lawyerName:    (lawyer.name ?? "Unknown").trim(), // server-derived, not free text
+        role:          data.role ? String(data.role).trim() || undefined : (lawyer.role ?? undefined),
+        hourlyRate:    String(hourlyRate),
+        currency:      data.currency ? String(data.currency).trim() : "SAR",
+        isActive:      data.isActive !== undefined ? Boolean(data.isActive) : true,
+        effectiveDate: data.effectiveDate ? String(data.effectiveDate) : undefined,
+        notes:         data.notes ? String(data.notes).trim() || undefined : undefined,
+        createdBy:     userId,
+      } as InsertMatterLawyerRate)
+      .returning();
+    return rate;
+  } catch (err) {
+    // DB backstop for the (client_matter_id, user_id) unique index — covers the
+    // race between the app-level duplicate check above and the insert.
+    if (isUniqueViolation(err)) {
+      throw new TRPCError({ code: "CONFLICT", message: `${lawyer.name ?? "This lawyer"} already has a rate on this matter.` });
+    }
+    throw err;
+  }
 }
 
 export async function updateMatterLawyerRate(id: number, data: Record<string, unknown>, userId: number) {
@@ -1979,11 +2059,21 @@ export async function updateMatterLawyerRate(id: number, data: Record<string, un
   if (data.effectiveDate !== undefined) updates.effectiveDate = data.effectiveDate ? String(data.effectiveDate) : null;
   if (data.notes !== undefined)         updates.notes         = data.notes ? String(data.notes).trim() || undefined : undefined;
 
-  const [rate] = await db
-    .update(matterLawyerRates)
-    .set(updates)
-    .where(eq(matterLawyerRates.id, id))
-    .returning();
+  let rate: typeof matterLawyerRates.$inferSelect;
+  try {
+    [rate] = await db
+      .update(matterLawyerRates)
+      .set(updates)
+      .where(eq(matterLawyerRates.id, id))
+      .returning();
+  } catch (err) {
+    // Reassigning a rate to a user who already has one on this matter collides
+    // with the (client_matter_id, user_id) unique index.
+    if (isUniqueViolation(err)) {
+      throw new TRPCError({ code: "CONFLICT", message: "That lawyer already has a rate on this matter." });
+    }
+    throw err;
+  }
   await createAuditLog({
     entityType: "matter_lawyer_rate",
     entityId: id,
@@ -2283,8 +2373,33 @@ export async function getFinancialRecordById(id: number) {
   return result[0] ?? null;
 }
 
+/**
+ * Validate the (clientId, clientMatterId) pair for a financial record (CRM-010).
+ * Client-level records are allowed (clientMatterId null/undefined → no-op). When a
+ * matter IS linked, it must exist AND belong to the same client — enforced
+ * server-side so a record can never point at another client's matter, regardless
+ * of frontend filtering.
+ */
+export async function assertMatterBelongsToClient(
+  clientMatterId: number | null | undefined,
+  clientId: number,
+): Promise<void> {
+  if (clientMatterId == null) return; // client-level record — allowed
+  const matter = await getClientMatterById(clientMatterId);
+  if (!matter) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Selected matter does not exist." });
+  }
+  if (matter.clientId !== clientId) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Selected matter belongs to a different client. The matter must belong to this client.",
+    });
+  }
+}
+
 export async function createFinancialRecord(data: InsertFinancialRecord, userId: number) {
   const db = getDb();
+  await assertMatterBelongsToClient((data as any).clientMatterId, (data as any).clientId);
   const computed = applyDiscountRules(data as Record<string, unknown>) as InsertFinancialRecord;
   const [record] = await db
     .insert(financialRecords)
@@ -2308,6 +2423,12 @@ export async function updateFinancialRecord(id: number, data: Partial<InsertFina
   const existing = await getFinancialRecordById(id);
   if (!existing) throw new Error(`Financial record ${id} not found`);
 
+  // CRM-010: if the matter link is being set/changed (and not cleared), it must
+  // belong to this record's client. clientId is immutable on update.
+  if (data.clientMatterId != null) {
+    await assertMatterBelongsToClient(data.clientMatterId, existing.clientId);
+  }
+
   // Only pass the 5 user-editable inputs to applyDiscountRules — never spread
   // the full DB row (which contains id, createdAt, etc.) into SET.
   // Revenue is the single amount input; billedAmount is derived (alias) from it.
@@ -2324,12 +2445,12 @@ export async function updateFinancialRecord(id: number, data: Partial<InsertFina
     .set({
       // user-supplied partial update fields
       ...data,
-      // server-computed overrides (always win over any client value)
+      // server-computed overrides (always win over any client value).
+      // billedAmount + remainingAdvanced are intentionally NOT set here: they are
+      // legacy, read-only columns and must keep their historical values (CRM-012).
       discountPercentage: computed.discountPercentage as string,
       discountAmount:     computed.discountAmount     as string,
       netFees:            computed.netFees            as string,
-      billedAmount:       computed.billedAmount       as string, // mirror revenue
-      remainingAdvanced:  computed.remainingAdvanced  as string,
       outstandingAmount:  computed.outstandingAmount  as string,
       updatedAt:          new Date(),
     })
