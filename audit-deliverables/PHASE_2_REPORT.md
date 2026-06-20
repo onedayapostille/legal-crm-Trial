@@ -2,9 +2,14 @@
 
 **Branch:** `fix/crm-phase-2-data-integrity` (continues from Phase 1)
 **Date:** 2026-06-20
-**Scope:** CRM-006 (Matter Type authority), CRM-007 (Original Serial integrity),
-CRM-008 (lawyer-rate duplicates), CRM-010 (financial client/matter link),
-CRM-012 (Billed Amount vs Revenue cleanup).
+**Scope:** CRM-006 (Matter Type authority), CRM-007 (Original Serial = inherited
+client number; Matter Reference uniqueness), CRM-008 (lawyer-rate duplicates),
+CRM-010 (financial client/matter link), CRM-012 (Billed Amount vs Revenue cleanup).
+
+> **CRM-007 corrected after review (2026-06-20):** an earlier draft wrongly treated
+> `original_serial` as a unique `MAT-####` matter identifier. The confirmed rule is
+> below — Original Serial is the inherited client number (not unique), and Matter
+> Reference is the matter-level identifier with `UNIQUE(client_id, matter_reference)`.
 
 > Prereq check: Phase 1 (`fix/crm-phase-1-critical-foundation`) is included — this
 > branch was created from it. Phase 1 commits are present in history.
@@ -15,10 +20,10 @@ CRM-012 (Billed Amount vs Revenue cleanup).
 
 | File | Change |
 | --- | --- |
-| `server/db.ts` | Serial: format enforcement, advisory-lock transaction, unique-violation mapping. Matter Type required on create. `assertMatterBelongsToClient()` for financial records. `applyDiscountRules` no longer writes billed_amount/remaining_advanced. Lawyer-rate unique-violation backstop. |
-| `drizzle/migrations/0018_matter_original_serial_unique.sql` | Guarded partial UNIQUE index on `client_matters.original_serial`. |
+| `server/db.ts` | Serial: inherit client number (`defaultOriginalSerialFromClient`), no format/allocator/uniqueness; Matter Reference unique per client (`assertMatterReferenceUniqueForClient`) + unique-violation mapping. Matter Type required on create. `assertMatterBelongsToClient()` for financial records. `applyDiscountRules` no longer writes billed_amount/remaining_advanced. Lawyer-rate unique-violation backstop. |
+| `drizzle/migrations/0018_matter_reference_unique.sql` | Guarded partial UNIQUE index on `client_matters(client_id, matter_reference)`. (No unique index on `original_serial`.) |
 | `drizzle/migrations/0019_matter_lawyer_rates_unique.sql` | Guarded partial UNIQUE index on `matter_lawyer_rates(client_matter_id, user_id)`. |
-| `scripts/dedup-original-serials.sql` | Remediation: detect/resolve duplicate serials before the unique index. |
+| `scripts/dedup-matter-references.sql` | Remediation: detect/resolve duplicate (client, reference) pairs before the unique index. |
 | `scripts/dedup-matter-lawyer-rates.sql` | Remediation: detect/resolve duplicate (matter,user) rates. |
 | `client/src/pages/ClientForm.tsx` | Removed client-level Matter Type field. |
 | `client/src/pages/MatterNew.tsx` | Matter Type marked required + client-side guard. |
@@ -32,6 +37,8 @@ Commits:
 1. `feat: matter & finance data-integrity (server) — CRM-006/007/008/010/012`
 2. `feat: matter & finance data-integrity (frontend) — CRM-006/012`
 3. `test: Phase 2 data-integrity coverage + fixtures`
+4. `docs: add Phase 2 report (matter & finance data integrity)`
+5. `fix(CRM-007): Original Serial is the inherited client number, not a unique matter id` (correction after review)
 
 ---
 
@@ -39,7 +46,7 @@ Commits:
 
 | Migration | What it does | Safety |
 | --- | --- | --- |
-| `0018_matter_original_serial_unique.sql` | Partial `UNIQUE` index `ux_client_matters_original_serial` on non-NULL serials. | **Guarded**: a `DO` block counts duplicates first; if any exist it RAISEs a WARNING and skips index creation (so startup never breaks). Idempotent. Rollback in header. |
+| `0018_matter_reference_unique.sql` | Partial `UNIQUE` index `ux_client_matters_client_reference` on `(client_id, matter_reference)` where the reference is non-blank. **No** unique index on `original_serial` (it is the shared, inherited client number). | **Guarded**: a `DO` block counts duplicate (client, reference) pairs first; if any exist it RAISEs a WARNING and skips index creation (so startup never breaks). Idempotent. Rollback in header. |
 | `0019_matter_lawyer_rates_unique.sql` | Partial `UNIQUE` index `ux_matter_lawyer_rates_matter_user` on `(client_matter_id, user_id)` where `user_id IS NOT NULL` (legacy null-user rows exempt). | Same guarded pattern. Idempotent. Rollback in header. |
 
 Both are applied by the existing startup auto-migrator (`runMigrations`). If a guard
@@ -47,21 +54,28 @@ skips an index because of pre-existing duplicates, the startup log says so; run 
 matching dedup script, then restart / `pnpm db:migrate` to create the index.
 
 **Remediation scripts (run deliberately, never auto-run):**
-`scripts/dedup-original-serials.sql`, `scripts/dedup-matter-lawyer-rates.sql` — each
+`scripts/dedup-matter-references.sql`, `scripts/dedup-matter-lawyer-rates.sql` — each
 REPORTS duplicates first (STEP 1) and provides a commented, opt-in resolution
 (STEP 2) plus verification. No data is deleted or overwritten automatically.
+(`original_serial` is intentionally NOT deduped — duplicates are allowed.)
 
 ---
 
 ## 3. Data Integrity Rules Added
 
-- **Original Serial (CRM-007)**
-  - DB-level uniqueness via partial UNIQUE index (the authoritative guarantee).
-  - Concurrency-safe allocation: a transaction-scoped `pg_advisory_xact_lock`
-    serializes max+1 generation; the unique index is the hard backstop and any
-    `23505` is mapped to a friendly `409 CONFLICT`.
-  - Canonical format `^MAT-\d{4,}$` enforced for manual entry; legacy/imported
-    serials are grandfathered (only re-validated when actually changed).
+- **Original Serial = inherited client number (CRM-007, corrected)**
+  - `original_serial` represents the **parent client's** Original Serial / Client
+    Number. It is **shared** across all of a client's matters, is **NOT unique**,
+    and has **no `MAT-####` format** and **no allocator**.
+  - On create, a blank serial defaults from the client: `clientNumber` →
+    `fileNumber` → `CL-<clientId>` (documented fallback). A provided value is used
+    as-is. On edit, the existing value is preserved; if cleared it is refilled from
+    the client number (never left blank).
+- **Matter Reference = matter-level identifier (CRM-007)**
+  - `UNIQUE(client_id, matter_reference)` (partial; blank references exempt):
+    a client cannot have two matters with the same reference; different clients
+    may reuse one. Enforced in app code on create/update with a DB `23505` backstop
+    mapped to `409 CONFLICT`.
 - **Matter Type (CRM-006)** — required server-side on matter create; owned by the
   matter. Multiple matters under one client can hold different types. Client-level
   Matter Type removed from the New Client form (column/API kept for compat).
@@ -110,15 +124,15 @@ Run via local binaries (no `pnpm` on PATH): `node_modules/.bin/tsc`, `.../vitest
 | Check | Command | Result |
 | --- | --- | --- |
 | Typecheck | `tsc --noEmit` | **PASS** (exit 0) |
-| Pure unit tests | `vitest run -t "assertValidOriginalSerialFormat"` | **PASS** — 2/2 |
-| Full suite | `vitest run` | 11 pass / 82 fail — **every failure is `DATABASE_URL environment variable is required`** (verified: no other error cause appears). No logic regressions. |
+| Full suite | `vitest run` | 9 pass / 85 fail — **every failure is `DATABASE_URL environment variable is required`** (verified: no other error cause appears). No logic regressions. |
 
-**Pure (DB-free) tests passing now:** `assertValidOriginalSerialFormat` (2),
-`mapLeadStatusToClientStatus` (4, Phase 1), `conversionRangeStart` (3), + 2 others.
+**Pure (DB-free) tests passing now:** `mapLeadStatusToClientStatus` (4, Phase 1),
+`conversionRangeStart` (3), + 2 others. (CRM-007 is now entirely DB-backed —
+serial inheritance and reference uniqueness both touch the database.)
 
 **Could NOT run (need a PostgreSQL `DATABASE_URL`)** — written and type-correct:
-the integration parts of `originalSerial` (serial allocation/uniqueness/matter-type
-authority), `financialRevenue` (billed cleanup + client/matter link),
+`originalSerial` (serial inheritance / shared serial / matter_reference uniqueness /
+matter-type authority), `financialRevenue` (billed cleanup + client/matter link),
 `matterLawyerRates` (duplicate prevention), plus all other DB-backed suites.
 
 **Exact commands to run the DB-backed tests** (disposable Postgres recommended):
@@ -141,18 +155,19 @@ pnpm exec vitest run server/originalSerial.test.ts server/financialRevenue.test.
   but were not executed against a live DB here. Apply migrations to a disposable
   Postgres and run the suite (commands above) before sign-off.
 - **Pre-existing duplicates block the unique indexes:** if production has duplicate
-  serials or duplicate (matter,user) rates, migrations 0018/0019 will SKIP index
-  creation (logged as a warning) until the dedup scripts are run. This is
-  intentional (never auto-overwrite), but means uniqueness is not guaranteed until
-  remediation is done.
-- **Serial format grandfathering:** legacy non-`MAT-####` serials remain valid and
-  are only re-validated if changed. Strict global format enforcement is a future
-  business decision.
+  `(client_id, matter_reference)` pairs or duplicate `(matter, user)` rates,
+  migrations 0018/0019 will SKIP index creation (logged as a warning) until the
+  dedup scripts are run. This is intentional (never auto-overwrite), but means
+  uniqueness is not guaranteed until remediation is done. (`original_serial`
+  duplicates are allowed by design and are never deduped.)
+- **Matter Reference is not required** (blank references are allowed and not
+  constrained). If the business wants every matter to carry a unique reference,
+  make it required — a small follow-up.
+- **Global matter_reference uniqueness** is intentionally NOT enforced (different
+  clients may reuse a reference). Switch to a global unique index only if the
+  business later confirms it.
 - **Finance sign-off pending** on `billed_amount` reconciliation and the meaning of
   `remaining_advanced` (see §4). No destructive action taken.
-- **Advisory-lock allocation** assumes a single logical Postgres (advisory locks are
-  per-database). That matches the deployment; multi-primary setups would need the
-  unique index alone (still safe) or a sequence.
 - **Out of scope for Phase 2** (later phase): notification/email delivery (CRM-018),
   schema↔migration FK parity, free-text status governance, cross-user real-time.
 
@@ -160,14 +175,20 @@ pnpm exec vitest run server/originalSerial.test.ts server/financialRevenue.test.
 
 ## 7. Manual QA Checklist (Phase 2)
 
-**Original Serial**
-- [ ] Create a matter with blank serial → auto `MAT-####`, unique.
-- [ ] Create with manual `MAT-0001` → accepted; create a second with the same →
-      rejected (409). Create with `SER-1` → rejected (400, format).
-- [ ] Edit a legacy matter whose serial isn't `MAT-####` without changing the
-      serial → still saves (grandfathered).
-- [ ] After applying migrations on a clean DB, confirm
-      `\d client_matters` shows `ux_client_matters_original_serial` (unique).
+**Original Serial (inherited client number)**
+- [ ] Client "Sankyo" with Client Number `881`. Create Matter 1 (no serial) →
+      `original_serial = 881`. Create Matter 2 → also `881` (shared, not unique).
+- [ ] Matters 1 & 2 have different Matter References (e.g. `101`, `102`).
+- [ ] Serial is NOT `MAT-####` and is never max+1 generated.
+- [ ] Client with no Client Number → matter serial falls back to `CL-<clientId>`.
+- [ ] Edit a matter and clear the serial → it refills from the client number.
+
+**Matter Reference (unique per client)**
+- [ ] Same client, second matter with an existing reference → rejected (409).
+- [ ] Two different clients with the same reference → both allowed.
+- [ ] After migrations on a clean DB, confirm `\d client_matters` shows
+      `ux_client_matters_client_reference` (unique) and NO unique index on
+      `original_serial`.
 
 **Matter Type**
 - [ ] Create a matter with no type → blocked (client + server).

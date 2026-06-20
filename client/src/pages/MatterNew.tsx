@@ -128,8 +128,8 @@ export default function MatterNew() {
 
             <div className="grid grid-cols-2 gap-3">
               {[
-                ["originalSerial", "Original Serial (optional — auto MAT-####)"],
-                ["matterReference", "Matter Reference"],
+                ["originalSerial", "Original Serial (optional — defaults to client number)"],
+                ["matterReference", "Matter Reference (unique per client)"],
                 ["matterType", "Matter Type *"],
                 ["leadPartner", "Lead Partner (Code)"],
                 ["leadPartnerFullName", "Lead Partner (Full Name)"],
