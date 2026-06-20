@@ -44,7 +44,7 @@ describe("Matter Hourly Rates — assigned users, read-only names, restricted re
     async function cleanup() {
       await admin.clientMatters.delete({ id: matter.id });
       await admin.clients.delete({ id: client.id });
-      for (const u of [leadUser, coUser, viewer]) await admin.users.delete({ id: u.id });
+      for (const u of [leadUser, coUser, viewer]) await admin.users.delete({ userId: u.id });
     }
     return { admin, stamp, leadUser, coUser, viewer, client, matter, cleanup };
   }

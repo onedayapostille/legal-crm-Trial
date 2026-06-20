@@ -50,7 +50,7 @@ describe("Suggested Lead Lawyer assignment", () => {
       expect(ids).not.toContain(inactive.id);  // inactive excluded
       expect(list.every(l => l.role === "lawyer" || l.role === "partner")).toBe(true);
     } finally {
-      for (const u of [lawyer, partner, staff, inactive]) await caller.users.delete({ id: u.id });
+      for (const u of [lawyer, partner, staff, inactive]) await caller.users.delete({ userId:u.id });
     }
   });
 
@@ -74,7 +74,7 @@ describe("Suggested Lead Lawyer assignment", () => {
       expect(await lawyerCaller.notifications.unreadCount()).toBeGreaterThan(0);
     } finally {
       if (leadId) await caller.leads.delete({ id: leadId });
-      await caller.users.delete({ id: lawyer.id });
+      await caller.users.delete({ userId:lawyer.id });
     }
   });
 
@@ -92,7 +92,7 @@ describe("Suggested Lead Lawyer assignment", () => {
         caller.leads.create({ ...baseEnquiry(stamp), assignedTo: staff.id }),
       ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     } finally {
-      await caller.users.delete({ id: staff.id });
+      await caller.users.delete({ userId:staff.id });
     }
   });
 
@@ -113,8 +113,8 @@ describe("Suggested Lead Lawyer assignment", () => {
     } finally {
       await caller.leads.delete({ id: leadA.id });
       await caller.leads.delete({ id: leadB.id });
-      await caller.users.delete({ id: l1.id });
-      await caller.users.delete({ id: l2.id });
+      await caller.users.delete({ userId:l1.id });
+      await caller.users.delete({ userId:l2.id });
     }
   });
 });

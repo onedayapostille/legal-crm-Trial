@@ -45,7 +45,7 @@ describe("Role-based task visibility (backend enforced)", () => {
     const taskIds = [tA, tB, tC, tP, tNone].map(t => t.id);
     async function cleanup() {
       for (const id of taskIds) await a.tasks.delete({ id });
-      for (const u of [partner, lawyerA, lawyerB, lawyerC]) await a.users.delete({ id: u.id });
+      for (const u of [partner, lawyerA, lawyerB, lawyerC]) await a.users.delete({ userId: u.id });
     }
     return { a, partner, lawyerA, lawyerB, lawyerC, tA, tB, tC, tP, tNone, taskIds, cleanup };
   }
