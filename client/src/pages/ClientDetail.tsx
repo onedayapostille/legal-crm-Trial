@@ -1,4 +1,4 @@
-import { useState, useMemo, type Dispatch, type SetStateAction } from "react";
+import { useState, useMemo, useEffect, type Dispatch, type SetStateAction } from "react";
 import { useLocation } from "wouter";
 import {
   ArrowLeft, Save, Trash2, Plus, Edit2, Check, X, ChevronDown, ChevronUp,
@@ -86,6 +86,11 @@ export default function ClientDetail({ id }: { id: number }) {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [matterDialogOpen, setMatterDialogOpen] = useState(false);
   const [actionDialogOpen, setActionDialogOpen] = useState(false);
+
+  // Original Serial a new matter inherits from this client (client number, then
+  // file number, then a stable CL-<id> fallback) — mirrors the server default.
+  const inheritedSerial =
+    (client?.clientNumber ?? "").trim() || (client?.fileNumber ?? "").trim() || `CL-${id}`;
 
   const updateClient = trpc.clients.update.useMutation({
     onSuccess: () => {
@@ -286,11 +291,12 @@ export default function ClientDetail({ id }: { id: number }) {
                 </Button>
               )}
             </div>
-            <MattersTable matters={matters} clientId={id} canManage={canManageActive} />
+            <MattersTable matters={matters} clientId={id} canManage={canManageActive} inheritedSerial={inheritedSerial} />
             <MatterDialog
               open={matterDialogOpen}
               onClose={() => setMatterDialogOpen(false)}
               clientId={id}
+              inheritedSerial={inheritedSerial}
             />
           </TabsContent>
 
@@ -700,7 +706,7 @@ function AuditTrailCard({ entityType, entityId }: { entityType: string; entityId
   );
 }
 
-function MattersTable({ matters, clientId, canManage }: { matters: any[]; clientId: number; canManage: boolean }) {
+function MattersTable({ matters, clientId, canManage, inheritedSerial }: { matters: any[]; clientId: number; canManage: boolean; inheritedSerial: string }) {
   const utils = trpc.useUtils();
   const [editingMatter, setEditingMatter] = useState<any | null>(null);
   const [ratesMatter, setRatesMatter] = useState<any | null>(null);
@@ -810,6 +816,7 @@ function MattersTable({ matters, clientId, canManage }: { matters: any[]; client
           onClose={() => setEditingMatter(null)}
           clientId={clientId}
           matter={editingMatter}
+          inheritedSerial={inheritedSerial}
         />
       )}
 
@@ -854,9 +861,8 @@ const MATTER_FORM_DEFAULT: MatterFormState = {
 };
 
 const MATTER_TEXT_FIELDS: [keyof MatterFormState, string][] = [
-  ["originalSerial",       "Original Serial (optional — defaults to client number)"],
   ["matterReference",      "Matter Reference * (unique per client)"],
-  ["matterType",           "Matter Type"],
+  ["matterType",           "Matter Type *"],
   ["leadPartner",          "Lead Partner (Code)"],
   ["leadPartnerFullName",  "Lead Partner (Full Name)"],
   ["supportLead",          "Support Lead"],
@@ -892,12 +898,34 @@ function buildMatterPayload(
 function MatterFormFields({
   form,
   setForm,
+  inheritedSerial,
+  onSerialEdited,
 }: {
   form: MatterFormState;
   setForm: Dispatch<SetStateAction<MatterFormState>>;
+  /** The client's number this matter's Original Serial inherits from. */
+  inheritedSerial?: string;
+  /** Called when the user types into Original Serial, to stop auto-inheriting. */
+  onSerialEdited?: () => void;
 }) {
   return (
     <div className="grid grid-cols-2 gap-3 py-2">
+      {/* Original Serial — inherited from the client, shown distinctly so it is
+          not mistaken for the matter's own identifier. */}
+      <div className="col-span-2">
+        <Label className="text-xs">Original Serial (inherited from client)</Label>
+        <Input
+          value={form.originalSerial}
+          onChange={e => { onSerialEdited?.(); setForm(f => ({ ...f, originalSerial: e.target.value })); }}
+          placeholder={inheritedSerial || "Defaults to the client number"}
+          className="h-8 text-sm bg-muted/40 font-mono"
+        />
+        <p className="text-[11px] text-muted-foreground mt-0.5">
+          {inheritedSerial
+            ? <>Inherited from client number <span className="font-mono">{inheritedSerial}</span>. Shared by all of this client's matters — not the matter's unique identifier.</>
+            : "Shared by all of this client's matters — not the matter's unique identifier."}
+        </p>
+      </div>
       {MATTER_TEXT_FIELDS.map(([key, label]) => (
         <div key={key}>
           <Label className="text-xs">{label}</Label>
@@ -953,11 +981,26 @@ function MatterFormFields({
   );
 }
 
-function MatterDialog({ open, onClose, clientId }: { open: boolean; onClose: () => void; clientId: number }) {
+function MatterDialog({
+  open, onClose, clientId, inheritedSerial,
+}: {
+  open: boolean;
+  onClose: () => void;
+  clientId: number;
+  inheritedSerial: string;
+}) {
   const utils = trpc.useUtils();
   const [form, setForm] = useState<MatterFormState>(MATTER_FORM_DEFAULT);
+  const [serialTouched, setSerialTouched] = useState(false);
   const [pendingConflicts, setPendingConflicts] = useState<ConflictMatch[] | null>(null);
   const [checking, setChecking] = useState(false);
+
+  // Mirror the client's number into Original Serial until the user overrides it.
+  useEffect(() => {
+    if (open && !serialTouched) {
+      setForm(f => ({ ...f, originalSerial: inheritedSerial }));
+    }
+  }, [open, inheritedSerial, serialTouched]);
 
   const create = trpc.clientMatters.create.useMutation({
     onSuccess: () => {
@@ -965,6 +1008,7 @@ function MatterDialog({ open, onClose, clientId }: { open: boolean; onClose: () 
       utils.clientMatters.list.invalidate({ clientId });
       utils.clientMatters.listAll.invalidate();
       setForm(MATTER_FORM_DEFAULT);
+      setSerialTouched(false);
       setPendingConflicts(null);
       onClose();
     },
@@ -972,6 +1016,11 @@ function MatterDialog({ open, onClose, clientId }: { open: boolean; onClose: () 
   });
 
   const submit = async () => {
+    // Matter Type is authoritative at the matter level (CRM-006) and required.
+    if (!form.matterType.trim()) {
+      toast.error("Matter Type is required");
+      return;
+    }
     // Matter Reference is the required matter-level identifier (CRM-007).
     if (!form.matterReference.trim()) {
       toast.error("Matter Reference is required");
@@ -1003,7 +1052,12 @@ function MatterDialog({ open, onClose, clientId }: { open: boolean; onClose: () 
           <DialogHeader>
             <DialogTitle>Add Matter</DialogTitle>
           </DialogHeader>
-          <MatterFormFields form={form} setForm={setForm} />
+          <MatterFormFields
+            form={form}
+            setForm={setForm}
+            inheritedSerial={inheritedSerial}
+            onSerialEdited={() => setSerialTouched(true)}
+          />
           <DialogFooter>
             <Button variant="outline" onClick={onClose}>Cancel</Button>
             <Button onClick={submit} disabled={create.isPending || checking}>
@@ -1028,12 +1082,13 @@ function MatterDialog({ open, onClose, clientId }: { open: boolean; onClose: () 
 }
 
 function MatterEditDialog({
-  open, onClose, clientId, matter,
+  open, onClose, clientId, matter, inheritedSerial,
 }: {
   open: boolean;
   onClose: () => void;
   clientId: number;
   matter: any;
+  inheritedSerial: string;
 }) {
   const utils = trpc.useUtils();
   const [form, setForm] = useState<MatterFormState>({
@@ -1074,7 +1129,7 @@ function MatterEditDialog({
         <DialogHeader>
           <DialogTitle>Edit Matter — {matter.matterReference ?? matter.originalSerial ?? `#${matter.id}`}</DialogTitle>
         </DialogHeader>
-        <MatterFormFields form={form} setForm={setForm} />
+        <MatterFormFields form={form} setForm={setForm} inheritedSerial={inheritedSerial} />
 
         {/* Related tasks for this matter */}
         <div className="border-t pt-3 mt-2">
@@ -1086,6 +1141,11 @@ function MatterEditDialog({
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button
             onClick={() => {
+              // Matter Type is required at the matter level (CRM-006).
+              if (!form.matterType.trim()) {
+                toast.error("Matter Type is required");
+                return;
+              }
               // Matter Reference is required and cannot be cleared (CRM-007).
               if (!form.matterReference.trim()) {
                 toast.error("Matter Reference is required");

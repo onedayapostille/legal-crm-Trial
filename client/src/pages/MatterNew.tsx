@@ -23,6 +23,9 @@ export default function MatterNew() {
   const { data: clients = [], isLoading: clientsLoading } = trpc.clients.list.useQuery({});
 
   const [clientId, setClientId] = useState<string>("");
+  // Has the user manually overridden Original Serial? Until they do, the field
+  // tracks the value inherited from the selected client.
+  const [serialTouched, setSerialTouched] = useState(false);
   const [form, setForm] = useState({
     originalSerial: "", matterReference: "", matterType: "", leadPartner: "",
     leadPartnerFullName: "", supportLead: "", attorneyHead: "", attorney1: "",
@@ -43,6 +46,26 @@ export default function MatterNew() {
     },
     onError: (e) => toast.error(e.message),
   });
+
+  // Original Serial is inherited from the parent client's number (it represents
+  // the client, not the matter). Surface that inheritance in the UI; the server
+  // applies the same default if the field is left blank.
+  const selectedClient = clients.find(c => String(c.id) === clientId);
+  const inheritedSerial =
+    (selectedClient?.clientNumber ?? "").trim() ||
+    (selectedClient?.fileNumber ?? "").trim() ||
+    (clientId ? `CL-${clientId}` : "");
+
+  function onClientChange(value: string) {
+    setClientId(value);
+    // Keep Original Serial mirroring the client until the user overrides it.
+    if (!serialTouched) {
+      const c = clients.find(x => String(x.id) === value);
+      const inherited =
+        (c?.clientNumber ?? "").trim() || (c?.fileNumber ?? "").trim() || (value ? `CL-${value}` : "");
+      setForm(f => ({ ...f, originalSerial: inherited }));
+    }
+  }
 
   function buildPayload(extra: Record<string, unknown> = {}): Record<string, unknown> {
     const payload: Record<string, unknown> = {
@@ -112,7 +135,7 @@ export default function MatterNew() {
           <CardContent className="space-y-4">
             <div>
               <Label>Client *</Label>
-              <Select value={clientId} onValueChange={setClientId} disabled={clientsLoading}>
+              <Select value={clientId} onValueChange={onClientChange} disabled={clientsLoading}>
                 <SelectTrigger>
                   <SelectValue placeholder={clientsLoading ? "Loading clients…" : "Select a client"} />
                 </SelectTrigger>
@@ -131,9 +154,25 @@ export default function MatterNew() {
               </p>
             </div>
 
+            {/* Original Serial — inherited from the client, shown distinctly so it
+                is not mistaken for the matter's own identifier. */}
+            <div>
+              <Label className="text-xs">Original Serial (inherited from client)</Label>
+              <Input
+                value={form.originalSerial}
+                onChange={e => { setSerialTouched(true); setForm(f => ({ ...f, originalSerial: e.target.value })); }}
+                placeholder={clientId ? inheritedSerial : "Select a client first"}
+                className="h-8 text-sm bg-muted/40 font-mono"
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                {clientId
+                  ? <>Inherited from the client number <span className="font-mono">{inheritedSerial}</span>. Shared by all of this client's matters — not the matter's unique identifier. Edit only to override.</>
+                  : "Defaults to the client number once a client is selected."}
+              </p>
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               {[
-                ["originalSerial", "Original Serial (optional — defaults to client number)"],
                 ["matterReference", "Matter Reference * (unique per client)"],
                 ["matterType", "Matter Type *"],
                 ["leadPartner", "Lead Partner (Code)"],
