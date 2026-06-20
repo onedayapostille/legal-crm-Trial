@@ -15,7 +15,7 @@ FROM node:22-alpine
 WORKDIR /app
 
 ENV NODE_ENV=production
-ENV APP_RELEASE="emergency-baked-env-2026-06-20"
+ENV APP_RELEASE="crm-runtime-restored-2026-06-20"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TEMPORARY EMERGENCY CONFIG — REMOVE AFTER DUBLYO ENV INJECTION IS FIXED
