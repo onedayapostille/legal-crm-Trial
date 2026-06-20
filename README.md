@@ -140,6 +140,28 @@ curl http://localhost:3000/health/db   # actually pings the database
 The startup logs also print `DATABASE_URL: SET ✓ / NOT SET ✗` (markers only,
 never the value).
 
+**Hosted platform (Dublyo): `databaseUrlSet:false` even though App Settings has the value**
+
+On the hosted Dublyo deployment the app is built from the **`Dockerfile`** and run as
+a single container. **Dublyo does not use `docker-compose.yml`** — editing the
+`environment:` block there has no effect on the live app. Variables must arrive as
+the container's **runtime** environment:
+
+1. Set `DATABASE_URL` (and `JWT_SECRET`) in **App Settings → Edit Environment
+   Variables**, then **Save & Redeploy** (a full rebuild, not just a restart).
+2. Confirm what the *running container* actually sees:
+   ```bash
+   curl https://<your-app>.dublyo.co/health   # want databaseUrlSet:true, jwtSecretSet:true
+   ```
+3. If `/health` still reports `false` after a clean redeploy, the platform is not
+   injecting App Settings into the container — a **platform-configuration issue**,
+   not a code or compose issue. Re-check the variable names and that they are
+   scoped to runtime (not build-only), or raise it with Dublyo support.
+
+> Note: `NODE_ENV` / `APP_RELEASE` showing as set proves nothing — they are baked
+> into the image by the `Dockerfile`, independent of platform injection. Only the
+> `/health` booleans for `DATABASE_URL` / `JWT_SECRET` are authoritative.
+
 ## Production Build
 
 ```bash
