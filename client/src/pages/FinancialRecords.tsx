@@ -59,7 +59,6 @@ interface ClientSummaryRow {
   agreedFees: number;
   netFees: number;
   revenue: number;
-  billedAmount: number;
   toBeBilled: number;
   outstandingAmount: number;
   collectedAmount: number;
@@ -80,7 +79,6 @@ interface MatterSummaryRow {
   agreedFees: number;
   netFees: number;
   revenue: number;
-  billedAmount: number;
   toBeBilled: number;
   outstandingAmount: number;
   collectedAmount: number;
@@ -91,7 +89,6 @@ interface GrandTotals {
   agreedFees: number;
   netFees: number;
   revenue: number;
-  billedAmount: number;
   toBeBilled: number;
   outstandingAmount: number;
   collectedAmount: number;
@@ -216,7 +213,7 @@ export default function FinancialRecords() {
           clientId: r.clientId,
           clientName: clientMap[r.clientId] ?? `Client #${r.clientId}`,
           recordCount: 0,
-          agreedFees: 0, netFees: 0, revenue: 0, billedAmount: 0,
+          agreedFees: 0, netFees: 0, revenue: 0,
           toBeBilled: 0, outstandingAmount: 0, collectedAmount: 0,
           statuses: [],
           _statuses: new Set(),
@@ -227,7 +224,6 @@ export default function FinancialRecords() {
       row.agreedFees        += Number(r.agreedFees)        || 0;
       row.netFees           += Number(r.netFees)           || 0;
       row.revenue           += Number(r.revenue)           || 0;
-      row.billedAmount      += Number(r.billedAmount)      || 0;
       row.outstandingAmount += Number(r.outstandingAmount) || 0;
       row.collectedAmount   += Number(r.collectedAmount)   || 0;
       if (r.collectionStatus) row._statuses.add(r.collectionStatus);
@@ -260,7 +256,7 @@ export default function FinancialRecords() {
           leadPartner:    m?.leadPartnerFullName ?? null,
           responsibleLawyers: [],
           recordCount: 0,
-          agreedFees: 0, netFees: 0, revenue: 0, billedAmount: 0,
+          agreedFees: 0, netFees: 0, revenue: 0,
           toBeBilled: 0, outstandingAmount: 0, collectedAmount: 0,
           statuses: [],
           _statuses: new Set(),
@@ -272,7 +268,6 @@ export default function FinancialRecords() {
       row.agreedFees        += Number(r.agreedFees)        || 0;
       row.netFees           += Number(r.netFees)           || 0;
       row.revenue           += Number(r.revenue)           || 0;
-      row.billedAmount      += Number(r.billedAmount)      || 0;
       row.outstandingAmount += Number(r.outstandingAmount) || 0;
       row.collectedAmount   += Number(r.collectedAmount)   || 0;
       if (r.collectionStatus)  row._statuses.add(r.collectionStatus);
@@ -303,12 +298,11 @@ export default function FinancialRecords() {
       acc.agreedFees        += agreed;
       acc.netFees           += Number(r.netFees)           || 0;
       acc.revenue           += revenue;
-      acc.billedAmount      += revenue; // billed mirrors revenue
       acc.toBeBilled        += Math.max(0, agreed - revenue);
       acc.outstandingAmount += Number(r.outstandingAmount) || 0;
       acc.collectedAmount   += Number(r.collectedAmount)   || 0;
       return acc;
-    }, { agreedFees: 0, netFees: 0, revenue: 0, billedAmount: 0, toBeBilled: 0, outstandingAmount: 0, collectedAmount: 0 });
+    }, { agreedFees: 0, netFees: 0, revenue: 0, toBeBilled: 0, outstandingAmount: 0, collectedAmount: 0 });
   }, [filteredRecords]);
 
   // ── Permission guard ───────────────────────────────────────────────────────

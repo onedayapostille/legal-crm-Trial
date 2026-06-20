@@ -30,7 +30,6 @@ function NewClientForm() {
     clientNumber: "",
     fileNumber: "",
     city: "" as "" | "Riyadh" | "Dammam" | "Jeddah",
-    matterType: "" as "" | "Corporate" | "Litigation",
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -66,7 +65,9 @@ function NewClientForm() {
       clientNumber: form.clientNumber || undefined,
       fileNumber: form.fileNumber || undefined,
       city: form.city || undefined,
-      matterType: form.matterType || undefined,
+      // Matter Type is intentionally NOT set here: it is authoritative at the
+      // matter level (each matter chooses its own type), so the master client
+      // record no longer carries a conflicting client-wide type. (CRM-006)
     });
   };
 
@@ -131,39 +132,24 @@ function NewClientForm() {
                 </Select>
               </FormField>
 
-              <div className="grid grid-cols-2 gap-4">
-                <FormField label="City">
-                  <Select
-                    value={form.city || "none"}
-                    onValueChange={v => setForm(f => ({ ...f, city: v === "none" ? "" : v as any }))}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select city" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Not specified</SelectItem>
-                      <SelectItem value="Riyadh">Riyadh</SelectItem>
-                      <SelectItem value="Dammam">Dammam</SelectItem>
-                      <SelectItem value="Jeddah">Jeddah</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </FormField>
-                <FormField label="Matter Type">
-                  <Select
-                    value={form.matterType || "none"}
-                    onValueChange={v => setForm(f => ({ ...f, matterType: v === "none" ? "" : v as any }))}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select type" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Not specified</SelectItem>
-                      <SelectItem value="Corporate">Corporate</SelectItem>
-                      <SelectItem value="Litigation">Litigation</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </FormField>
-              </div>
+              <FormField label="City">
+                <Select
+                  value={form.city || "none"}
+                  onValueChange={v => setForm(f => ({ ...f, city: v === "none" ? "" : v as any }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select city" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Not specified</SelectItem>
+                    <SelectItem value="Riyadh">Riyadh</SelectItem>
+                    <SelectItem value="Dammam">Dammam</SelectItem>
+                    <SelectItem value="Jeddah">Jeddah</SelectItem>
+                  </SelectContent>
+                </Select>
+              </FormField>
+              {/* Matter Type is chosen per matter (Matter form), not on the master
+                  client — see CRM-006. */}
             </CardContent>
           </Card>
 

@@ -62,6 +62,11 @@ export default function MatterNew() {
       toast.error("Please select a client");
       return;
     }
+    // Matter Type is authoritative at the matter level (CRM-006) and required.
+    if (!form.matterType.trim()) {
+      toast.error("Matter Type is required");
+      return;
+    }
     // Auto-run conflict check against matter name + opposing party.
     setChecking(true);
     try {
@@ -125,7 +130,7 @@ export default function MatterNew() {
               {[
                 ["originalSerial", "Original Serial (optional — auto MAT-####)"],
                 ["matterReference", "Matter Reference"],
-                ["matterType", "Matter Type"],
+                ["matterType", "Matter Type *"],
                 ["leadPartner", "Lead Partner (Code)"],
                 ["leadPartnerFullName", "Lead Partner (Full Name)"],
                 ["supportLead", "Support Lead"],
