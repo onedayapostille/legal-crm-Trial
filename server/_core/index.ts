@@ -69,14 +69,20 @@ async function startServer() {
   if (!process.env.DATABASE_URL) {
     console.error(
       "\n┌─────────────────────────────────────────────────────────────────────┐\n" +
-      "│  CONFIG ERROR: DATABASE_URL is not set.                              │\n" +
-      "│  The app cannot reach the database until you configure it.          │\n" +
+      "│  CONFIG ERROR: DATABASE_URL is not set in the CONTAINER'S RUNTIME    │\n" +
+      "│  ENV. The app reads it from process.env only — never hard-coded,     │\n" +
+      "│  and it does NOT read docker-compose.yml.                            │\n" +
       "│                                                                     │\n" +
-      "│    1) cp .env.example .env                                          │\n" +
-      "│    2) set DATABASE_URL=postgresql://USER:PASS@HOST:5432/legal_crm   │\n" +
-      "│    3) restart (pnpm dev)  — Docker: pass it via env_file / -e       │\n" +
+      "│  Hosted platform (e.g. Dublyo): set DATABASE_URL in App Settings,    │\n" +
+      "│  then Save & Redeploy. If this banner persists afterwards, the       │\n" +
+      "│  platform is NOT injecting App Settings into the container — that is  │\n" +
+      "│  a platform-config issue, not a code or compose issue. Verify with    │\n" +
+      "│  GET /health  →  expect databaseUrlSet:true.                         │\n" +
       "│                                                                     │\n" +
-      "│  Secrets are read from the environment only — never hard-coded.     │\n" +
+      "│  Local dev:  1) cp .env.example .env                                 │\n" +
+      "│              2) set DATABASE_URL=postgresql://USER:PASS@HOST:5432/db  │\n" +
+      "│              3) restart (pnpm dev) — Docker: env_file / -e           │\n" +
+      "│                                                                     │\n" +
       "│  See README.md → \"Troubleshooting\".                                 │\n" +
       "└─────────────────────────────────────────────────────────────────────┘\n",
     );
