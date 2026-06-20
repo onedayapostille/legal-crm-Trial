@@ -49,11 +49,11 @@ describe("clientMatters — Active Matters KPI & status filter", () => {
     // One matter per status we care about. "active" lowercase + " Active " padded
     // both exercise the normalization; "Closed" and "On Hold" must be excluded.
     const matters = await Promise.all([
-      caller.clientMatters.create({ clientId: client.id, matterReference: `A1-${stamp}`, matterStatus: "Active" }),
-      caller.clientMatters.create({ clientId: client.id, matterReference: `A2-${stamp}`, matterStatus: "active" }),
-      caller.clientMatters.create({ clientId: client.id, matterReference: `A3-${stamp}`, matterStatus: "  Active  " }),
-      caller.clientMatters.create({ clientId: client.id, matterReference: `C1-${stamp}`, matterStatus: "Closed" }),
-      caller.clientMatters.create({ clientId: client.id, matterReference: `H1-${stamp}`, matterStatus: "On Hold" }),
+      caller.clientMatters.create({ clientId: client.id, matterType: "Corporate", matterReference: `A1-${stamp}`, matterStatus: "Active" }),
+      caller.clientMatters.create({ clientId: client.id, matterType: "Corporate", matterReference: `A2-${stamp}`, matterStatus: "active" }),
+      caller.clientMatters.create({ clientId: client.id, matterType: "Corporate", matterReference: `A3-${stamp}`, matterStatus: "  Active  " }),
+      caller.clientMatters.create({ clientId: client.id, matterType: "Corporate", matterReference: `C1-${stamp}`, matterStatus: "Closed" }),
+      caller.clientMatters.create({ clientId: client.id, matterType: "Corporate", matterReference: `H1-${stamp}`, matterStatus: "On Hold" }),
     ]);
 
     async function cleanup() {

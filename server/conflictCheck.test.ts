@@ -38,6 +38,7 @@ describe("Conflict Check — search, matter check, and creation gate", () => {
     const adverse = await caller.clients.create({ clientName: adverseName, clientStatus: "Leads" });
     const matter = await caller.clientMatters.create({
       clientId: owner.id,
+      matterType: "Corporate",
       matterReference: matterRef,
       opposingParty: adverseName,
       acknowledgeConflicts: true, // adverseName matches the existing client → ack needed
@@ -112,6 +113,7 @@ describe("Conflict Check — search, matter check, and creation gate", () => {
       // With acknowledgement → created
       const matter = await caller.clientMatters.create({
         clientId: owner.id,
+        matterType: "Corporate",
         matterReference: `M-ack-${stamp}`,
         opposingParty: adverseName,
         acknowledgeConflicts: true,
@@ -136,6 +138,7 @@ describe("Conflict Check — search, matter check, and creation gate", () => {
     try {
       const matter = await caller.clientMatters.create({
         clientId: owner.id,
+        matterType: "Corporate",
         matterReference: `Unique-${stamp}`,
         opposingParty: `Nobody-Match-${stamp}`,
       });

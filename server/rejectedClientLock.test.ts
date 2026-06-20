@@ -34,7 +34,7 @@ describe("Rejected client lock — backend enforcement (403)", () => {
     const client = await caller.clients.create({ clientName: `Rej ${stamp}`, clientStatus: "Rejected" });
     try {
       await expect(
-        caller.clientMatters.create({ clientId: client.id, matterReference: `M-${stamp}` }),
+        caller.clientMatters.create({ clientId: client.id, matterType: "Corporate", matterReference: `M-${stamp}` }),
       ).rejects.toMatchObject({ code: "FORBIDDEN", message: LOCK_MSG });
     } finally {
       await caller.clients.delete({ id: client.id });
@@ -91,7 +91,7 @@ describe("Rejected client lock — backend enforcement (403)", () => {
     // Create as active, add a matter, THEN reject.
     const client = await caller.clients.create({ clientName: `Flip ${stamp}`, clientStatus: "Existing Client" });
     try {
-      const matter = await caller.clientMatters.create({ clientId: client.id, matterReference: `FM-${stamp}` });
+      const matter = await caller.clientMatters.create({ clientId: client.id, matterType: "Corporate", matterReference: `FM-${stamp}` });
       await caller.clients.update({ id: client.id, clientStatus: "Rejected" });
 
       // Existing matter stays visible (read).
@@ -113,7 +113,7 @@ describe("Rejected client lock — backend enforcement (403)", () => {
     const client = await caller.clients.create({ clientName: `OK ${stamp}`, clientStatus: "Existing Client" });
     let matterId: number | undefined;
     try {
-      const matter = await caller.clientMatters.create({ clientId: client.id, matterReference: `OKM-${stamp}` });
+      const matter = await caller.clientMatters.create({ clientId: client.id, matterType: "Corporate", matterReference: `OKM-${stamp}` });
       matterId = matter.id;
       expect(matter.id).toBeGreaterThan(0);
     } finally {

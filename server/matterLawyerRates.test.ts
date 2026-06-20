@@ -39,7 +39,7 @@ describe("Matter Hourly Rates — assigned users, read-only names, restricted re
     const viewer   = await admin.users.create({ name: `Viewer ${stamp}`,       email: `vw${stamp}@x.com`,   password: PW, role: "viewer" });
 
     const client = await admin.clients.create({ clientName: `Rates Client ${stamp}`, clientStatus: "Existing Client" });
-    const matter = await admin.clientMatters.create({ clientId: client.id, matterReference: `RATE-${stamp}` });
+    const matter = await admin.clientMatters.create({ clientId: client.id, matterType: "Corporate", matterReference: `RATE-${stamp}` });
 
     async function cleanup() {
       await admin.clientMatters.delete({ id: matter.id });
