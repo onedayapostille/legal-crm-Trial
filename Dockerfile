@@ -16,8 +16,12 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV APP_RELEASE="auth-cache-fix-2026-04-27"
-ENV DATABASE_URL="postgresql://postgres.uolzadolzwgiznyuzcqc:pXeCR5BQnAhvXKMY@aws-1-eu-central-1.pooler.supabase.com:5432/postgres?sslmode=require"
-ENV JWT_SECRET="51685c51d315bce06249035bb4ddaba890a6911af7c2b5afb9a24c410dd33588"
+
+# SECURITY: Secrets (DATABASE_URL, JWT_SECRET, etc.) are NOT baked into the image.
+# They must be supplied at runtime via environment variables, e.g.:
+#   docker run -e DATABASE_URL=... -e JWT_SECRET=... ...
+# or via docker-compose `env_file: .env` (see docker-compose.yml).
+# Required runtime variables are documented in README.md and .env.example.
 
 RUN npm install -g pnpm@10 --force
 
