@@ -77,9 +77,12 @@ export default function MatterList() {
                           <Briefcase className="h-5 w-5 text-indigo-600" />
                         </div>
                         <div className="min-w-0">
+                          {/* Matter Reference is the matter-level identifier; Original
+                              Serial (inherited from the client) is shown separately so the
+                              two are never confused. */}
                           <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-mono text-xs text-muted-foreground">
-                              {m.matterReference ?? m.originalSerial ?? `Matter #${m.id}`}
+                            <span className="font-mono text-sm font-medium">
+                              {m.matterReference ?? `Matter #${m.id}`}
                             </span>
                             {m.matterStatus && (
                               <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-slate-100 text-slate-700">
@@ -95,11 +98,22 @@ export default function MatterList() {
                           <p className="font-semibold text-sm mt-0.5 truncate">
                             {m.clientName ?? `Client #${m.clientId}`}
                           </p>
+                          <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground mt-0.5">
+                            <span>
+                              <span className="text-muted-foreground/70">Serial:</span>{" "}
+                              <span className="font-mono">{m.originalSerial ?? "—"}</span>
+                            </span>
+                            <span>
+                              <span className="text-muted-foreground/70">Type:</span>{" "}
+                              {m.matterType ?? "—"}
+                            </span>
+                            <span>
+                              <span className="text-muted-foreground/70">Lead Partner:</span>{" "}
+                              {m.leadPartnerFullName ?? m.leadPartner ?? "—"}
+                            </span>
+                          </div>
                           {m.matterDescription && (
-                            <p className="text-xs text-muted-foreground truncate">{m.matterDescription}</p>
-                          )}
-                          {m.matterType && (
-                            <p className="text-xs text-muted-foreground">{m.matterType}{m.leadPartnerFullName ? ` — ${m.leadPartnerFullName}` : ""}</p>
+                            <p className="text-xs text-muted-foreground truncate mt-0.5">{m.matterDescription}</p>
                           )}
                         </div>
                       </div>

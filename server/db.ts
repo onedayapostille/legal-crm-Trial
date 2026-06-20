@@ -1375,25 +1375,60 @@ export interface ConflictMatch {
  * carries: match type, matched record id, matched name, and current status.
  * Case-insensitive partial match; internal whitespace is collapsed.
  */
+/**
+ * Canonical form used to compare names for conflict checking. The goal is to
+ * tolerate harmless differences (case, spacing, punctuation, common Arabic
+ * spelling variants) WITHOUT fuzzy matching that would create false positives —
+ * matching stays substring-exact on the normalized form.
+ *
+ *   - lower-cased
+ *   - Arabic diacritics (tashkeel) stripped
+ *   - alef variants (أ إ آ) → bare alef (ا); alef-maksura (ى) → yaa (ي);
+ *     taa-marbuta (ة) → haa (ه) — the usual data-entry inconsistencies
+ *   - Arabic-Indic digits (٠-٩) → Latin (0-9)
+ *   - any punctuation/symbol, Arabic or Latin (، ؛ ؟ . , - / …), → a space
+ *   - whitespace collapsed
+ */
+export function normalizeForConflict(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/[ً-ْٰ]/g, "") // tashkeel / superscript alef
+    .replace(/[آأإٱ]/g, "ا") // أ إ آ ٱ → ا
+    .replace(/ى/g, "ي") // ى → ي
+    .replace(/ة/g, "ه") // ة → ه
+    .replace(/[٠-٩]/g, d => String(d.charCodeAt(0) - 0x0660)) // ٠-٩ → 0-9
+    // Punctuation/symbols (Latin + Arabic: ، ؛ ؟ ٫ ٬ « » … – —) and whitespace
+    // → a single space, so "Al-Futtaim", "Al Futtaim" and "الفطيم، ش.م.ع" align.
+    .replace(/[\s!-/:-@[-`{-~،؛؟٫٬٭۔«»…–—]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export async function searchConflicts(rawQuery: string): Promise<ConflictMatch[]> {
   const db = getDb();
-  const normalized = rawQuery.trim().replace(/\s+/g, " ");
-  if (!normalized) return [];
-  const term = `%${normalized}%`;
-  const needle = normalized.toLowerCase();
-  const contains = (v: string | null | undefined) => !!v && v.toLowerCase().includes(needle);
+  const needle = normalizeForConflict(rawQuery);
+  if (!needle) return [];
+
+  // Precise, conservative decision: the normalized query must appear as a
+  // substring of the normalized candidate value. Tolerates case/spacing/
+  // punctuation/Arabic-variant differences but is not fuzzy.
+  const contains = (v: string | null | undefined) => !!v && normalizeForConflict(v).includes(needle);
+
+  // SQL pre-filter — fetch a superset of candidates. Because punctuation differs
+  // between query and stored value, we ilike on each significant *token* of the
+  // normalized query (tokens carry no punctuation, so they still match inside
+  // "Al-Futtaim", "Al Futtaim", etc.). The precise `contains` check above then
+  // refines the result set in JS.
+  const tokens = needle.split(" ").filter(t => t.length >= 2);
+  const searchTokens = tokens.length > 0 ? tokens : [needle];
+  const likeFor = (cols: any[]) =>
+    or(...cols.flatMap(col => searchTokens.map(tok => ilike(col, `%${tok}%`))));
 
   // 1) Clients — name / client # / file #
   const matchedClients = await db
     .select()
     .from(clients)
-    .where(
-      or(
-        ilike(clients.clientName, term),
-        ilike(clients.clientNumber, term),
-        ilike(clients.fileNumber, term),
-      ),
-    )
+    .where(likeFor([clients.clientName, clients.clientNumber, clients.fileNumber]))
     .orderBy(desc(clients.createdAt));
 
   // 2) + 3) Matters — name/reference/type, and opposing party — joined to the
@@ -1412,18 +1447,20 @@ export async function searchConflicts(rawQuery: string): Promise<ConflictMatch[]
     .from(clientMatters)
     .leftJoin(clients, eq(clientMatters.clientId, clients.id))
     .where(
-      or(
-        ilike(clientMatters.matterReference, term),
-        ilike(clientMatters.matterType, term),
-        ilike(clientMatters.matterDescription, term),
-        ilike(clientMatters.opposingParty, term),
-      ),
+      likeFor([
+        clientMatters.matterReference,
+        clientMatters.matterType,
+        clientMatters.matterDescription,
+        clientMatters.opposingParty,
+      ]),
     )
     .orderBy(desc(clientMatters.createdAt));
 
   const matches: ConflictMatch[] = [];
 
   for (const c of matchedClients) {
+    // Refine the broadened token pre-filter down to a precise normalized hit.
+    if (!contains(c.clientName) && !contains(c.clientNumber) && !contains(c.fileNumber)) continue;
     matches.push({
       matchType: "Client",
       recordId: c.id,

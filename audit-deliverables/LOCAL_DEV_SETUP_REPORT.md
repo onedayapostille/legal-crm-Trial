@@ -86,17 +86,35 @@ corepack pnpm local:db
 Then set `DATABASE_URL=postgresql://postgres:postgres@localhost:5433/app` in
 the ignored `.env` file before migrating or starting the app.
 
-## Manual PostgreSQL Option
+## Manual / Native PostgreSQL Option (no Docker)
 
-If Docker is unavailable, install PostgreSQL 16, start its service, and run as a
-PostgreSQL administrator:
+If Docker is unavailable, run a native PostgreSQL instead. Two paths:
+
+### A. Windows via scoop (no admin, verified working on this machine)
+
+```powershell
+scoop install postgresql                              # user-space install
+$PG = "$env:USERPROFILE\scoop\apps\postgresql\current"
+& "$PG\bin\pg_ctl" -D "$PG\data" start                # start the server (port 5432)
+& "$PG\bin\psql" -h 127.0.0.1 -U postgres -d postgres -c "ALTER USER postgres PASSWORD 'postgres';"
+& "$PG\bin\createdb" -h 127.0.0.1 -U postgres app     # create the 'app' database
+```
+
+Stop later with `& "$PG\bin\pg_ctl" -D "$PG\data" stop`. Uninstall with
+`scoop uninstall postgresql`. Note: the repo's `local:db` script targets Docker,
+so on this path start PostgreSQL with `pg_ctl` (above) and skip `local:db`.
+
+### B. Any platform with a native PostgreSQL 16+ install
+
+Install PostgreSQL, start its service, then as a PostgreSQL administrator:
 
 ```sql
 ALTER ROLE postgres PASSWORD 'postgres';
 CREATE DATABASE app OWNER postgres;
 ```
 
-Then use the same `.env`, migration, seed, and dev commands above.
+For either path, then use the same `.env`, migration, seed, and dev commands
+above (`corepack pnpm db:migrate`, `corepack pnpm db:seed`, `corepack pnpm dev`).
 
 ## Troubleshooting
 
@@ -116,17 +134,30 @@ Then use the same `.env`, migration, seed, and dev commands above.
 
 ## Tests and Results
 
+End-to-end local run executed and verified on this machine (2026-06-20) using the
+native scoop PostgreSQL path, because Docker Desktop is not installed here. Results:
+
 - `corepack pnpm install --frozen-lockfile`: passed.
-- `corepack pnpm check`: passed.
-- `corepack pnpm build`: passed.
-- `corepack pnpm test`: attempted; database-backed suites failed because no
-  Docker or local PostgreSQL service is available on this machine. No test
-  failure was attributed to the local setup source changes.
-- Dev server startup with explicit local env: passed on port 3000.
-- `GET /health`: passed; `databaseUrlSet: true`, `jwtSecretSet: true`, database
-  host `127.0.0.1`, port `5432`.
-- Credential scan: previously baked database and JWT values are absent from the
-  working tree.
-- Docker PostgreSQL, migrations, seed, `/health/db`, and login could not be run
-  on this machine because Docker and local PostgreSQL are not installed. Exact
-  Docker and manual commands are provided above.
+- `corepack pnpm check` (`tsc --noEmit`): passed (exit 0).
+- `corepack pnpm build` (vite + esbuild): passed.
+- Native PostgreSQL 18.4 started via scoop; `app` database created; app-style
+  connection `postgresql://postgres:postgres@localhost:5432/app` verified.
+- `corepack pnpm db:migrate`: **passed** — all migrations `0000`–`0019` applied.
+- `corepack pnpm db:seed`: **passed** — initial admin `admin@legalcrm.com` created
+  (role `admin`, status `active`).
+- Dev server (`corepack pnpm dev`): **passed** — serving on `http://localhost:3000`.
+- `GET /health`: **passed** — `databaseUrlSet: true`, `jwtSecretSet: true`,
+  `databaseHost: localhost`, `databasePort: 5432`; `envPresence` shows the `.env`
+  values are loaded.
+- `GET /health/db`: **passed** — `{ ok: true }` (real query against the database).
+- Login `POST /api/trpc/auth.login`: **passed** — HTTP 200, `success: true` for
+  `admin@legalcrm.com` (role `admin`).
+- Credential scan: no real database/JWT secrets are committed; `.env.example`
+  holds placeholders only and `.env` is git-ignored.
+
+Note on credentials: this verified run seeded `admin@legalcrm.com` / `Admin1234!`
+in the local `.env`. The committed `.env.example` defaults remain
+`admin@example.com` / `admin123`; either works locally.
+
+> The Docker path (`local:db`) is documented and equivalent but was not exercised
+> here (Docker not installed). The scoop native path above is the one verified.
