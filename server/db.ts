@@ -194,6 +194,8 @@ export function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
+// Developer-facing guidance, logged to the SERVER console only — never sent to
+// the client (it would leak setup details onto the public login screen).
 export const DATABASE_URL_HELP =
   "DATABASE_URL is not set. The app reads it only from the environment — it is " +
   "never hard-coded. To fix:\n" +
@@ -204,11 +206,23 @@ export const DATABASE_URL_HELP =
   "  3. Restart the app (pnpm dev) or, with Docker, pass it via env_file/-e.\n" +
   "  See README.md → \"Secrets & Security\" / \"Troubleshooting\".";
 
+// Concise, user-safe message returned to API callers (e.g. the login page).
+export const DATABASE_NOT_CONFIGURED_MESSAGE =
+  "The service is temporarily unavailable. Please try again later or contact your administrator.";
+
+let _loggedDbHelp = false;
+
 export function getDb() {
   if (!_db) {
     const url = process.env.DATABASE_URL;
     if (!url) {
-      throw new Error(`DATABASE_URL environment variable is required.\n${DATABASE_URL_HELP}`);
+      // Log the actionable guidance for operators/developers (server-side only),
+      // once, then throw a generic message so nothing internal leaks to clients.
+      if (!_loggedDbHelp) {
+        console.error(`[DB] ${DATABASE_URL_HELP}`);
+        _loggedDbHelp = true;
+      }
+      throw new Error(DATABASE_NOT_CONFIGURED_MESSAGE);
     }
     _client = postgres(url, {
       max: 10,
