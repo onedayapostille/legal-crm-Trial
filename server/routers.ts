@@ -932,6 +932,9 @@ export const appRouter = router({
           "Advisory / Special Mandates",
           "Blended",
         ]).optional(),
+        // Lead Partner as a real user (validated server-side). leadPartner* text
+        // remain accepted for legacy/free-text entry.
+        leadLawyerId: z.number().int().positive().optional(),
         leadPartner: z.string().optional(),
         leadPartnerFullName: z.string().optional(),
         supportLead: z.string().optional(),
@@ -986,6 +989,8 @@ export const appRouter = router({
           "Advisory / Special Mandates",
           "Blended",
         ]).optional().nullable(),
+        // Lead Partner user link: number assigns/validates, null unlinks.
+        leadLawyerId: z.number().int().positive().nullable().optional(),
         leadPartner: z.string().optional(),
         leadPartnerFullName: z.string().optional(),
         supportLead: z.string().optional(),
@@ -1100,8 +1105,9 @@ export const appRouter = router({
         agreedFees: z.string().optional(),
         discountApproval: z.enum(["N/A", "P&L Head Lawyers", "CEO", "Board"]).default("N/A"),
         // discountPercentage, discountAmount, netFees are server-computed from discountApproval.
-        // billedAmount removed — Revenue is the single amount field; billed_amount is
-        // mirrored to revenue server-side for backward compatibility.
+        // Revenue is the single active amount field. billed_amount is NOT written
+        // (legacy/read-only, CRM-012) and is NOT mirrored to revenue — see
+        // applyDiscountRules and FINANCIAL_FORMULAS.md.
         revenue: z.string().optional(),
         collectedAmount: z.string().optional(),
         // remainingAdvanced, outstandingAmount are server-computed from billing fields
@@ -1126,7 +1132,8 @@ export const appRouter = router({
         agreedFees: z.string().optional(),
         discountApproval: z.enum(["N/A", "P&L Head Lawyers", "CEO", "Board"]).optional(),
         // discountPercentage, discountAmount, netFees are server-computed.
-        // billedAmount removed — mirrored to revenue server-side (compatibility).
+        // Revenue is the single active amount field. billed_amount stays legacy/
+        // read-only (CRM-012) — never mirrored. See FINANCIAL_FORMULAS.md.
         revenue: z.string().optional(),
         collectedAmount: z.string().optional(),
         // remainingAdvanced, outstandingAmount are server-computed

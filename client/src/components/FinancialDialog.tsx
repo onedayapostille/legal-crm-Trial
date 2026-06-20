@@ -396,7 +396,11 @@ export default function FinancialDialog({
                           </span>
                           {(m.matterType || m.matterStatus || m.leadPartnerFullName) && (
                             <span className="text-xs text-muted-foreground">
-                              {[m.matterType, m.matterStatus, m.leadPartnerFullName]
+                              {[
+                                m.matterType,
+                                m.matterStatus,
+                                m.leadPartnerFullName ? `Lead Partner: ${m.leadPartnerFullName}` : null,
+                              ]
                                 .filter(Boolean)
                                 .join(" · ")}
                             </span>

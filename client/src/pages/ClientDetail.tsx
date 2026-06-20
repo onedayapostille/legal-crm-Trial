@@ -844,6 +844,9 @@ const FEE_TYPE_OPTIONS = [
 type MatterFormState = {
   originalSerial: string; matterReference: string; matterType: string;
   billingType: string;
+  // Lead Partner as a real user (authoritative). leadPartner/leadPartnerFullName
+  // remain for legacy/free-text display on records without a linked user.
+  leadLawyerId: number | null;
   leadPartner: string; leadPartnerFullName: string; supportLead: string;
   attorneyHead: string; attorney1: string; attorney2: string; attorney3: string;
   attorneyFullName: string; matterDescription: string; opposingParty: string; matterStatus: string;
@@ -853,6 +856,7 @@ type MatterFormState = {
 
 const MATTER_FORM_DEFAULT: MatterFormState = {
   originalSerial: "", matterReference: "", matterType: "", billingType: "",
+  leadLawyerId: null,
   leadPartner: "", leadPartnerFullName: "", supportLead: "", attorneyHead: "",
   attorney1: "", attorney2: "", attorney3: "", attorneyFullName: "",
   matterDescription: "", opposingParty: "", matterStatus: "",
@@ -863,8 +867,6 @@ const MATTER_FORM_DEFAULT: MatterFormState = {
 const MATTER_TEXT_FIELDS: [keyof MatterFormState, string][] = [
   ["matterReference",      "Matter Reference * (unique per client)"],
   ["matterType",           "Matter Type *"],
-  ["leadPartner",          "Lead Partner (Code)"],
-  ["leadPartnerFullName",  "Lead Partner (Full Name)"],
   ["supportLead",          "Support Lead"],
   ["attorneyHead",         "Attorney Head"],
   ["attorney1",            "Attorney 1"],
@@ -890,6 +892,12 @@ function buildMatterPayload(
       payload[k] = v !== "" ? v : null;
       continue;
     }
+    if (k === "leadLawyerId") {
+      // Only a real selection is sent here; an explicit unlink (null) is added by
+      // the edit caller so the create schema (no null) is not violated.
+      if (typeof v === "number") payload[k] = v;
+      continue;
+    }
     if (typeof v === "string" && v.trim() !== "") payload[k] = v.trim();
   }
   return payload;
@@ -908,6 +916,11 @@ function MatterFormFields({
   /** Called when the user types into Original Serial, to stop auto-inheriting. */
   onSerialEdited?: () => void;
 }) {
+  // Active Partners/Lawyers eligible to lead a matter (Phase 3 dropdown source).
+  const { data: leadLawyers = [] } = trpc.users.leadLawyers.useQuery();
+  // A matter may have a lead lawyer who is no longer in the active list (e.g.
+  // edited later) — keep them selectable so the value is not silently lost.
+  const selectedKnown = leadLawyers.some(l => l.id === form.leadLawyerId);
   return (
     <div className="grid grid-cols-2 gap-3 py-2">
       {/* Original Serial — inherited from the client, shown distinctly so it is
@@ -925,6 +938,48 @@ function MatterFormFields({
             ? <>Inherited from client number <span className="font-mono">{inheritedSerial}</span>. Shared by all of this client's matters — not the matter's unique identifier.</>
             : "Shared by all of this client's matters — not the matter's unique identifier."}
         </p>
+      </div>
+      {/* Lead Partner — chosen from active Partners/Lawyers (Phase 3). Selecting a
+          user links the matter to a real user and populates the display name. */}
+      <div className="col-span-2">
+        <Label className="text-xs">Lead Partner</Label>
+        <Select
+          value={form.leadLawyerId != null ? String(form.leadLawyerId) : "__none__"}
+          onValueChange={v => {
+            if (v === "__none__") {
+              setForm(f => ({ ...f, leadLawyerId: null }));
+              return;
+            }
+            const id = Number(v);
+            const picked = leadLawyers.find(l => l.id === id);
+            setForm(f => ({
+              ...f,
+              leadLawyerId: id,
+              leadPartnerFullName: picked?.name ?? f.leadPartnerFullName,
+            }));
+          }}
+        >
+          <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="— select a lead partner —" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__none__">— None —</SelectItem>
+            {/* Keep an out-of-list current value selectable */}
+            {!selectedKnown && form.leadLawyerId != null && (
+              <SelectItem value={String(form.leadLawyerId)}>
+                {form.leadPartnerFullName || `User #${form.leadLawyerId}`} (inactive)
+              </SelectItem>
+            )}
+            {leadLawyers.map(l => (
+              <SelectItem key={l.id} value={String(l.id)}>
+                {l.name}{l.role ? ` — ${l.role}` : ""}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {form.leadLawyerId == null && form.leadPartnerFullName.trim() !== "" && (
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            Legacy value: <span className="font-medium">{form.leadPartnerFullName}</span> (not linked to a user). Select a lead partner to link it.
+          </p>
+        )}
       </div>
       {MATTER_TEXT_FIELDS.map(([key, label]) => (
         <div key={key}>
@@ -1096,6 +1151,7 @@ function MatterEditDialog({
     matterReference:       matter.matterReference       ?? "",
     matterType:            matter.matterType            ?? "",
     billingType:           matter.billingType           ?? "",
+    leadLawyerId:          matter.leadLawyerId          ?? null,
     leadPartner:           matter.leadPartner           ?? "",
     leadPartnerFullName:   matter.leadPartnerFullName   ?? "",
     supportLead:           matter.supportLead           ?? "",
@@ -1151,7 +1207,12 @@ function MatterEditDialog({
                 toast.error("Matter Reference is required");
                 return;
               }
-              update.mutate({ id: matter.id, ...buildMatterPayload(form) } as any);
+              const payload = buildMatterPayload(form);
+              // Explicit unlink: the lead lawyer was cleared on a matter that had one.
+              if (form.leadLawyerId == null && matter.leadLawyerId != null) {
+                payload.leadLawyerId = null;
+              }
+              update.mutate({ id: matter.id, ...payload } as any);
             }}
             disabled={update.isPending}
           >

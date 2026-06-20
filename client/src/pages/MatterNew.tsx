@@ -34,6 +34,9 @@ export default function MatterNew() {
     balanceWorkLeft: "", achievementPercentage: "", achievementStatus: "",
     priority: "medium" as Priority,
   });
+  // Lead Partner as a real user (Phase 3). Tracked separately from the text form.
+  const [leadLawyerId, setLeadLawyerId] = useState<number | null>(null);
+  const { data: leadLawyers = [] } = trpc.users.leadLawyers.useQuery();
 
   // Conflict check state: the matches awaiting acknowledgement, if any.
   const [pendingConflicts, setPendingConflicts] = useState<ConflictMatch[] | null>(null);
@@ -77,6 +80,7 @@ export default function MatterNew() {
       if (k === "priority") continue;
       if (typeof v === "string" && v.trim() !== "") payload[k] = v.trim();
     }
+    if (leadLawyerId != null) payload.leadLawyerId = leadLawyerId;
     return payload;
   }
 
@@ -171,12 +175,35 @@ export default function MatterNew() {
               </p>
             </div>
 
+            {/* Lead Partner — chosen from active Partners/Lawyers (Phase 3). */}
+            <div>
+              <Label className="text-xs">Lead Partner</Label>
+              <Select
+                value={leadLawyerId != null ? String(leadLawyerId) : "__none__"}
+                onValueChange={v => {
+                  if (v === "__none__") { setLeadLawyerId(null); return; }
+                  const id = Number(v);
+                  const picked = leadLawyers.find(l => l.id === id);
+                  setLeadLawyerId(id);
+                  setForm(f => ({ ...f, leadPartnerFullName: picked?.name ?? f.leadPartnerFullName }));
+                }}
+              >
+                <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="— select a lead partner —" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">— None —</SelectItem>
+                  {leadLawyers.map(l => (
+                    <SelectItem key={l.id} value={String(l.id)}>
+                      {l.name}{l.role ? ` — ${l.role}` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               {[
                 ["matterReference", "Matter Reference * (unique per client)"],
                 ["matterType", "Matter Type *"],
-                ["leadPartner", "Lead Partner (Code)"],
-                ["leadPartnerFullName", "Lead Partner (Full Name)"],
                 ["supportLead", "Support Lead"],
                 ["attorneyHead", "Attorney Head"],
                 ["attorney1", "Attorney 1"],

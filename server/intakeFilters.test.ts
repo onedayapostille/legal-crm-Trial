@@ -75,7 +75,7 @@ describe("Unified intake filters", () => {
       expect(none.some(c => c.id === client.id)).toBe(false);
     } finally {
       await caller.clients.delete({ id: client.id });
-      await caller.users.delete({ id: lawyer.id });
+      await caller.users.delete({ userId: lawyer.id });
     }
   });
 
