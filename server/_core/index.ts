@@ -112,6 +112,26 @@ async function startServer() {
     } catch {
       // Keep health endpoint available even if DATABASE_URL is malformed.
     }
+
+    // Diagnostic: which expected env keys actually reached the CONTAINER.
+    // PRESENCE ONLY — booleans for a fixed allowlist; values are NEVER exposed,
+    // and we never enumerate arbitrary/unknown env keys. This distinguishes
+    // "the platform injects no App Settings at all" from "it drops specific keys".
+    // The discriminating keys are ADMIN_EMAIL/ADMIN_NAME/ADMIN_PASSWORD: they are
+    // only ever supplied via App Settings (never baked into the image or defaulted),
+    // so if THOSE are present the platform's injection works; if absent, it doesn't.
+    const EXPECTED_ENV_KEYS = [
+      "DATABASE_URL", "JWT_SECRET", "AUTH_SECRET",
+      "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_HOST",
+      "POSTGRES_PORT", "POSTGRES_DB", "POSTGRES_SSLMODE",
+      "ADMIN_EMAIL", "ADMIN_NAME", "ADMIN_PASSWORD",
+      "NODE_ENV", "PORT", "APP_URL",
+    ];
+    const envPresence: Record<string, boolean> = {};
+    for (const key of EXPECTED_ENV_KEYS) {
+      envPresence[key] = Boolean(process.env[key] && process.env[key]!.length > 0);
+    }
+
     res.json({
       ok: true,
       ts: Date.now(),
@@ -121,6 +141,8 @@ async function startServer() {
       databaseHost,
       databasePort,
       jwtSecretSet: Boolean(process.env.JWT_SECRET),
+      // Names-only presence map (no values) — see comment above.
+      envPresence,
     });
   });
 
