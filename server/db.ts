@@ -1787,6 +1787,7 @@ export async function getAllClientMatters(filters: { status?: string } = {}) {
       matterDescription: clientMatters.matterDescription,
       leadPartner: clientMatters.leadPartner,
       leadPartnerFullName: clientMatters.leadPartnerFullName,
+      leadLawyerId: clientMatters.leadLawyerId,
       matterStatus: clientMatters.matterStatus,
       achievementPercentage: clientMatters.achievementPercentage,
       achievementStatus: clientMatters.achievementStatus,
@@ -1890,6 +1891,15 @@ export async function createClientMatter(
   // Matter Reference is the matter-level identifier and must be unique per client.
   await assertMatterReferenceUniqueForClient(clientId, clean.matterReference);
 
+  // Lead Partner may be assigned as a real user (CRM-013). Validate the user is
+  // active + eligible, and mirror the name into the legacy display column. The
+  // legacy leadPartner* free-text remains supported for records without a user.
+  if (data.leadLawyerId != null) {
+    const lawyer = await resolveAssignedUser(Number(data.leadLawyerId));
+    clean.leadLawyerId = lawyer.id;
+    clean.leadPartnerFullName = lawyer.name ?? clean.leadPartnerFullName;
+  }
+
   let matter: typeof clientMatters.$inferSelect;
   try {
     [matter] = await db
@@ -1959,6 +1969,19 @@ export async function updateClientMatter(id: number, data: Record<string, unknow
     }
     if (existing) {
       await assertMatterReferenceUniqueForClient(existing.clientId, rawRef, id);
+    }
+  }
+
+  // Lead Partner user link (CRM-013). A number assigns + validates the user and
+  // syncs the legacy display name; an explicit null unlinks (keeping any legacy
+  // free-text). Handled off the raw input because the sanitizer drops null.
+  if (data.leadLawyerId !== undefined) {
+    if (data.leadLawyerId === null) {
+      clean.leadLawyerId = null;
+    } else {
+      const lawyer = await resolveAssignedUser(Number(data.leadLawyerId));
+      clean.leadLawyerId = lawyer.id;
+      clean.leadPartnerFullName = lawyer.name ?? clean.leadPartnerFullName;
     }
   }
 

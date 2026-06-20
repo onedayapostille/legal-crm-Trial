@@ -932,6 +932,9 @@ export const appRouter = router({
           "Advisory / Special Mandates",
           "Blended",
         ]).optional(),
+        // Lead Partner as a real user (validated server-side). leadPartner* text
+        // remain accepted for legacy/free-text entry.
+        leadLawyerId: z.number().int().positive().optional(),
         leadPartner: z.string().optional(),
         leadPartnerFullName: z.string().optional(),
         supportLead: z.string().optional(),
@@ -986,6 +989,8 @@ export const appRouter = router({
           "Advisory / Special Mandates",
           "Blended",
         ]).optional().nullable(),
+        // Lead Partner user link: number assigns/validates, null unlinks.
+        leadLawyerId: z.number().int().positive().nullable().optional(),
         leadPartner: z.string().optional(),
         leadPartnerFullName: z.string().optional(),
         supportLead: z.string().optional(),
