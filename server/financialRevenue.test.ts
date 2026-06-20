@@ -121,7 +121,7 @@ describe("Financial client/matter link validation", () => {
     const client = await caller.clients.create({ clientName: `FinML ${stamp}`, clientStatus: "Existing Client" });
     let recId: number | undefined;
     try {
-      const matter = await caller.clientMatters.create({ clientId: client.id, matterType: "Corporate" });
+      const matter = await caller.clientMatters.create({ clientId: client.id, matterType: "Corporate", matterReference: `FML-${stamp}` });
       const rec = await caller.financial.create({
         clientId: client.id,
         clientMatterId: matter.id,
@@ -143,7 +143,7 @@ describe("Financial client/matter link validation", () => {
     const clientA = await caller.clients.create({ clientName: `FinA ${stamp}`, clientStatus: "Existing Client" });
     const clientB = await caller.clients.create({ clientName: `FinB ${stamp}`, clientStatus: "Existing Client" });
     try {
-      const matterB = await caller.clientMatters.create({ clientId: clientB.id, matterType: "Litigation" });
+      const matterB = await caller.clientMatters.create({ clientId: clientB.id, matterType: "Litigation", matterReference: `MB-${stamp}` });
       // Linking clientA's financial record to clientB's matter must fail.
       await expect(
         caller.financial.create({

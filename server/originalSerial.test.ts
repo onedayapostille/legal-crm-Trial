@@ -120,7 +120,7 @@ describe("Matter Original Serial — inherited from the parent client number", (
     const client = await caller.clients.create({ clientName: `NoNum ${stamp}`, clientStatus: "Existing Client" });
     let matterId: number | undefined;
     try {
-      const matter = await caller.clientMatters.create({ clientId: client.id, matterType: "Corporate" });
+      const matter = await caller.clientMatters.create({ clientId: client.id, matterType: "Corporate", matterReference: `F-${stamp}` });
       matterId = matter.id;
       expect(matter.originalSerial).toBe(`CL-${client.id}`);
     } finally {
@@ -145,6 +145,47 @@ describe("Matter Original Serial — inherited from the parent client number", (
       matterId = matter.id;
       const cleared = await caller.clientMatters.update({ id: matter.id, originalSerial: "" });
       expect(cleared.originalSerial).toBe(clientNumber); // refilled, not blank
+    } finally {
+      if (matterId) await caller.clientMatters.delete({ id: matterId });
+      await caller.clients.delete({ id: client.id });
+    }
+  });
+});
+
+// ─── Matter Reference required (CRM-007; needs DATABASE_URL) ───────────────────
+describe("Matter Reference is required for create/update", () => {
+  it("rejects creating a matter with no Matter Reference", async () => {
+    const { ctx } = createAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const stamp = Date.now();
+    const client = await caller.clients.create({ clientName: `ReqRef ${stamp}`, clientStatus: "Existing Client" });
+    try {
+      await expect(
+        caller.clientMatters.create({ clientId: client.id, matterType: "Corporate" }), // no reference
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    } finally {
+      await caller.clients.delete({ id: client.id });
+    }
+  });
+
+  it("rejects clearing the Matter Reference on update", async () => {
+    const { ctx } = createAuthContext();
+    const caller = appRouter.createCaller(ctx);
+    const stamp = Date.now();
+    const client = await caller.clients.create({ clientName: `ClrRef ${stamp}`, clientStatus: "Existing Client" });
+    let matterId: number | undefined;
+    try {
+      const m = await caller.clientMatters.create({
+        clientId: client.id, matterType: "Corporate", matterReference: `K-${stamp}`,
+      });
+      matterId = m.id;
+      // Editing another field WITHOUT touching the reference is allowed.
+      const ok = await caller.clientMatters.update({ id: m.id, matterStatus: "Active" });
+      expect(ok.matterReference).toBe(`K-${stamp}`);
+      // Explicitly blanking the reference is rejected.
+      await expect(
+        caller.clientMatters.update({ id: m.id, matterReference: "" }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     } finally {
       if (matterId) await caller.clientMatters.delete({ id: matterId });
       await caller.clients.delete({ id: client.id });

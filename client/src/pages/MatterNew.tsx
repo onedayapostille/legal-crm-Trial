@@ -67,6 +67,11 @@ export default function MatterNew() {
       toast.error("Matter Type is required");
       return;
     }
+    // Matter Reference is the required matter-level identifier (CRM-007).
+    if (!form.matterReference.trim()) {
+      toast.error("Matter Reference is required");
+      return;
+    }
     // Auto-run conflict check against matter name + opposing party.
     setChecking(true);
     try {
@@ -129,7 +134,7 @@ export default function MatterNew() {
             <div className="grid grid-cols-2 gap-3">
               {[
                 ["originalSerial", "Original Serial (optional — defaults to client number)"],
-                ["matterReference", "Matter Reference (unique per client)"],
+                ["matterReference", "Matter Reference * (unique per client)"],
                 ["matterType", "Matter Type *"],
                 ["leadPartner", "Lead Partner (Code)"],
                 ["leadPartnerFullName", "Lead Partner (Full Name)"],
