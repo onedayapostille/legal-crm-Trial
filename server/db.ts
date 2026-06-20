@@ -48,12 +48,19 @@ export function validateChannel(
 let _client: ReturnType<typeof postgres> | null = null;
 let _db: ReturnType<typeof drizzle> | null = null;
 
+// Supabase requires SSL on BOTH the direct host (db.<ref>.supabase.co) and the
+// connection pooler (<...>.pooler.supabase.com). Match both ".supabase.co" and
+// ".supabase.com" so a pooler URL gets SSL even without an explicit ?sslmode.
+function isSupabaseHost(hostnameOrUrl: string) {
+  return /\.supabase\.(co|com)(\b|$)/.test(hostnameOrUrl);
+}
+
 function shouldUseSsl(databaseUrl: string) {
   try {
     const parsed = new URL(databaseUrl);
-    return parsed.searchParams.get("sslmode") === "require" || parsed.hostname.endsWith(".supabase.co");
+    return parsed.searchParams.get("sslmode") === "require" || isSupabaseHost(parsed.hostname);
   } catch {
-    return databaseUrl.includes("sslmode=require") || databaseUrl.includes(".supabase.co");
+    return databaseUrl.includes("sslmode=require") || isSupabaseHost(databaseUrl);
   }
 }
 
