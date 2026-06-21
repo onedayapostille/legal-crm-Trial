@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
+import { applyDiscountRules, getDb, updateFinancialRecord } from "./db";
+import { financialRecords } from "../drizzle/schema";
+import { eq } from "drizzle-orm";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
 
@@ -23,6 +26,39 @@ function adminCaller() {
     res: { clearCookie: () => {} } as TrpcContext["res"],
   });
 }
+
+describe("Financial formula contract", () => {
+  it.each([
+    ["N/A", 0, 0, 1000],
+    ["P&L Head Lawyers", 5, 50, 950],
+    ["CEO", 10, 100, 900],
+    ["Board", 15, 150, 850],
+  ])(
+    "%s applies %i%%: discount amount %i and net fees %i",
+    (discountApproval, expectedRate, expectedDiscount, expectedNetFees) => {
+      const result = applyDiscountRules({ agreedFees: "1000", discountApproval });
+      expect(Number(result.discountPercentage)).toBe(expectedRate);
+      expect(Number(result.discountAmount)).toBe(expectedDiscount);
+      expect(Number(result.netFees)).toBe(expectedNetFees);
+    },
+  );
+
+  it("derives Outstanding from Revenue minus Collected Amount", () => {
+    const result = applyDiscountRules({ revenue: "725.55", collectedAmount: "125.25" });
+    expect(Number(result.outstandingAmount)).toBe(600.3);
+  });
+
+  it("does not add or calculate legacy billed fields", () => {
+    const result = applyDiscountRules({
+      agreedFees: "1000",
+      revenue: "600",
+      billedAmount: "999",
+      remainingAdvanced: "999",
+    });
+    expect(result).not.toHaveProperty("billedAmount");
+    expect(result).not.toHaveProperty("remainingAdvanced");
+  });
+});
 
 /**
  * Revenue is the single ACTIVE amount field (CRM-012). billed_amount and
@@ -56,7 +92,7 @@ describe("Financial amounts — Revenue as the single source", () => {
     }
   });
 
-  it("updating revenue does not resurrect/alter legacy billed_amount", async () => {
+  it("preserves historical billed_amount and remaining_advanced on update", async () => {
     const caller = adminCaller();
     const stamp = Date.now();
     const client = await caller.clients.create({ clientName: `FinUpd ${stamp}`, clientStatus: "Existing Client" });
@@ -64,10 +100,23 @@ describe("Financial amounts — Revenue as the single source", () => {
     try {
       const rec = await caller.financial.create({ clientId: client.id, agreedFees: "1000", revenue: "400" });
       recId = rec.id;
-      const updated = await caller.financial.update({ id: rec.id, revenue: "900" });
+
+      // Simulate a pre-CRM-012 historical row. The application has no public API
+      // for writing these values, so the fixture is prepared directly.
+      await getDb()
+        .update(financialRecords)
+        .set({ billedAmount: "700", remainingAdvanced: "300" })
+        .where(eq(financialRecords.id, rec.id));
+
+      // Internal callers cannot overwrite the historical snapshot either.
+      const updated = await updateFinancialRecord(rec.id, {
+        revenue: "900",
+        billedAmount: "999",
+        remainingAdvanced: "999",
+      }, 1);
       expect(Number(updated.revenue)).toBe(900);
-      // billed_amount remains untouched (NULL for a record created post-CRM-012).
-      expect(updated.billedAmount).toBeNull();
+      expect(Number(updated.billedAmount)).toBe(700);
+      expect(Number(updated.remainingAdvanced)).toBe(300);
     } finally {
       if (recId) await caller.financial.delete({ id: recId });
       await caller.clients.delete({ id: client.id });
@@ -81,10 +130,17 @@ describe("Financial amounts — Revenue as the single source", () => {
     let recId: number | undefined;
     try {
       const before = await caller.financial.summary();
-      const rec = await caller.financial.create({ clientId: client.id, agreedFees: "1000", revenue: "600" });
+      const rec = await caller.financial.create({
+        clientId: client.id,
+        agreedFees: "1000",
+        discountApproval: "CEO",
+        revenue: "600",
+      });
       recId = rec.id;
       const after = await caller.financial.summary();
-      // toBeBilled contribution = 1000 - 600 = 400
+      expect(Number(rec.netFees)).toBe(900);
+      // Current approved formula is agreedFees - revenue = 400. Using netFees
+      // instead would produce 300 and must wait for Finance approval.
       expect(Math.round(after.totalToBeBilled - before.totalToBeBilled)).toBe(400);
       // revenue contribution to totalRevenue = 600
       expect(Math.round(after.totalRevenue - before.totalRevenue)).toBe(600);

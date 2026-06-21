@@ -1118,7 +1118,7 @@ export const appRouter = router({
         // applyDiscountRules and FINANCIAL_FORMULAS.md.
         revenue: z.string().optional(),
         collectedAmount: z.string().optional(),
-        // remainingAdvanced, outstandingAmount are server-computed from billing fields
+        // outstandingAmount is server-computed; remainingAdvanced is legacy/read-only.
         collectionStatus: z.enum(["Not Billed", "Partially Billed", "Billed", "Partially Collected", "Fully Collected", "Overdue"]).default("Not Billed"),
         billingDate: z.string().optional(),
         paymentDate: z.string().optional(),
@@ -1144,7 +1144,7 @@ export const appRouter = router({
         // read-only (CRM-012) — never mirrored. See FINANCIAL_FORMULAS.md.
         revenue: z.string().optional(),
         collectedAmount: z.string().optional(),
-        // remainingAdvanced, outstandingAmount are server-computed
+        // outstandingAmount is server-computed; remainingAdvanced is legacy/read-only.
         collectionStatus: z.enum(["Not Billed", "Partially Billed", "Billed", "Partially Collected", "Fully Collected", "Overdue"]).optional(),
         billingDate: z.string().optional(),
         paymentDate: z.string().optional(),
