@@ -57,11 +57,18 @@ function calcFinancials(f: {
     discountPercentage: String(pct),
     discountAmount:     String(discAmt),
     netFees:            String(netFees),
-    remainingAdvanced:  "0",
     outstandingAmount:  String(Math.max(0, Math.round((revenue - collected) * 100) / 100)),
     toBeBilled:         String(toBeBilled),
     overbilled,
   };
+}
+
+function formatLegacyAmount(value: unknown) {
+  if (value === null || value === undefined || value === "") return "Not set";
+  const amount = Number(value);
+  return Number.isFinite(amount)
+    ? `SAR ${amount.toLocaleString("en-US")}`
+    : String(value);
 }
 
 // ─── Form state ───────────────────────────────────────────────────────────────
@@ -535,16 +542,25 @@ export default function FinancialDialog({
             </div>
           ))}
 
-          {/* ── Derived: Remaining Advanced ──────────────────────────────── */}
-          <div>
-            <Label className="text-xs text-muted-foreground">Remaining Advanced (auto)</Label>
-            <Input value={derived.remainingAdvanced} readOnly className="h-8 text-sm bg-muted" />
+          {/* Legacy accounting fields: display only, never recalculated. */}
+          <div className="col-span-2 rounded-md border bg-muted/30 px-3 py-2">
+            <p className="text-xs font-medium">Legacy read-only fields</p>
+            <div className="mt-1 grid grid-cols-2 gap-3 text-xs text-muted-foreground">
+              <span>Billed Amount: {formatLegacyAmount(record?.billedAmount)}</span>
+              <span>Remaining Advanced: {formatLegacyAmount(record?.remainingAdvanced)}</span>
+            </div>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Historical values are preserved when this record is edited. New records leave both fields blank.
+            </p>
           </div>
 
           {/* ── Derived: Outstanding Amount ──────────────────────────────── */}
           <div>
             <Label className="text-xs text-muted-foreground">Outstanding Amount (auto)</Label>
             <Input value={derived.outstandingAmount} readOnly className="h-8 text-sm bg-muted" />
+            <p className="text-xs text-muted-foreground mt-0.5">
+              = MAX(0, Revenue - Collected Amount)
+            </p>
           </div>
 
           {/* ── Derived: To Be Billed ─────────────────────────────────────── */}

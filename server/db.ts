@@ -142,12 +142,9 @@ function sanitizeClientMatterInput(data: Record<string, unknown>) {
   return out;
 }
 
-// Fixed discount-rate table matching the Excel workbook formula exactly:
-//   N: Discount% = IF(M="P&L Head Lawyers",5%,IF(M="CEO",10%,IF(M="Board",15%,0)))
-//   O: Discount Amount = ROUND(AgreedFees × Discount%, 2)
-//   P: Net Fees = MAX(0, AgreedFees − DiscountAmount)
-//   T: Remaining Advanced = BilledAmount − Revenue
-//   U: Outstanding Amount = MAX(0, BilledAmount − CollectedAmount)
+// Current approved discount rates and formulas. Legacy billed_amount and
+// remaining_advanced formulas are intentionally not applied; see
+// FINANCIAL_FORMULAS.md for the Finance-approval items.
 const DISCOUNT_RATES: Record<string, number> = {
   "N/A": 0,
   "P&L Head Lawyers": 5,
@@ -155,10 +152,14 @@ const DISCOUNT_RATES: Record<string, number> = {
   "Board": 15,
 };
 
-// All financial calculated fields are derived — none are user inputs except
-// discountApproval, agreedFees, billedAmount, revenue, and collectedAmount.
+// Active calculated fields are derived from discountApproval, agreedFees,
+// revenue, and collectedAmount.
 export function applyDiscountRules(data: Record<string, unknown>): Record<string, unknown> {
   const out = { ...data };
+  // Never forward legacy amounts into an INSERT/UPDATE, even if an internal
+  // caller supplies them. Existing database values are preserved separately.
+  delete out.billedAmount;
+  delete out.remainingAdvanced;
 
   const approval = String(out.discountApproval ?? "N/A");
   const pct = DISCOUNT_RATES[approval] ?? 0;
@@ -2544,20 +2545,28 @@ export async function updateFinancialRecord(id: number, data: Partial<InsertFina
   const existing = await getFinancialRecordById(id);
   if (!existing) throw new Error(`Financial record ${id} not found`);
 
+  // Defense in depth for internal callers: the public router does not accept
+  // these legacy fields, and this service must never write them either.
+  const {
+    billedAmount: _legacyBilledAmount,
+    remainingAdvanced: _legacyRemainingAdvanced,
+    ...editableData
+  } = data;
+
   // CRM-010: if the matter link is being set/changed (and not cleared), it must
   // belong to this record's client. clientId is immutable on update.
-  if (data.clientMatterId != null) {
-    await assertMatterBelongsToClient(data.clientMatterId, existing.clientId);
+  if (editableData.clientMatterId != null) {
+    await assertMatterBelongsToClient(editableData.clientMatterId, existing.clientId);
   }
 
   // Only pass the 5 user-editable inputs to applyDiscountRules — never spread
   // the full DB row (which contains id, createdAt, etc.) into SET.
-  // Revenue is the single amount input; billedAmount is derived (alias) from it.
+  // Revenue is the single active amount input. Legacy amounts are excluded.
   const rulesInput = {
-    discountApproval: data.discountApproval ?? existing.discountApproval ?? "N/A",
-    agreedFees:       data.agreedFees       ?? existing.agreedFees,
-    revenue:          data.revenue          ?? existing.revenue,
-    collectedAmount:  data.collectedAmount  ?? existing.collectedAmount,
+    discountApproval: editableData.discountApproval ?? existing.discountApproval ?? "N/A",
+    agreedFees:       editableData.agreedFees       ?? existing.agreedFees,
+    revenue:          editableData.revenue          ?? existing.revenue,
+    collectedAmount:  editableData.collectedAmount  ?? existing.collectedAmount,
   };
   const computed = applyDiscountRules(rulesInput as Record<string, unknown>);
 
@@ -2565,7 +2574,7 @@ export async function updateFinancialRecord(id: number, data: Partial<InsertFina
     .update(financialRecords)
     .set({
       // user-supplied partial update fields
-      ...data,
+      ...editableData,
       // server-computed overrides (always win over any client value).
       // billedAmount + remainingAdvanced are intentionally NOT set here: they are
       // legacy, read-only columns and must keep their historical values (CRM-012).
@@ -2655,7 +2664,7 @@ export async function getToBeBilledBreakdown() {
   const db = getDb();
 
   // Reusable SQL expression: MAX(0, agreedFees - revenue) per row, then SUM.
-  // Revenue is the single amount source (billed_amount is a deprecated alias).
+  // Revenue is the single amount source; legacy billed_amount is not used.
   const tbbSum = sql<string>`COALESCE(SUM(GREATEST(0, COALESCE(${financialRecords.agreedFees}, 0)::numeric - COALESCE(${financialRecords.revenue}, 0)::numeric)), 0)`;
 
   // ── By Client ──────────────────────────────────────────────────────────────

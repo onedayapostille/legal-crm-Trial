@@ -49,16 +49,18 @@ export default function ConflictMatchTable({
   const [, navigate] = useLocation();
 
   return (
-    <div className="rounded-lg border overflow-hidden">
+    // overflow-x-auto: at 6 columns, narrow screens scroll horizontally instead
+    // of squishing/clipping the cells.
+    <div className="rounded-lg border overflow-x-auto">
       <Table>
         <TableHeader>
           <TableRow className="bg-muted/40">
-            <TableHead className="text-xs h-8">Match Type</TableHead>
-            <TableHead className="text-xs h-8">Matched Name</TableHead>
-            <TableHead className="text-xs h-8">Related Client</TableHead>
-            <TableHead className="text-xs h-8">Related Record</TableHead>
-            <TableHead className="text-xs h-8">Status</TableHead>
-            <TableHead className="text-xs h-8">Source</TableHead>
+            <TableHead className="text-xs h-8 whitespace-nowrap">Match Type</TableHead>
+            <TableHead className="text-xs h-8 whitespace-nowrap">Matched Name</TableHead>
+            <TableHead className="text-xs h-8 whitespace-nowrap">Related Client</TableHead>
+            <TableHead className="text-xs h-8 whitespace-nowrap">Related Record</TableHead>
+            <TableHead className="text-xs h-8 whitespace-nowrap">Status</TableHead>
+            <TableHead className="text-xs h-8 whitespace-nowrap">Source</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
