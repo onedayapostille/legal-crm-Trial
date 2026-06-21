@@ -276,7 +276,25 @@ export async function runMigrations() {
     .filter(file => file.endsWith(".sql"))
     .sort();
 
+  // Migration ledger: record applied files so they are not re-executed on every
+  // boot, and so drift between the files on disk and the DB is visible. Each
+  // migration is still written to be individually idempotent, so the ledger is an
+  // optimization + drift signal — NOT a correctness dependency (a fresh DB with no
+  // ledger simply applies everything once, then records it).
+  await client.unsafe(
+    `CREATE TABLE IF NOT EXISTS schema_migrations (
+       filename   text        PRIMARY KEY,
+       applied_at timestamptz NOT NULL DEFAULT now()
+     )`,
+  );
+  const appliedRows = (await client.unsafe(
+    `SELECT filename FROM schema_migrations`,
+  )) as unknown as Array<{ filename: string }>;
+  const applied = new Set(appliedRows.map(r => r.filename));
+
   for (const file of migrationFiles) {
+    if (applied.has(file)) continue; // already recorded as applied
+
     const fullPath = path.resolve(migrationsDir, file);
     const sqlContent = fs.readFileSync(fullPath, "utf-8");
     console.log(`[DB] Running migration from: ${fullPath}`);
@@ -291,6 +309,8 @@ export async function runMigrations() {
         throw err;
       }
     }
+    // Record on success OR on a benign "already exists" (objects are present).
+    await client`INSERT INTO schema_migrations (filename) VALUES (${file}) ON CONFLICT DO NOTHING`;
   }
 }
 
@@ -1504,10 +1524,18 @@ export async function searchConflicts(rawQuery: string): Promise<ConflictMatch[]
 /**
  * Run a conflict check for a (prospective) matter using its name and opposing
  * party. Searches each provided term and de-duplicates by (matchType, recordId).
+ *
+ * `clientId` (the prospective matter's owning client) scopes out FALSE POSITIVES:
+ * by confirmed rule, different clients MAY reuse the same Matter Reference, so a
+ * "Matter" match that belongs to a DIFFERENT client is not a conflict of interest
+ * and is excluded. Genuine conflict signals — an existing Client by that name, an
+ * Opposing Party match, or a same-client matter — are always kept. The standalone
+ * manual search (clients.conflictCheck) passes no clientId and is unaffected.
  */
 export async function checkMatterConflicts(opts: {
   matterName?: string | null;
   opposingParty?: string | null;
+  clientId?: number | null;
 }): Promise<ConflictMatch[]> {
   const terms = [opts.matterName, opts.opposingParty]
     .map(t => (t ?? "").trim())
@@ -1519,6 +1547,11 @@ export async function checkMatterConflicts(opts: {
 
   const seen = new Set<string>();
   return all.filter(m => {
+    // A matter under a DIFFERENT client sharing this reference/type/description is
+    // allowed (references are unique per-client, not globally) — drop it.
+    if (opts.clientId != null && m.matchType === "Matter" && m.clientId !== opts.clientId) {
+      return false;
+    }
     const key = `${m.matchType}:${m.recordId}`;
     if (seen.has(key)) return false;
     seen.add(key);

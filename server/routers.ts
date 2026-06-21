@@ -905,9 +905,16 @@ export const appRouter = router({
       .input(z.object({
         matterName: z.string().optional(),
         opposingParty: z.string().optional(),
+        // Owning client of the prospective matter — scopes out cross-client
+        // Matter Reference matches (different clients may reuse a reference).
+        clientId: z.number().optional(),
       }))
       .query(async ({ input }) =>
-        db.checkMatterConflicts({ matterName: input.matterName, opposingParty: input.opposingParty }),
+        db.checkMatterConflicts({
+          matterName: input.matterName,
+          opposingParty: input.opposingParty,
+          clientId: input.clientId,
+        }),
       ),
 
     listAll: permissionProcedure("clients:view")
@@ -963,6 +970,7 @@ export const appRouter = router({
         const conflicts = await db.checkMatterConflicts({
           matterName: matterInput.matterReference,
           opposingParty: matterInput.opposingParty,
+          clientId: matterInput.clientId,
         });
         if (conflicts.length > 0 && !acknowledgeConflicts) {
           throw new TRPCError({

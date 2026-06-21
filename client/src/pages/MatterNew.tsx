@@ -105,6 +105,7 @@ export default function MatterNew() {
       const conflicts = await utils.clientMatters.checkConflicts.fetch({
         matterName: form.matterReference.trim() || undefined,
         opposingParty: form.opposingParty.trim() || undefined,
+        clientId: Number(clientId),
       });
       if (conflicts.length > 0) {
         setPendingConflicts(conflicts); // warn + require acknowledgement

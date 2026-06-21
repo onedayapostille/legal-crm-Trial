@@ -12,6 +12,7 @@ function createAuthContext(): { ctx: TrpcContext } {
     name: "Test User",
     loginMethod: "manus",
     role: "admin",
+    status: "active",
     createdAt: new Date(),
     updatedAt: new Date(),
     lastSignedIn: new Date(),
@@ -53,7 +54,7 @@ describe("payments.create", () => {
 
     // Create payment record
     const payment = await caller.payments.create({
-      enquiryId: enquiry.id,
+      leadId: enquiry.id,
       matterCode: updatedEnquiry?.matterCode || "MAT-2025-001",
       totalAmount: "50000",
       paymentStatus: "Not Started",
@@ -82,7 +83,7 @@ describe("payments.create", () => {
     const updatedEnquiry = await caller.leads.get({ id: enquiry.id });
 
     const payment = await caller.payments.create({
-      enquiryId: enquiry.id,
+      leadId: enquiry.id,
       matterCode: updatedEnquiry?.matterCode || "MAT-2025-002",
       totalAmount: "100000",
       retainerAmount: "30000",
@@ -116,7 +117,7 @@ describe("payments.update", () => {
     const updatedEnquiry = await caller.leads.get({ id: enquiry.id });
 
     const payment = await caller.payments.create({
-      enquiryId: enquiry.id,
+      leadId: enquiry.id,
       matterCode: updatedEnquiry?.matterCode || "MAT-2025-003",
       totalAmount: "50000",
       paymentStatus: "Not Started",
@@ -153,16 +154,16 @@ describe("payments.getByEnquiry", () => {
     const updatedEnquiry = await caller.leads.get({ id: enquiry.id });
 
     await caller.payments.create({
-      enquiryId: enquiry.id,
+      leadId: enquiry.id,
       matterCode: updatedEnquiry?.matterCode || "MAT-2025-004",
       totalAmount: "75000",
       paymentStatus: "Not Started",
     });
 
-    const retrieved = await caller.payments.getByEnquiry({ enquiryId: enquiry.id });
+    const retrieved = await caller.payments.getByLead({ leadId: enquiry.id });
 
     expect(retrieved).not.toBeNull();
-    expect(retrieved?.enquiryId).toBe(enquiry.id);
+    expect(retrieved?.leadId).toBe(enquiry.id);
   });
 });
 
@@ -176,7 +177,7 @@ describe("payments.list", () => {
     expect(Array.isArray(list)).toBe(true);
     list.forEach(payment => {
       expect(payment).toHaveProperty("id");
-      expect(payment).toHaveProperty("enquiryId");
+      expect(payment).toHaveProperty("leadId");
       expect(payment).toHaveProperty("matterCode");
       expect(payment).toHaveProperty("paymentStatus");
     });

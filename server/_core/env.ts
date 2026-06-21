@@ -1,6 +1,8 @@
 export const ENV = {
   appId: process.env.VITE_APP_ID ?? "",
-  cookieSecret: process.env.JWT_SECRET ?? "",
+  // JWT_SECRET is the primary session-signing secret; AUTH_SECRET is an accepted
+  // fallback (kept consistent with server/_core/auth.ts).
+  cookieSecret: process.env.JWT_SECRET ?? process.env.AUTH_SECRET ?? "",
   databaseUrl: process.env.DATABASE_URL ?? "",
   oAuthServerUrl: process.env.OAUTH_SERVER_URL ?? "",
   ownerOpenId: process.env.OWNER_OPEN_ID ?? "",

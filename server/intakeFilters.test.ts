@@ -84,12 +84,17 @@ describe("Unified intake filters", () => {
     const stamp = Date.now();
     const client = await caller.clients.create({ clientName: `Dated Lead ${stamp}`, clientStatus: "Leads" });
     try {
-      const today = new Date().toISOString().split("T")[0];
-      // Inclusive window covering today → includes it.
-      const inWindow = await caller.clients.list({ clientStatus: "Leads", createdFrom: today, createdTo: today });
+      // Use a ±1-day window around now so the assertion is robust to the
+      // server-local vs UTC date boundary (createdAt is server-local; a bare
+      // toISOString() date is UTC and diverges near midnight UTC).
+      const dayMs = 86_400_000;
+      const from = new Date(Date.now() - dayMs).toISOString().split("T")[0];
+      const to = new Date(Date.now() + dayMs).toISOString().split("T")[0];
+      // Inclusive window covering now → includes the just-created record.
+      const inWindow = await caller.clients.list({ clientStatus: "Leads", createdFrom: from, createdTo: to });
       expect(inWindow.some(c => c.id === client.id)).toBe(true);
 
-      // A window entirely before today → excludes it.
+      // A window entirely in the past → excludes it.
       const before = await caller.clients.list({ clientStatus: "Leads", createdFrom: "2000-01-01", createdTo: "2000-01-02" });
       expect(before.some(c => c.id === client.id)).toBe(false);
     } finally {
