@@ -1,66 +1,15 @@
-# Secrets (DATABASE_URL, JWT_SECRET, …) are passed at RUNTIME, never baked into
-# the image.
-#
-# ⚠️  SCOPE: This file is ONLY for LOCAL or SELF-HOSTED Docker Compose runs.
-# The hosted Dublyo deployment does NOT use this file. Dublyo builds the
-# `Dockerfile` and injects "App Settings" variables straight into the running
-# container — it never interpolates the `${VAR}` values below. So editing this
-# `environment:` block has ZERO effect on the live Dublyo app; for that, set the
-# vars in Dublyo App Settings and "Save & Redeploy", then confirm with:
-#     curl https://<your-app>.dublyo.co/health    # want databaseUrlSet:true
-#
-# For local/self-hosted compose only: Docker Compose does NOT forward the host
-# environment into the container automatically — each variable must be listed
-# under `environment:`. The `${VAR}` values below are interpolated from your
-# shell env or a local, git-ignored `.env` file (Compose auto-loads it). Nothing
-# is hard-coded here.
 services:
   app:
     build: .
     ports:
       - "3000:3000"
     environment:
-      # Either provide DATABASE_URL directly...
-      # Do not silently replace missing production secrets with empty strings.
-      # A failed deployment is actionable; a running app with a broken login is not.
-      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set in App Settings}
-      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in App Settings}
-      AUTH_SECRET: ${AUTH_SECRET:-}
-      # ...or provide the parts and the app builds DATABASE_URL (URL-encoding the
-      # password, so POSTGRES_PASSWORD can contain raw special chars like '#').
-      POSTGRES_USER: ${POSTGRES_USER:-}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
-      POSTGRES_HOST: ${POSTGRES_HOST:-}
-      POSTGRES_PORT: ${POSTGRES_PORT:-}
-      POSTGRES_DB: ${POSTGRES_DB:-}
-      # Set to "require" for managed DBs that need SSL (e.g. Supabase is auto).
-      POSTGRES_SSLMODE: ${POSTGRES_SSLMODE:-}
-      # First-run admin seed (only used when the users table is empty).
-      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
-      ADMIN_NAME: ${ADMIN_NAME:-}
-      # Server
-      NODE_ENV: ${NODE_ENV:-production}
-      PORT: ${PORT:-3000}
-      APP_URL: ${APP_URL:-}
+      NODE_ENV: "production"
+      PORT: "3000"
+      DATABASE_URL: "postgresql://postgres.pdjqncgbuclsugqbcyhe:Anoosve%23%23*S@aws-1-eu-central-1.pooler.supabase.com:5432/postgres?sslmode=require"
+      JWT_SECRET: "073e52ef97cca9d46f33c2964f10d8506bdd1aae3a9a1efed98540b67e05f841"
+      AUTH_SECRET: "073e52ef97cca9d46f33c2964f10d8506bdd1aae3a9a1efed98540b67e05f841"
+      ADMIN_EMAIL: "admin@legalcrm.com"
+      ADMIN_NAME: "System Administrator"
+      ADMIN_PASSWORD: "Admin405060#"
     restart: unless-stopped
-
-  # ── Optional local PostgreSQL for development ────────────────────────────────
-  # Uncomment to run a throwaway local database. Then set, in your .env:
-  #   DATABASE_URL=postgresql://postgres:postgres@db:5432/legal_crm
-  # ("db" is the service hostname from inside compose; use localhost:5432 from
-  # your host machine). Do NOT use these demo credentials in production.
-  # db:
-  #   image: postgres:16-alpine
-  #   environment:
-  #     POSTGRES_USER: postgres
-  #     POSTGRES_PASSWORD: postgres
-  #     POSTGRES_DB: legal_crm
-  #   ports:
-  #     - "5432:5432"
-  #   volumes:
-  #     - pgdata:/var/lib/postgresql/data
-  #   restart: unless-stopped
-
-# volumes:
-#   pgdata:
