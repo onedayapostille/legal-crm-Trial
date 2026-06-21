@@ -1087,6 +1087,7 @@ function MatterDialog({
       const conflicts = await utils.clientMatters.checkConflicts.fetch({
         matterName: form.matterReference.trim() || undefined,
         opposingParty: form.opposingParty.trim() || undefined,
+        clientId,
       });
       if (conflicts.length > 0) {
         setPendingConflicts(conflicts);

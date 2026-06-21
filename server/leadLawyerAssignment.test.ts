@@ -73,6 +73,11 @@ describe("Suggested Lead Lawyer assignment", () => {
       expect(note!.body).toContain(lead.clientName!);
       expect(await lawyerCaller.notifications.unreadCount()).toBeGreaterThan(0);
     } finally {
+      // createLead mirrors the enquiry into a client (+client_lead_details that
+      // references the assignee); remove the mirror so the lawyer can be deleted.
+      for (const c of await caller.clients.list({ search: `LeadLawyer ${stamp}` })) {
+        await caller.clients.delete({ id: c.id });
+      }
       if (leadId) await caller.leads.delete({ id: leadId });
       await caller.users.delete({ userId:lawyer.id });
     }
@@ -111,6 +116,11 @@ describe("Suggested Lead Lawyer assignment", () => {
       const row = onlyL1.find(l => l.id === leadA.id) as any;
       expect(row.assignedToName).toBe(l1.name);
     } finally {
+      // Remove the client mirrors createLead synced for each enquiry (they hold a
+      // client_lead_details row referencing the assignee).
+      for (const c of await caller.clients.list({ search: `LeadLawyer ${stamp}` })) {
+        await caller.clients.delete({ id: c.id });
+      }
       await caller.leads.delete({ id: leadA.id });
       await caller.leads.delete({ id: leadB.id });
       await caller.users.delete({ userId:l1.id });

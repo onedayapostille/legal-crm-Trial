@@ -27,6 +27,13 @@ const STATUS_COLORS: Record<string, string> = {
   Rejected: "bg-red-100 text-red-800 border-red-200",
 };
 
+// Where each match was found — surfaced as a manager-friendly "Source" column.
+const SOURCE_LABELS: Record<ConflictMatch["matchType"], string> = {
+  Client: "Clients register",
+  Matter: "Matters register",
+  "Opposing Party": "Opposing-party field",
+};
+
 /**
  * Renders normalized conflict matches with match type, matched name, current
  * status, owning client, and the matched record id. Used by both the standalone
@@ -48,9 +55,10 @@ export default function ConflictMatchTable({
           <TableRow className="bg-muted/40">
             <TableHead className="text-xs h-8">Match Type</TableHead>
             <TableHead className="text-xs h-8">Matched Name</TableHead>
+            <TableHead className="text-xs h-8">Related Client</TableHead>
+            <TableHead className="text-xs h-8">Related Record</TableHead>
             <TableHead className="text-xs h-8">Status</TableHead>
-            <TableHead className="text-xs h-8">Client</TableHead>
-            <TableHead className="text-xs h-8 text-right">Record&nbsp;ID</TableHead>
+            <TableHead className="text-xs h-8">Source</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -69,15 +77,16 @@ export default function ConflictMatchTable({
                   {m.name}
                 </button>
               </TableCell>
+              <TableCell className="py-2 text-muted-foreground">{m.clientName}</TableCell>
+              <TableCell className="py-2 font-mono text-muted-foreground">
+                {m.matchType === "Client" ? "Client" : "Matter"}&nbsp;#{m.recordId}
+              </TableCell>
               <TableCell className="py-2">
                 <Badge variant="outline" className={`text-xs ${STATUS_COLORS[m.status] ?? ""}`}>
                   {m.status}
                 </Badge>
               </TableCell>
-              <TableCell className="py-2 text-muted-foreground">{m.clientName}</TableCell>
-              <TableCell className="py-2 text-right font-mono text-muted-foreground">
-                #{m.recordId}
-              </TableCell>
+              <TableCell className="py-2 text-muted-foreground">{SOURCE_LABELS[m.matchType]}</TableCell>
             </TableRow>
           ))}
         </TableBody>
