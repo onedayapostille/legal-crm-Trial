@@ -7,6 +7,23 @@
 
 ---
 
+> ## ✅ Resolution Update (remaining issues actioned)
+>
+> Following this audit, the remaining Medium/Low issues were addressed (the single **High** item is a non-code Finance sign-off and remains open by nature):
+>
+> | Issue | Sev | Status | What changed |
+> |---|---|---|---|
+> | Local Postgres not persistent | Medium | ✅ Resolved | Added idempotent `scripts/start-local-db.ps1` + a per-user **Startup-folder launcher** (`start-legalcrm-db.cmd`) so the DB auto-starts at logon (no admin needed; Windows service / `schtasks ONLOGON` both require elevation here). |
+> | No seed matters/financial for E2E QA | Medium | ✅ Resolved | Added idempotent `scripts/seed-demo.ts` → demo client "DEMO - Northwind Trading" with matters **NW-001** (Corporate) + **NW-002** (Litigation) and a matter-linked financial record. It also live-validates CRM-012: `billed_amount` stays **NULL** (not mirrored), discount/net/outstanding compute correctly (10% CEO discount → net 90,000; outstanding 20,000). |
+> | Orphaned dev-DB test data | Medium | ✅ Resolved | `scripts/cleanup-test-data.sql` (transactional, idempotent) removed **161 `@x.com` test users (162 → 1)**; admin + the 9 real clients + demo data preserved. Note: a few orphaned *test clients/leads* remain (harder to identify safely by name) — left intentionally; future test runs now self-clean. |
+> | Conflict popup width (6 cols) | Low | ✅ Resolved | `ConflictMatchTable.tsx` wrapper → `overflow-x-auto` + `whitespace-nowrap` headers (scrolls on narrow screens instead of squishing). |
+> | Minor copy | Low | ➖ No change | No concrete copy defect identified; not changed to avoid churn. |
+> | **Finance formula sign-off** | **High** | ⏸️ **Open (by design)** | Requires Finance to confirm `To Be Billed`/`Outstanding` bases + legacy `billed_amount` disposition — documented in `FINANCIAL_FORMULAS.md`. Engineering will not change formulas without sign-off. |
+>
+> Verification after changes: `tsc --noEmit` clean · conflict/original-serial suites 16/16 · app `/health/db` ok · demo data present. New files are dev tooling only (no business-logic/migration changes).
+
+---
+
 ## 1. Executive Summary
 
 * **Overall status:** ✅ **Safe to continue development.** Core matter/conflict/financial/lawyer logic is implemented and covered by a green test suite.
