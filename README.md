@@ -70,15 +70,66 @@ hard-coded in source, the `Dockerfile`, or any committed file:
   values themselves. See **Troubleshooting** below.
 
 > **⚠️ Credential rotation (action required outside the codebase).**
-> Earlier commits baked a real `DATABASE_URL` (Supabase) and `JWT_SECRET` into
-> the `Dockerfile`. Removing them from the working tree does **not** remove them
-> from git history or from any image already built. Before delivery you MUST:
+> Earlier commits baked a real `DATABASE_URL` (Supabase), `JWT_SECRET`, and
+> `ADMIN_PASSWORD` into the `Dockerfile` and `docker-compose.yml`. Removing them
+> from the working tree does **not** remove them from git history or from any
+> image already built. Before delivery you MUST:
 > 1. Rotate the Supabase database password (and re-issue the connection string).
 > 2. Generate a new `JWT_SECRET` (`openssl rand -hex 32`). Rotating it
 >    invalidates existing sessions, which is the desired effect.
-> 3. Update the deployment secret store / `.env` with the new values.
-> 4. Optionally purge the secrets from git history (e.g. `git filter-repo`) and
+> 3. Change the admin account password (the old `ADMIN_PASSWORD` is exposed).
+> 4. Update the deployment secret store / `.env` with the new values.
+> 5. Optionally purge the secrets from git history (e.g. `git filter-repo`) and
 >    force-push, coordinating with the team.
+
+## Deployment
+
+The app reads every secret from `process.env` at runtime — nothing is hard-coded
+in source, the `Dockerfile`, or `docker-compose.yml`. The compose file only
+references variable **names** as placeholders (e.g. `DATABASE_URL: ${DATABASE_URL}`);
+the real values come from the environment at run time.
+
+To deploy:
+
+1. In your hosting platform, open **App Settings → Edit Environment Variables**
+   and add the real runtime values (do **not** commit them anywhere):
+
+   ```env
+   DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DB_NAME?sslmode=require
+   JWT_SECRET=<secure-random-secret>          # generate: openssl rand -hex 32
+   NODE_ENV=production
+   ```
+
+   These variables must be scoped to **runtime** (not build-only). `AUTH_SECRET`
+   is accepted as a fallback for `JWT_SECRET`; set `ADMIN_EMAIL` /
+   `ADMIN_PASSWORD` only for the first-admin seed.
+
+2. **Save & Redeploy** — a full rebuild/redeploy, not just a restart — so the
+   running container receives the new values.
+
+3. Verify the *running container* actually got them (the endpoint exposes
+   booleans only, never the secret values):
+
+   ```bash
+   curl https://<your-app>/health
+   ```
+
+   ```json
+   {
+     "databaseUrlSet": true,
+     "jwtSecretSet": true
+   }
+   ```
+
+   If either is `false` after a clean redeploy, the values were not injected into
+   the container's runtime environment — re-check the variable names and runtime
+   scope in App Settings (see **Troubleshooting** below). Editing
+   `docker-compose.yml` has no effect on a platform that builds from the
+   `Dockerfile`.
+
+When running the compose file yourself, supply the values via a git-ignored
+`.env` file in the same directory (Compose interpolates `${DATABASE_URL}` etc.
+from it) or via your shell environment.
 
 ## Local Development
 

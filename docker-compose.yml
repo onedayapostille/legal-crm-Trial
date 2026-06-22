@@ -3,13 +3,17 @@ services:
     build: .
     ports:
       - "3000:3000"
+    # Secrets are NEVER hard-coded here. Each value below is a placeholder
+    # reference resolved at runtime from the container's environment (e.g. an
+    # .env file, or the hosting platform's Environment Variables settings).
+    # See README → "Deployment" and ".env.example".
     environment:
-      NODE_ENV: "production"
-      PORT: "3000"
-      DATABASE_URL: "postgresql://postgres.pdjqncgbuclsugqbcyhe:Anoosve%23%23*S@aws-1-eu-central-1.pooler.supabase.com:5432/postgres?sslmode=require"
-      JWT_SECRET: "073e52ef97cca9d46f33c2964f10d8506bdd1aae3a9a1efed98540b67e05f841"
-      AUTH_SECRET: "073e52ef97cca9d46f33c2964f10d8506bdd1aae3a9a1efed98540b67e05f841"
-      ADMIN_EMAIL: "admin@legalcrm.com"
-      ADMIN_NAME: "System Administrator"
-      ADMIN_PASSWORD: "Admin405060#"
+      NODE_ENV: production
+      PORT: ${PORT:-3000}
+      DATABASE_URL: ${DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      AUTH_SECRET: ${AUTH_SECRET}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_NAME: ${ADMIN_NAME}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
     restart: unless-stopped
