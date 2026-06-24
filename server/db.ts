@@ -1754,21 +1754,31 @@ export function conversionRangeStart(range: ConversionRange, now: Date): Date | 
 }
 
 /**
- * Dashboard "Conversion Rate" KPI.
+ * Conversion Rate KPI — the single source of truth for every Conversion Rate
+ * display (dashboard card, KPI dashboard, reports). It reads the canonical
+ * Leads Pipeline (the `clients` intake model), NOT the legacy `leads` table and
+ * NOT the revenue "Pipeline" (pipeline-forecast). Those are kept separate by
+ * design so lead-to-client conversion is never mixed with revenue/workflow data.
  *
- *   Conversion Rate = converted clients / total intake * 100
+ *   Conversion Rate = converted leads / total leads * 100
  *
- *   - total intake     = clients whose intake channel is Lead or Enquiry
- *                        (Direct walk-ins are excluded). Reported split as
- *                        totalLeads + totalEnquiries.
- *   - converted clients = those intake clients that reached "Existing Client"
- *                         (Active). Direct clients can never be "converted".
+ *   - total leads     = intake whose channel is Lead or Enquiry — i.e. every
+ *                       valid lead (Direct walk-ins are NOT leads, so excluded).
+ *                       Rejected/Lost leads REMAIN in the denominator. Reported
+ *                       split as totalLeads + totalEnquiries.
+ *   - converted leads = those leads that became clients. In the canonical model a
+ *                       lead "became a client" exactly when its mirror reached
+ *                       clientStatus "Existing Client" — which is what the lead
+ *                       statuses "Converted"/"Existing Client", a linked client,
+ *                       and a non-null conversion date all collapse to here.
  *
  * Because the numerator is a strict subset of the denominator, the rate is
- * always between 0 and 100. The rate is rounded to one decimal place.
+ * always between 0 and 100, rounded to one decimal place, and is 0 (never NaN)
+ * when there are no leads in the period.
  *
- * The optional `range` bounds clients by createdAt (intake date): this month,
- * this quarter, or all time.
+ * Cohort filter: `range` bounds leads by createdAt (lead creation date): this
+ * month, this quarter, or all time. Monthly/Quarterly rate = leads CREATED in
+ * the period that converted / total leads CREATED in the period.
  */
 export async function getClientConversionMetrics(
   range: ConversionRange = "all",
@@ -1807,10 +1817,13 @@ export async function getClientConversionMetrics(
 
   return {
     range,
+    period: range,            // alias: the selected period (month | quarter | all)
     convertedClients,
+    converted: convertedClients, // alias: "Converted leads count"
     totalLeads,
     totalEnquiries,
     totalIntake,
+    total: totalIntake,       // alias: "Total leads count"
     conversionRate,
   };
 }

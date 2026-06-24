@@ -4,6 +4,13 @@ import { Loader2, TrendingUp, Users, DollarSign, Target, Clock, CheckCircle } fr
 
 export default function KPIDashboard() {
   const { data: metrics, isLoading } = trpc.leads.kpiMetrics.useQuery();
+  // Conversion Rate uses the SAME canonical source as the main dashboard
+  // (clients.conversionMetrics) so every page reports an identical rate. The
+  // leads.kpiMetrics query above is kept only for enquiry-volume + revenue cards.
+  const { data: conversion } = trpc.clients.conversionMetrics.useQuery({ range: "all" });
+  const convertedLeads = conversion?.converted ?? 0;
+  const totalLeadsCanonical = conversion?.total ?? 0;
+  const conversionRate = conversion?.conversionRate ?? 0;
 
   if (isLoading) {
     return (
@@ -32,16 +39,18 @@ export default function KPIDashboard() {
     },
     {
       title: "Converted",
-      value: metrics?.convertedLeads || 0,
-      description: "Successfully closed",
+      value: convertedLeads,
+      description: "Leads that became clients",
       icon: CheckCircle,
       color: "text-green-600",
       bgColor: "bg-green-100",
     },
     {
       title: "Conversion Rate",
-      value: `${metrics?.conversionRate.toFixed(1) || 0}%`,
-      description: "Success rate",
+      value: `${conversionRate.toFixed(1)}%`,
+      description: totalLeadsCanonical > 0
+        ? `${convertedLeads} of ${totalLeadsCanonical} leads · all time`
+        : "No leads yet",
       icon: Target,
       color: "text-orange-600",
       bgColor: "bg-orange-100",
@@ -111,8 +120,8 @@ export default function KPIDashboard() {
             <div className="space-y-2">
               <h4 className="font-semibold text-gray-900">Conversion Performance</h4>
               <p className="text-sm text-gray-600">
-                Your conversion rate is <strong>{metrics?.conversionRate.toFixed(1) || 0}%</strong>, 
-                with <strong>{metrics?.convertedLeads || 0}</strong> successfully converted enquiries.
+                Your conversion rate is <strong>{conversionRate.toFixed(1)}%</strong>,
+                with <strong>{convertedLeads}</strong> of <strong>{totalLeadsCanonical}</strong> leads converted into clients.
               </p>
             </div>
             <div className="space-y-2">
@@ -127,13 +136,13 @@ export default function KPIDashboard() {
             <div className="space-y-2">
               <h4 className="font-semibold text-gray-900">Growth Opportunity</h4>
               <p className="text-sm text-gray-600">
-                {metrics && metrics.totalLeads > 0 && metrics.conversionRate < 50 ? (
+                {totalLeadsCanonical > 0 && conversionRate < 50 ? (
                   <>
-                    There are <strong>{metrics.totalLeads - metrics.convertedLeads}</strong> enquiries 
+                    There are <strong>{totalLeadsCanonical - convertedLeads}</strong> leads
                     that could potentially be converted with proper follow-up.
                   </>
                 ) : (
-                  "Continue tracking enquiries to identify growth opportunities."
+                  "Continue tracking leads to identify growth opportunities."
                 )}
               </p>
             </div>

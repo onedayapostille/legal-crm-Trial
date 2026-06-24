@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { appRouter } from "./routers";
-import { conversionRangeStart } from "./db";
+import { conversionRangeStart, getDb } from "./db";
+import { clients } from "../drizzle/schema";
+import { eq, sql } from "drizzle-orm";
 import type { TrpcContext } from "./_core/context";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
@@ -129,6 +131,134 @@ describe("clients.conversionMetrics — converted / intake * 100", () => {
       expect(after.convertedClients - before.convertedClients).toBe(3);
     } finally {
       await cleanup();
+    }
+  });
+});
+
+// ─── Cohort (period) + edge-case behavior, per spec ───────────────────────────
+describe("Conversion Rate — period cohorts and edge cases", () => {
+  const caller = () => appRouter.createCaller(createAuthContext().ctx);
+
+  /** Create a canonical lead client (defaults createdAt = now). */
+  async function makeLead(c: ReturnType<typeof caller>, opts: {
+    convertedFrom?: "Lead" | "Enquiry"; clientStatus: "Existing Client" | "Leads" | "Rejected";
+  }) {
+    return c.clients.create({
+      clientName: `Cohort ${Date.now()}-${Math.round(Math.random() * 1e6)}`,
+      convertedFrom: opts.convertedFrom ?? "Lead",
+      clientStatus: opts.clientStatus,
+    });
+  }
+
+  it("a lead created+converted today is counted in the monthly conversion", async () => {
+    const c = caller();
+    const before = await c.clients.conversionMetrics({ range: "month" });
+    const lead = await makeLead(c, { clientStatus: "Existing Client" }); // created now, converted
+    try {
+      const after = await c.clients.conversionMetrics({ range: "month" });
+      expect(after.total - before.total).toBe(1);
+      expect(after.converted - before.converted).toBe(1);
+    } finally {
+      await c.clients.delete({ id: lead.id });
+    }
+  });
+
+  it("a lead created this quarter and converted is counted in the quarterly conversion", async () => {
+    const c = caller();
+    const before = await c.clients.conversionMetrics({ range: "quarter" });
+    const lead = await makeLead(c, { clientStatus: "Existing Client" });
+    try {
+      const after = await c.clients.conversionMetrics({ range: "quarter" });
+      expect(after.total - before.total).toBe(1);
+      expect(after.converted - before.converted).toBe(1);
+    } finally {
+      await c.clients.delete({ id: lead.id });
+    }
+  });
+
+  it("a lead created OUTSIDE the period is not counted in month/quarter (but is in all-time)", async () => {
+    const c = caller();
+    const beforeMonth = await c.clients.conversionMetrics({ range: "month" });
+    const beforeQuarter = await c.clients.conversionMetrics({ range: "quarter" });
+    const beforeAll = await c.clients.conversionMetrics({ range: "all" });
+
+    const lead = await makeLead(c, { clientStatus: "Existing Client" });
+    // Backdate creation to ~200 days ago → previous quarter (and previous month).
+    await getDb().update(clients)
+      .set({ createdAt: sql`NOW() - make_interval(days => 200)` })
+      .where(eq(clients.id, lead.id));
+    try {
+      const afterMonth = await c.clients.conversionMetrics({ range: "month" });
+      const afterQuarter = await c.clients.conversionMetrics({ range: "quarter" });
+      const afterAll = await c.clients.conversionMetrics({ range: "all" });
+
+      expect(afterMonth.total - beforeMonth.total).toBe(0);     // not in this month
+      expect(afterQuarter.total - beforeQuarter.total).toBe(0); // not in this quarter
+      expect(afterAll.total - beforeAll.total).toBe(1);         // but counted all-time
+      expect(afterAll.converted - beforeAll.converted).toBe(1);
+    } finally {
+      await c.clients.delete({ id: lead.id });
+    }
+  });
+
+  it("a rejected lead stays in TOTAL leads but not in CONVERTED", async () => {
+    const c = caller();
+    const before = await c.clients.conversionMetrics({ range: "all" });
+    const lead = await makeLead(c, { convertedFrom: "Enquiry", clientStatus: "Rejected" });
+    try {
+      const after = await c.clients.conversionMetrics({ range: "all" });
+      expect(after.total - before.total).toBe(1);       // counted in denominator
+      expect(after.converted - before.converted).toBe(0); // never in numerator
+    } finally {
+      await c.clients.delete({ id: lead.id });
+    }
+  });
+
+  it("a lead that became a client (linked client) is counted as converted", async () => {
+    const c = caller();
+    const before = await c.clients.conversionMetrics({ range: "all" });
+    const lead = await makeLead(c, { clientStatus: "Existing Client" });
+    try {
+      const after = await c.clients.conversionMetrics({ range: "all" });
+      expect(after.converted - before.converted).toBe(1);
+    } finally {
+      await c.clients.delete({ id: lead.id });
+    }
+  });
+
+  it("unconverted leads contribute 0 to the numerator (rate is 0% for them) and never NaN", async () => {
+    const c = caller();
+    const before = await c.clients.conversionMetrics({ range: "all" });
+    const a = await makeLead(c, { clientStatus: "Leads" });
+    const b = await makeLead(c, { clientStatus: "Leads" });
+    try {
+      const after = await c.clients.conversionMetrics({ range: "all" });
+      expect(after.total - before.total).toBe(2);        // both counted as leads
+      expect(after.converted - before.converted).toBe(0); // none converted → 0% contribution
+      expect(Number.isFinite(after.conversionRate)).toBe(true);
+      expect(Number.isNaN(after.conversionRate)).toBe(false);
+    } finally {
+      await c.clients.delete({ id: a.id });
+      await c.clients.delete({ id: b.id });
+    }
+  });
+
+  it("conversion rate updates immediately when a lead is converted into a client", async () => {
+    const c = caller();
+    // Start as an unconverted Lead.
+    const lead = await makeLead(c, { clientStatus: "Leads" });
+    try {
+      const before = await c.clients.conversionMetrics({ range: "all" });
+      expect(before.total).toBeGreaterThan(0);
+
+      // Convert it (Leads → Existing Client) and re-read — no caching, recomputed live.
+      await c.clients.update({ id: lead.id, clientStatus: "Existing Client" });
+      const after = await c.clients.conversionMetrics({ range: "all" });
+
+      expect(after.total - before.total).toBe(0);          // same lead, denominator unchanged
+      expect(after.converted - before.converted).toBe(1);  // now counted as converted
+    } finally {
+      await c.clients.delete({ id: lead.id });
     }
   });
 });
