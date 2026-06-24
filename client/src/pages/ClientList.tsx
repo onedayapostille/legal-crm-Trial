@@ -69,6 +69,8 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
   const updateStatus = trpc.clients.update.useMutation({
     onSuccess: () => {
       toast.success("Status updated");
+      utils.dashboard.stats.invalidate();
+      utils.leads.kpiMetrics.invalidate();
       utils.clients.list.invalidate();
       utils.clients.statusCounts.invalidate();
       utils.clients.recentLeads.invalidate();

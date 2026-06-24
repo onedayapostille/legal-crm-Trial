@@ -1357,9 +1357,13 @@ export const appRouter = router({
           });
           answer = (result.content ?? "").trim() || NVIDIA_UNAVAILABLE_MESSAGE;
           if (answer === NVIDIA_UNAVAILABLE_MESSAGE) ok = false;
-        } catch {
+        } catch (err: any) {
           ok = false;
           answer = NVIDIA_UNAVAILABLE_MESSAGE;
+          // Key-safe diagnostic in server logs (status + redacted detail, no key).
+          const status = err?.status ?? "n/a";
+          const detail = String(err?.detail ?? err?.message ?? "").slice(0, 200);
+          console.warn(`[AI] ask failed (status=${status}): ${detail}`);
         }
 
         // dataScope lists section NAMES only (no raw values leave the server here).

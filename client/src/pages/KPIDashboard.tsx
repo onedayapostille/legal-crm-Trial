@@ -8,8 +8,8 @@ export default function KPIDashboard() {
   // (clients.conversionMetrics) so every page reports an identical rate. The
   // leads.kpiMetrics query above is kept only for enquiry-volume + revenue cards.
   const { data: conversion } = trpc.clients.conversionMetrics.useQuery({ range: "all" });
-  const convertedLeads = conversion?.converted ?? 0;
-  const totalLeadsCanonical = conversion?.total ?? 0;
+  const convertedLeads = conversion?.convertedLeads ?? conversion?.converted ?? 0;
+  const totalLeadsCanonical = conversion?.totalLeads ?? conversion?.total ?? 0;
   const conversionRate = conversion?.conversionRate ?? 0;
 
   if (isLoading) {
@@ -48,9 +48,7 @@ export default function KPIDashboard() {
     {
       title: "Conversion Rate",
       value: `${conversionRate.toFixed(1)}%`,
-      description: totalLeadsCanonical > 0
-        ? `${convertedLeads} of ${totalLeadsCanonical} leads · all time`
-        : "No leads yet",
+      description: `${convertedLeads} converted / ${totalLeadsCanonical} leads - All Time`,
       icon: Target,
       color: "text-orange-600",
       bgColor: "bg-orange-100",

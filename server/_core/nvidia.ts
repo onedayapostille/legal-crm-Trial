@@ -39,6 +39,17 @@ export type NvidiaChatResult = {
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
 };
 
+/**
+ * Strip anything that looks like an NVIDIA key (and the configured key itself)
+ * from any string before it is logged or returned — defense in depth so a
+ * diagnostic message can never leak credentials.
+ */
+export function redactKey(text: string): string {
+  let out = (text ?? "").replace(/nvapi-[A-Za-z0-9_\-]+/g, "nvapi-***");
+  if (ENV.nvidiaApiKey) out = out.split(ENV.nvidiaApiKey).join("***");
+  return out;
+}
+
 /** True when a non-empty NVIDIA_API_KEY is present in the server environment. */
 export function isNvidiaConfigured(): boolean {
   return ENV.nvidiaApiKey.trim().length > 0;
@@ -90,10 +101,14 @@ export async function callNvidiaChat(opts: NvidiaChatOptions): Promise<NvidiaCha
     });
 
     if (!response.ok) {
-      // Surface status + a truncated provider message for diagnostics — but the
-      // request body/headers (and therefore the key) are never echoed here.
-      const detail = await response.text().catch(() => "");
-      throw new Error(`NVIDIA API error ${response.status}: ${detail.slice(0, 500)}`);
+      // Surface status + a truncated provider message for diagnostics — the
+      // request body/headers (and the key) are never echoed, and any key-shaped
+      // text in the provider's response is redacted.
+      const body = await response.text().catch(() => "");
+      const err: any = new Error(`NVIDIA API error ${response.status}`);
+      err.status = response.status;
+      err.detail = redactKey(body).slice(0, 500);
+      throw err;
     }
 
     const data: any = await response.json();
@@ -113,11 +128,16 @@ export async function callNvidiaChat(opts: NvidiaChatOptions): Promise<NvidiaCha
 export async function testNvidiaConnection(): Promise<{
   ok: boolean;
   message: string;
+  configured: boolean;
   model?: string;
   sample?: string;
+  /** HTTP status from NVIDIA on failure (e.g. 401 bad key, 404 unknown model). */
+  status?: number | null;
+  /** Truncated, key-redacted provider error — safe to show to an admin. */
+  detail?: string;
 }> {
   if (!isNvidiaConfigured()) {
-    return { ok: false, message: NVIDIA_NOT_CONFIGURED_MESSAGE };
+    return { ok: false, configured: false, message: NVIDIA_NOT_CONFIGURED_MESSAGE };
   }
   try {
     const result = await callNvidiaChat({
@@ -130,12 +150,27 @@ export async function testNvidiaConnection(): Promise<{
     });
     return {
       ok: true,
+      configured: true,
       message: "NVIDIA API reachable.",
       model: result.model,
       sample: result.content.slice(0, 200),
     };
-  } catch {
-    // Never leak the underlying error/key to the caller.
-    return { ok: false, message: NVIDIA_UNAVAILABLE_MESSAGE };
+  } catch (err: any) {
+    const status: number | null = err?.status ?? null;
+    const detail = redactKey(String(err?.detail ?? err?.message ?? "")).slice(0, 300);
+    // Key-safe server log so the cause is visible in container logs too.
+    console.warn(`[NVIDIA] connection test failed (status=${status ?? "n/a"}): ${detail || "no detail"}`);
+    return {
+      ok: false,
+      configured: true,
+      // Admin-facing message includes the real status/detail (never the key).
+      message: status === 401
+        ? "NVIDIA rejected the API key (401). Check NVIDIA_API_KEY."
+        : status === 404
+        ? "NVIDIA could not find the model (404). Check NVIDIA_MODEL."
+        : NVIDIA_UNAVAILABLE_MESSAGE,
+      status,
+      detail,
+    };
   }
 }

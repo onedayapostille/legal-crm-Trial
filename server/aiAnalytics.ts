@@ -96,8 +96,8 @@ export async function getConversionRate(period: AiPeriod) {
   return {
     period: PERIOD_LABEL[period],
     conversionRate: m.conversionRate,
-    convertedLeads: m.converted,
-    totalLeads: m.total,
+    convertedLeads: m.convertedLeads,
+    totalLeads: m.totalLeads,
   };
 }
 
