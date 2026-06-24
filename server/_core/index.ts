@@ -126,6 +126,8 @@ async function startServer() {
       "POSTGRES_PORT", "POSTGRES_DB", "POSTGRES_SSLMODE",
       "ADMIN_EMAIL", "ADMIN_NAME", "ADMIN_PASSWORD",
       "NODE_ENV", "PORT", "APP_URL",
+      // AI Assistant — presence only (booleans). The KEY VALUE is never exposed.
+      "NVIDIA_API_KEY", "NVIDIA_BASE_URL", "NVIDIA_MODEL",
     ];
     const envPresence: Record<string, boolean> = {};
     for (const key of EXPECTED_ENV_KEYS) {
