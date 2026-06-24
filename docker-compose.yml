@@ -16,4 +16,9 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL}
       ADMIN_NAME: ${ADMIN_NAME}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      # AI Assistant (NVIDIA NIM) — server-side only. Only NVIDIA_API_KEY must be
+      # supplied; base URL and model fall back to working defaults if unset.
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_BASE_URL: ${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      NVIDIA_MODEL: ${NVIDIA_MODEL:-google/diffusiongemma-26b-a4b-it}
     restart: unless-stopped
