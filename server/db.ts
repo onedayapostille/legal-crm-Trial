@@ -792,6 +792,9 @@ export async function getLeadStatusSummary() {
 
 export async function getLeadKpiMetrics(viewer?: TaskViewer) {
   const db = getDb();
+  const canonicalConversion = await getClientConversionMetrics("all");
+  const canonicalMonth = await getClientConversionMetrics("month");
+
   const [totalRow] = await db.select({ count: count() }).from(leads);
   const total = Number(totalRow?.count ?? 0);
 
@@ -839,10 +842,14 @@ export async function getLeadKpiMetrics(viewer?: TaskViewer) {
   const pendingTasks = Number(pendingTaskRow?.count ?? 0);
 
   return {
-    totalLeads: total,
-    newLeads: thisMonth,
-    convertedLeads: converted,
-    conversionRate: total > 0 ? Math.round((converted / total) * 100) : 0,
+    totalLeads: canonicalConversion.totalLeads,
+    legacyTotalLeads: total,
+    newLeads: canonicalMonth.totalLeads,
+    legacyNewLeads: thisMonth,
+    convertedLeads: canonicalConversion.convertedLeads,
+    legacyConvertedLeads: converted,
+    conversionTotalLeads: canonicalConversion.totalLeads,
+    conversionRate: canonicalConversion.conversionRate,
     totalRevenue: revenue,
     activeMatters,
     pendingTasks,
@@ -1744,6 +1751,48 @@ export async function getClientStatusCounts() {
 
 export type ConversionRange = "month" | "quarter" | "year" | "all";
 
+export type ConversionMarkerRow = {
+  clientStatus?: string | null;
+  leadCurrentStatus?: string | null;
+  leadConversionDate?: string | Date | null;
+  leadDetailStatus?: string | null;
+  hadLeadToExistingStatusChange?: boolean | null;
+};
+
+export const CONVERSION_SOURCE_TABLE = "clients";
+export const CONVERSION_COHORT_DATE = "COALESCE(leads.created_at, clients.created_at)";
+export const CONVERSION_FORMULA = "Converted Leads / Total Valid Leads * 100";
+export const CONVERSION_MARKERS = [
+  "clients.client_status = Existing Client",
+  "leads.current_status = Converted",
+  "leads.conversion_date IS NOT NULL",
+  "client_lead_details.lead_status IN (Converted, Existing Client, Won)",
+  "audit_logs clientStatus Leads -> Existing Client",
+] as const;
+
+const VALID_CANONICAL_LEAD_STATUSES = new Set(["Leads", "Rejected", "Existing Client"]);
+const CONVERTED_STATUS_MARKERS = new Set(["Converted", "Existing Client", "Won"]);
+
+export function isValidCanonicalLeadStatus(status: string | null | undefined) {
+  return typeof status === "string" && VALID_CANONICAL_LEAD_STATUSES.has(status);
+}
+
+export function hasConversionMarker(row: ConversionMarkerRow) {
+  return (
+    row.clientStatus === "Existing Client" ||
+    row.leadCurrentStatus === "Converted" ||
+    row.leadConversionDate != null ||
+    (typeof row.leadDetailStatus === "string" && CONVERTED_STATUS_MARKERS.has(row.leadDetailStatus)) ||
+    row.hadLeadToExistingStatusChange === true
+  );
+}
+
+export function calculateConversionRate(convertedLeads: number, totalLeads: number) {
+  if (!Number.isFinite(totalLeads) || totalLeads <= 0) return 0;
+  if (!Number.isFinite(convertedLeads) || convertedLeads <= 0) return 0;
+  return Math.round((convertedLeads / totalLeads) * 1000) / 10;
+}
+
 // Inclusive lower-bound date for a conversion range, or null for "all time".
 // Exported for reuse/testing.
 export function conversionRangeStart(range: ConversionRange, now: Date): Date | null {
@@ -1761,77 +1810,104 @@ export function conversionRangeStart(range: ConversionRange, now: Date): Date | 
 }
 
 /**
- * Conversion Rate KPI — the single source of truth for every Conversion Rate
- * display (dashboard card, KPI dashboard, reports). It reads the canonical
- * Leads Pipeline (the `clients` intake model), NOT the legacy `leads` table and
- * NOT the revenue "Pipeline" (pipeline-forecast). Those are kept separate by
- * design so lead-to-client conversion is never mixed with revenue/workflow data.
+ * Conversion Rate KPI: the single source of truth for the dashboard card, KPI
+ * dashboard, reports, and AI analytics. It reads the canonical Leads Pipeline
+ * (`clients`) and joins legacy `leads` only for original lead dates and
+ * conversion markers.
  *
- *   Conversion Rate = converted leads / total leads * 100
+ * Formula: Converted Leads / Total Valid Leads * 100.
  *
- *   - total leads     = intake whose channel is Lead or Enquiry — i.e. every
- *                       valid lead (Direct walk-ins are NOT leads, so excluded).
- *                       Rejected/Lost leads REMAIN in the denominator. Reported
- *                       split as totalLeads + totalEnquiries.
- *   - converted leads = those leads that became clients. In the canonical model a
- *                       lead "became a client" exactly when its mirror reached
- *                       clientStatus "Existing Client" — which is what the lead
- *                       statuses "Converted"/"Existing Client", a linked client,
- *                       and a non-null conversion date all collapse to here.
+ * Total valid leads are client rows in a lead lifecycle status: Leads,
+ * Rejected, or Existing Client. `converted_from` is retained as a source
+ * breakdown, but it is not trusted as an exclusion flag because historical
+ * pipeline rows can be misclassified as Direct.
  *
- * Because the numerator is a strict subset of the denominator, the rate is
- * always between 0 and 100, rounded to one decimal place, and is 0 (never NaN)
- * when there are no leads in the period.
+ * Converted leads have any safe marker: Existing Client status, legacy
+ * Converted status, legacy conversion date, lead-detail converted/won status,
+ * or an audit trail showing Leads -> Existing Client.
  *
- * Cohort filter: `range` bounds leads by createdAt (lead creation date): this
- * month, this quarter, or all time. Monthly/Quarterly rate = leads CREATED in
- * the period that converted / total leads CREATED in the period.
+ * Cohort filtering uses the original lead creation date: leads.created_at for
+ * mirrored enquiries, otherwise clients.created_at.
  */
 export async function getClientConversionMetrics(
+  // Accepts the full ConversionRange (incl. "year"); conversionRangeStart handles
+  // every case. The dashboard router still restricts external input to
+  // month/quarter/all via its own zod enum; the AI Assistant uses "year" too.
   range: ConversionRange = "all",
   now: Date = new Date(),
 ) {
+  // Canonical calculation: count distinct clients in lead lifecycle statuses.
+  // converted_from is reported as a source breakdown but is not trusted as an
+  // exclusion flag because historical pipeline rows may be misclassified Direct.
   const db = getDb();
   const start = conversionRangeStart(range, now);
-  const inRange = start ? gte(clients.createdAt, start) : undefined;
+  const cohortDate = sql`COALESCE(${leads.createdAt}, ${clients.createdAt})`;
+  // Bind the lower bound as an ISO string + explicit cast. Passing a raw JS Date
+  // into a sql`` template trips the postgres-js driver (ERR_INVALID_ARG_TYPE) when
+  // the fragment is reused across several aggregates; a typed string param is safe.
+  const inRange = start ? sql`${cohortDate} >= ${start.toISOString()}::timestamptz` : sql`TRUE`;
+  const validLead = sql`${clients.clientStatus} IN ('Leads', 'Rejected', 'Existing Client')`;
+  const convertedLead = sql`(
+    ${clients.clientStatus} = 'Existing Client'
+    OR ${leads.currentStatus} = 'Converted'
+    OR ${leads.conversionDate} IS NOT NULL
+    OR ${clientLeadDetails.leadStatus} IN ('Converted', 'Existing Client', 'Won')
+    OR EXISTS (
+      SELECT 1
+      FROM audit_logs al
+      WHERE al.entity_type = 'client'
+        AND al.entity_id = ${clients.id}
+        AND al.action = 'status_changed'
+        AND al.field_name = 'clientStatus'
+        AND al.old_value = 'Leads'
+        AND al.new_value = 'Existing Client'
+    )
+  )`;
 
-  const fromFunnel = inArray(clients.convertedFrom, ["Lead", "Enquiry"]);
-
-  const [leadRow] = await db
-    .select({ count: count() })
+  const [metricsRow] = await db
+    .select({
+      totalLeads: sql<string>`COUNT(DISTINCT ${clients.id}) FILTER (WHERE ${validLead} AND ${inRange})`,
+      convertedLeads: sql<string>`COUNT(DISTINCT ${clients.id}) FILTER (WHERE ${validLead} AND ${convertedLead} AND ${inRange})`,
+      leadOrigin: sql<string>`COUNT(DISTINCT ${clients.id}) FILTER (WHERE ${validLead} AND ${clients.convertedFrom} = 'Lead' AND ${inRange})`,
+      enquiryOrigin: sql<string>`COUNT(DISTINCT ${clients.id}) FILTER (WHERE ${validLead} AND ${clients.convertedFrom} = 'Enquiry' AND ${inRange})`,
+      directOrigin: sql<string>`COUNT(DISTINCT ${clients.id}) FILTER (WHERE ${validLead} AND ${clients.convertedFrom} = 'Direct' AND ${inRange})`,
+    })
     .from(clients)
-    .where(and(eq(clients.convertedFrom, "Lead"), inRange));
+    .leftJoin(leads, eq(leads.id, clients.sourceLeadId))
+    .leftJoin(clientLeadDetails, eq(clientLeadDetails.clientId, clients.id));
 
-  const [enquiryRow] = await db
-    .select({ count: count() })
-    .from(clients)
-    .where(and(eq(clients.convertedFrom, "Enquiry"), inRange));
-
-  const [convertedRow] = await db
-    .select({ count: count() })
-    .from(clients)
-    .where(and(eq(clients.clientStatus, "Existing Client"), fromFunnel, inRange));
-
-  const totalLeads = Number(leadRow?.count ?? 0);
-  const totalEnquiries = Number(enquiryRow?.count ?? 0);
-  const totalIntake = totalLeads + totalEnquiries;
-  const convertedClients = Number(convertedRow?.count ?? 0);
-
-  const conversionRate =
-    totalIntake > 0
-      ? Math.round((convertedClients / totalIntake) * 1000) / 10 // 1 decimal place
-      : 0;
+  const totalLeads = Number(metricsRow?.totalLeads ?? 0);
+  const convertedLeads = Number(metricsRow?.convertedLeads ?? 0);
+  const conversionRate = calculateConversionRate(convertedLeads, totalLeads);
+  const sourceBreakdown = {
+    lead: Number(metricsRow?.leadOrigin ?? 0),
+    enquiry: Number(metricsRow?.enquiryOrigin ?? 0),
+    direct: Number(metricsRow?.directOrigin ?? 0),
+  };
 
   return {
     range,
-    period: range,            // alias: the selected period (month | quarter | all)
-    convertedClients,
-    converted: convertedClients, // alias: "Converted leads count"
+    period: range,
     totalLeads,
-    totalEnquiries,
-    totalIntake,
-    total: totalIntake,       // alias: "Total leads count"
+    convertedLeads,
+    convertedClients: convertedLeads,
+    converted: convertedLeads,
+    totalIntake: totalLeads,
+    total: totalLeads,
+    totalEnquiries: sourceBreakdown.enquiry,
+    sourceBreakdown,
     conversionRate,
+    debug: {
+      sourceTable: CONVERSION_SOURCE_TABLE,
+      joinedTables: ["leads", "client_lead_details", "audit_logs"],
+      periodUsed: range,
+      cohortDateField: CONVERSION_COHORT_DATE,
+      totalLeads,
+      convertedLeads,
+      conversionRate,
+      formula: CONVERSION_FORMULA,
+      conversionMarkers: CONVERSION_MARKERS,
+    },
   };
 }
 

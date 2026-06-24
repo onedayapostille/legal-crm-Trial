@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { appRouter } from "./routers";
-import { conversionRangeStart, getDb } from "./db";
-import { clients } from "../drizzle/schema";
+import {
+  calculateConversionRate,
+  conversionRangeStart,
+  getDb,
+  hasConversionMarker,
+  isValidCanonicalLeadStatus,
+} from "./db";
+import { clients, leads } from "../drizzle/schema";
 import { eq, sql } from "drizzle-orm";
 import type { TrpcContext } from "./_core/context";
 
@@ -48,22 +54,63 @@ describe("conversionRangeStart", () => {
   });
 });
 
+describe("conversion marker helpers", () => {
+  it("no leads -> 0%, not NaN", () => {
+    expect(calculateConversionRate(0, 0)).toBe(0);
+    expect(Number.isNaN(calculateConversionRate(0, 0))).toBe(false);
+  });
+
+  it("10 leads, 0 converted -> 0%", () => {
+    expect(calculateConversionRate(0, 10)).toBe(0);
+  });
+
+  it("10 leads, 3 converted -> 30%", () => {
+    expect(calculateConversionRate(3, 10)).toBe(30);
+  });
+
+  it("Existing Client status counts as converted", () => {
+    expect(hasConversionMarker({ clientStatus: "Existing Client" })).toBe(true);
+  });
+
+  it("legacy Converted status counts as converted", () => {
+    expect(hasConversionMarker({ leadCurrentStatus: "Converted" })).toBe(true);
+  });
+
+  it("legacy conversionDate counts as converted_at/conversion marker", () => {
+    expect(hasConversionMarker({ leadConversionDate: "2026-06-24" })).toBe(true);
+  });
+
+  it("lead-detail Won/Existing Client markers count as converted", () => {
+    expect(hasConversionMarker({ leadDetailStatus: "Won" })).toBe(true);
+    expect(hasConversionMarker({ leadDetailStatus: "Existing Client" })).toBe(true);
+  });
+
+  it("lead-to-existing audit marker counts as linked-client conversion", () => {
+    expect(hasConversionMarker({ hadLeadToExistingStatusChange: true })).toBe(true);
+  });
+
+  it("Rejected/Lost lead statuses stay valid total leads but not converted", () => {
+    expect(isValidCanonicalLeadStatus("Rejected")).toBe(true);
+    expect(hasConversionMarker({ clientStatus: "Rejected", leadCurrentStatus: "Lost" })).toBe(false);
+  });
+});
+
 // ─── Conversion Rate logic (integration; needs DATABASE_URL) ──────────────────
-describe("clients.conversionMetrics — converted / intake * 100", () => {
+describe("clients.conversionMetrics - converted / total valid leads * 100", () => {
   async function seed() {
     const { ctx } = createAuthContext();
     const caller = appRouter.createCaller(ctx);
     const stamp = Date.now();
 
-    // Deterministic funnel: 3 Lead + 2 Enquiry = 5 intake; 3 of them Active.
-    // 1 Direct/Active that must be ignored entirely.
+    // Deterministic intake: 3 Lead + 2 Enquiry + 1 Direct-stamped historical row.
+    // converted_from is a source breakdown only; lifecycle status drives counts.
     const specs: Array<{ convertedFrom: "Lead" | "Enquiry" | "Direct"; clientStatus: "Existing Client" | "Leads" | "Rejected" }> = [
       { convertedFrom: "Lead", clientStatus: "Existing Client" },   // converted lead
       { convertedFrom: "Lead", clientStatus: "Existing Client" },   // converted lead
       { convertedFrom: "Lead", clientStatus: "Leads" },             // unconverted lead
       { convertedFrom: "Enquiry", clientStatus: "Existing Client" },// converted enquiry
       { convertedFrom: "Enquiry", clientStatus: "Rejected" },       // unconverted enquiry
-      { convertedFrom: "Direct", clientStatus: "Existing Client" }, // direct → excluded
+      { convertedFrom: "Direct", clientStatus: "Existing Client" }, // converted marker
     ];
 
     const created = [];
@@ -82,7 +129,7 @@ describe("clients.conversionMetrics — converted / intake * 100", () => {
     return { caller, cleanup };
   }
 
-  it("counts Lead+Enquiry intake in the denominator and Active conversions in the numerator", async () => {
+  it("counts canonical intake in the denominator and converted markers in the numerator", async () => {
     const { ctx } = createAuthContext();
     const base = appRouter.createCaller(ctx);
     const before = await base.clients.conversionMetrics({ range: "all" });
@@ -90,10 +137,13 @@ describe("clients.conversionMetrics — converted / intake * 100", () => {
     const { caller, cleanup } = await seed();
     try {
       const after = await caller.clients.conversionMetrics({ range: "all" });
-      expect(after.totalLeads - before.totalLeads).toBe(3);
+      expect(after.totalLeads - before.totalLeads).toBe(6);
       expect(after.totalEnquiries - before.totalEnquiries).toBe(2);
-      expect(after.totalIntake - before.totalIntake).toBe(5); // Direct excluded
-      expect(after.convertedClients - before.convertedClients).toBe(3); // Direct/Active excluded
+      expect(after.totalIntake - before.totalIntake).toBe(6);
+      expect(after.convertedClients - before.convertedClients).toBe(4);
+      expect(after.sourceBreakdown.lead - before.sourceBreakdown.lead).toBe(3);
+      expect(after.sourceBreakdown.enquiry - before.sourceBreakdown.enquiry).toBe(2);
+      expect(after.sourceBreakdown.direct - before.sourceBreakdown.direct).toBe(1);
     } finally {
       await cleanup();
     }
@@ -127,8 +177,8 @@ describe("clients.conversionMetrics — converted / intake * 100", () => {
     const { caller, cleanup } = await seed();
     try {
       const after = await caller.clients.conversionMetrics({ range: "month" });
-      expect(after.totalIntake - before.totalIntake).toBe(5);
-      expect(after.convertedClients - before.convertedClients).toBe(3);
+      expect(after.totalIntake - before.totalIntake).toBe(6);
+      expect(after.convertedClients - before.convertedClients).toBe(4);
     } finally {
       await cleanup();
     }
@@ -173,6 +223,66 @@ describe("Conversion Rate — period cohorts and edge cases", () => {
       expect(after.converted - before.converted).toBe(1);
     } finally {
       await c.clients.delete({ id: lead.id });
+    }
+  });
+
+  it("monthly filter uses legacy lead created_at for mirrored enquiries", async () => {
+    const c = caller();
+    const db = getDb();
+    const beforeMonth = await c.clients.conversionMetrics({ range: "month" });
+    const beforeAll = await c.clients.conversionMetrics({ range: "all" });
+
+    const lead = await c.leads.create({
+      dateOfEnquiry: "2026-06-24",
+      clientName: `LeadDate Month ${Date.now()}`,
+      channelType: "Walk-in",
+      currentStatus: "Converted",
+    });
+
+    const [mirror] = await db.select().from(clients).where(eq(clients.sourceLeadId, lead.id)).limit(1);
+    await db.update(leads)
+      .set({ createdAt: sql`NOW() - make_interval(days => 200)` })
+      .where(eq(leads.id, lead.id));
+
+    try {
+      const afterMonth = await c.clients.conversionMetrics({ range: "month" });
+      const afterAll = await c.clients.conversionMetrics({ range: "all" });
+
+      expect(afterMonth.total - beforeMonth.total).toBe(0);
+      expect(afterAll.total - beforeAll.total).toBe(1);
+    } finally {
+      if (mirror) await db.delete(clients).where(eq(clients.id, mirror.id));
+      await db.delete(leads).where(eq(leads.id, lead.id));
+    }
+  });
+
+  it("quarterly filter uses legacy lead created_at for mirrored enquiries", async () => {
+    const c = caller();
+    const db = getDb();
+    const beforeQuarter = await c.clients.conversionMetrics({ range: "quarter" });
+    const beforeAll = await c.clients.conversionMetrics({ range: "all" });
+
+    const lead = await c.leads.create({
+      dateOfEnquiry: "2026-06-24",
+      clientName: `LeadDate Quarter ${Date.now()}`,
+      channelType: "Walk-in",
+      currentStatus: "Converted",
+    });
+
+    const [mirror] = await db.select().from(clients).where(eq(clients.sourceLeadId, lead.id)).limit(1);
+    await db.update(leads)
+      .set({ createdAt: sql`NOW() - make_interval(days => 200)` })
+      .where(eq(leads.id, lead.id));
+
+    try {
+      const afterQuarter = await c.clients.conversionMetrics({ range: "quarter" });
+      const afterAll = await c.clients.conversionMetrics({ range: "all" });
+
+      expect(afterQuarter.total - beforeQuarter.total).toBe(0);
+      expect(afterAll.total - beforeAll.total).toBe(1);
+    } finally {
+      if (mirror) await db.delete(clients).where(eq(clients.id, mirror.id));
+      await db.delete(leads).where(eq(leads.id, lead.id));
     }
   });
 

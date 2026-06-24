@@ -37,11 +37,12 @@ describe("NVIDIA key configuration + safe handling (no key in test env)", () => 
   it("testNvidiaConnection() reports the safe not-configured message and no key", async () => {
     const result = await testNvidiaConnection();
     expect(result.ok).toBe(false);
+    expect(result.configured).toBe(false);
     expect(result.message).toBe(NVIDIA_NOT_CONFIGURED_MESSAGE);
     // The result must never carry the key or any auth material.
-    const serialized = JSON.stringify(result);
-    expect(serialized.toLowerCase()).not.toContain("bearer");
-    expect(Object.keys(result).sort()).toEqual(["message", "ok"]);
+    const serialized = JSON.stringify(result).toLowerCase();
+    expect(serialized).not.toContain("bearer");
+    expect(serialized).not.toContain("nvapi-");
   });
 });
 

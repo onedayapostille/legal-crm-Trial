@@ -40,6 +40,20 @@ type ChatMessage = {
 export default function AIAssistant() {
   const { user } = useAuth();
   const canUse = hasPermission(user?.role, "ai:assistant");
+  const isAdmin = user?.role === "admin";
+
+  // Admin-only connectivity diagnostic (calls ai.testNvidia).
+  const [diag, setDiag] = useState<string | null>(null);
+  const testConn = trpc.ai.testNvidia.useMutation({
+    onSuccess: (r: any) => {
+      setDiag(
+        r.ok
+          ? `✓ NVIDIA reachable${r.model ? ` (model: ${r.model})` : ""}.`
+          : `✗ ${r.message}${r.status ? ` [HTTP ${r.status}]` : ""}${r.detail ? ` — ${r.detail}` : ""}`,
+      );
+    },
+    onError: (e) => setDiag(`✗ ${e.message}`),
+  });
 
   const [period, setPeriod] = useState<Period>("month");
   const [input, setInput] = useState("");
@@ -98,15 +112,34 @@ export default function AIAssistant() {
               </p>
             </div>
           </div>
-          <div className="w-40">
-            <Select value={period} onValueChange={(v) => setPeriod(v as Period)}>
-              <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {PERIODS.map(p => <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>)}
-              </SelectContent>
-            </Select>
+          <div className="flex items-center gap-2">
+            {isAdmin && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-9"
+                onClick={() => { setDiag(null); testConn.mutate(); }}
+                disabled={testConn.isPending}
+              >
+                {testConn.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Test connection"}
+              </Button>
+            )}
+            <div className="w-40">
+              <Select value={period} onValueChange={(v) => setPeriod(v as Period)}>
+                <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {PERIODS.map(p => <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </div>
+
+        {isAdmin && diag && (
+          <div className={`mt-2 text-xs rounded-md border px-3 py-2 ${diag.startsWith("✓") ? "bg-green-50 text-green-800 border-green-200" : "bg-amber-50 text-amber-800 border-amber-200"}`}>
+            {diag}
+          </div>
+        )}
 
         {/* Conversation */}
         <div ref={scrollRef} className="flex-1 overflow-y-auto py-4 space-y-4">

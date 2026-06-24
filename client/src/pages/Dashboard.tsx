@@ -92,6 +92,14 @@ export default function Dashboard() {
     `SAR ${new Intl.NumberFormat("en-US", { minimumFractionDigits: 0 }).format(n)}`;
   const formatCurrency = (n: number) =>
     new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 0 }).format(n);
+  const conversionPeriodLabel = {
+    month: "This Month",
+    quarter: "This Quarter",
+    all: "All Time",
+  }[convRange];
+  const conversionRate = conversion?.conversionRate ?? 0;
+  const convertedLeads = conversion?.convertedLeads ?? conversion?.converted ?? 0;
+  const totalLeads = conversion?.totalLeads ?? conversion?.total ?? 0;
 
   return (
     <DashboardLayout>
@@ -166,23 +174,13 @@ export default function Dashboard() {
                 <div className="flex items-start justify-between">
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-muted-foreground">Conversion Rate</p>
-                    {/* Empty state: when there are no leads in the period show 0%
-                        and a clear message instead of a misleading "0 of 0". */}
-                    {(conversion?.totalIntake ?? 0) === 0 ? (
-                      <>
-                        <p className="text-3xl font-bold mt-1">0%</p>
-                        <p className="text-xs text-muted-foreground mt-1">No leads in this period.</p>
-                      </>
-                    ) : (
-                      <>
-                        <p className="text-3xl font-bold mt-1">
-                          {(conversion?.conversionRate ?? 0).toFixed(1)}%
-                        </p>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          {conversion?.converted ?? 0} converted of {conversion?.total ?? 0} leads
-                        </p>
-                      </>
-                    )}
+                    <p className="text-3xl font-bold mt-1">
+                      {conversionRate.toFixed(1)}%
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {convertedLeads} converted / {totalLeads} leads
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-0.5">{conversionPeriodLabel}</p>
                   </div>
                   <div className="p-3 rounded-xl bg-purple-500">
                     <TrendingUp className="h-6 w-6 text-white" />
