@@ -3,7 +3,7 @@ import { Link } from "wouter";
 import {
   Users, Briefcase, CheckSquare, TrendingUp, DollarSign,
   ArrowRight, Plus, Clock, AlertCircle, Building2, UserCheck,
-  UserX, Calendar, AlertTriangle, Receipt, ShieldCheck,
+  UserX, Calendar, AlertTriangle, Receipt, ShieldCheck, Loader2,
 } from "lucide-react";
 import ConflictCheckDialog from "@/components/ConflictCheckDialog";
 import { trpc } from "@/lib/trpc";
@@ -59,7 +59,12 @@ export default function Dashboard() {
   const { data: clientStats } = trpc.clients.dashboardStats.useQuery(undefined, { enabled: canViewClients });
   // Recent Leads = Lead-status clients created in the last 30 days (newest first,
   // capped server-side). Date window uses the DB clock for timezone consistency.
-  const { data: recentLeads = [] } = trpc.clients.recentLeads.useQuery(
+  const {
+    data: recentLeads = [],
+    isLoading: recentLeadsLoading,
+    isError: recentLeadsError,
+    isSuccess: recentLeadsLoaded,
+  } = trpc.clients.recentLeads.useQuery(
     { days: 30, limit: 5 },
     { enabled: canViewClients },
   );
@@ -410,7 +415,23 @@ export default function Dashboard() {
               </div>
             </CardHeader>
             <CardContent>
-              {recentLeads.length === 0 ? (
+              {/* Distinguish loading / error from a confirmed-empty result so the
+                  "No new leads" message appears ONLY when the backend has actually
+                  returned zero leads for the last 30 days — not while the query is
+                  still in flight or the user lacks clients:view. */}
+              {!canViewClients ? (
+                <div className="text-center py-6 text-muted-foreground text-sm">
+                  You don’t have permission to view leads.
+                </div>
+              ) : recentLeadsLoading ? (
+                <div className="flex items-center justify-center py-6 text-muted-foreground text-sm">
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" /> Loading recent leads…
+                </div>
+              ) : recentLeadsError ? (
+                <div className="text-center py-6 text-destructive text-sm">
+                  Couldn’t load recent leads. Please retry.
+                </div>
+              ) : recentLeadsLoaded && recentLeads.length === 0 ? (
                 <div className="text-center py-6 text-muted-foreground text-sm">
                   No new leads in the last 30 days.{" "}
                   <Link href="/clients/new" className="text-blue-600 hover:underline">Add a lead</Link>
