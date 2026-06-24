@@ -1,4 +1,5 @@
-import { useLocation } from "wouter";
+import { useState } from "react";
+import { useLocation, useSearch } from "wouter";
 import { useForm } from "react-hook-form";
 import { ArrowLeft, Loader2, Save } from "lucide-react";
 import { toast } from "sonner";
@@ -19,19 +20,39 @@ type TaskFormData = {
   dueDate?: string;
 };
 
+const NO_MATTER = "none";
+const NO_ASSIGNEE = "none";
+
 export default function TaskForm() {
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
+
+  // Allow prefilling the client via ?clientId= (e.g. "New Task" from a client).
+  const search = useSearch();
+  const presetClientId = new URLSearchParams(search).get("clientId") ?? "";
+
+  const [clientId, setClientId] = useState<string>(presetClientId);
+  const [clientMatterId, setClientMatterId] = useState<string>(NO_MATTER);
+  const [assignedTo, setAssignedTo] = useState<string>(NO_ASSIGNEE);
+
   const { register, handleSubmit, setValue, watch, formState: { errors } } = useForm<TaskFormData>({
-    defaultValues: {
-      status: "todo",
-      priority: "medium",
-    },
+    defaultValues: { status: "todo", priority: "medium" },
   });
+
+  // A task must belong to a client — pick from active (non-rejected) clients.
+  const { data: clients = [] } = trpc.clients.list.useQuery({});
+  const selectableClients = clients.filter((c: any) => c.clientStatus !== "Rejected");
+  const { data: matters = [] } = trpc.clientMatters.list.useQuery(
+    { clientId: Number(clientId) },
+    { enabled: !!clientId },
+  );
+  const { data: lawyers = [] } = trpc.users.assignableLawyers.useQuery();
 
   const createTask = trpc.tasks.create.useMutation({
     onSuccess: () => {
       toast.success("Task created successfully");
+      // Single source of truth: invalidating tasks.list refreshes the main Tasks
+      // page, every client tab, and the dashboard task widget at once.
       utils.tasks.list.invalidate();
       navigate("/tasks");
     },
@@ -39,7 +60,16 @@ export default function TaskForm() {
   });
 
   const onSubmit = (data: TaskFormData) => {
-    createTask.mutate(data);
+    if (!clientId) {
+      toast.error("Please select a client — tasks must be linked to a client.");
+      return;
+    }
+    createTask.mutate({
+      ...data,
+      clientId: Number(clientId),
+      clientMatterId: clientMatterId !== NO_MATTER ? Number(clientMatterId) : undefined,
+      assignedTo: assignedTo !== NO_ASSIGNEE ? Number(assignedTo) : undefined,
+    });
   };
 
   return (
@@ -60,9 +90,39 @@ export default function TaskForm() {
           <Card>
             <CardHeader>
               <CardTitle>Task Details</CardTitle>
-              <CardDescription>Track a piece of work for the practice</CardDescription>
+              <CardDescription>Every task is linked to a client; optionally to one of its matters</CardDescription>
             </CardHeader>
             <CardContent className="grid md:grid-cols-2 gap-4">
+              {/* Client — required */}
+              <div className="space-y-2">
+                <Label>Client *</Label>
+                <Select value={clientId} onValueChange={(v) => { setClientId(v); setClientMatterId(NO_MATTER); }}>
+                  <SelectTrigger><SelectValue placeholder="Select a client" /></SelectTrigger>
+                  <SelectContent>
+                    {selectableClients.map((c: any) => (
+                      <SelectItem key={c.id} value={String(c.id)}>{c.clientName}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {!clientId && <p className="text-xs text-muted-foreground">A task must be linked to a client.</p>}
+              </div>
+
+              {/* Matter — optional, scoped to the selected client */}
+              <div className="space-y-2">
+                <Label>Matter (optional)</Label>
+                <Select value={clientMatterId} onValueChange={setClientMatterId} disabled={!clientId}>
+                  <SelectTrigger><SelectValue placeholder="Client-level task" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_MATTER}>Client-level task (no matter)</SelectItem>
+                    {matters.map((m: any) => (
+                      <SelectItem key={m.id} value={String(m.id)}>
+                        {m.matterReference ?? m.originalSerial ?? `Matter #${m.id}`}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
               <div className="space-y-2 md:col-span-2">
                 <Label htmlFor="title">Title *</Label>
                 <Input id="title" {...register("title", { required: true })} />
@@ -75,11 +135,22 @@ export default function TaskForm() {
               </div>
 
               <div className="space-y-2">
+                <Label>Assignee (optional)</Label>
+                <Select value={assignedTo} onValueChange={setAssignedTo}>
+                  <SelectTrigger><SelectValue placeholder="— Unassigned —" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_ASSIGNEE}>— Unassigned —</SelectItem>
+                    {lawyers.map((l: any) => (
+                      <SelectItem key={l.id} value={String(l.id)}>{l.name ?? `User #${l.id}`}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
                 <Label>Status</Label>
                 <Select value={watch("status")} onValueChange={(value) => setValue("status", value)}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select status" />
-                  </SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder="Select status" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="todo">To do</SelectItem>
                     <SelectItem value="in_progress">In progress</SelectItem>
@@ -92,9 +163,7 @@ export default function TaskForm() {
               <div className="space-y-2">
                 <Label>Priority</Label>
                 <Select value={watch("priority")} onValueChange={(value) => setValue("priority", value)}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select priority" />
-                  </SelectTrigger>
+                  <SelectTrigger><SelectValue placeholder="Select priority" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="low">Low</SelectItem>
                     <SelectItem value="medium">Medium</SelectItem>
@@ -115,7 +184,7 @@ export default function TaskForm() {
             <Button type="button" variant="outline" onClick={() => navigate("/tasks")}>
               Cancel
             </Button>
-            <Button type="submit" disabled={createTask.isPending}>
+            <Button type="submit" disabled={createTask.isPending || !clientId}>
               {createTask.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               <Save className="h-4 w-4 mr-2" />
               Create Task

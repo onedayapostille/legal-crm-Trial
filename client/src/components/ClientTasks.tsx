@@ -25,6 +25,12 @@ export const TASK_STATUS_LABELS: Record<string, string> = {
 };
 const TASK_PRIORITIES = ["low", "medium", "high", "urgent"] as const;
 const NO_MATTER = "none";
+// Friendly labels for a task's source/provenance, shown as a small badge.
+const SOURCE_LABELS: Record<string, string> = {
+  action_log: "Action Log", call: "Call", meeting: "Meeting",
+  email: "Email", document: "Document", follow_up: "Follow-up",
+  financial_review: "Financial Review",
+};
 
 function isOpenMatter(m: any): boolean {
   const s = (m.matterStatus ?? "").toLowerCase();
@@ -139,6 +145,11 @@ export function ClientTasksSection({
                         <span className="ml-2 align-middle text-[11px] text-muted-foreground">
                           {t.clientMatterId ? "Matter-level" : "Client-level"}
                         </span>
+                        {t.sourceType && (
+                          <Badge variant="outline" className="ml-2 align-middle font-normal text-[10px] capitalize bg-amber-50 text-amber-700 border-amber-200">
+                            {SOURCE_LABELS[String(t.sourceType).toLowerCase()] ?? String(t.sourceType).replace(/_/g, " ")}
+                          </Badge>
+                        )}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">{t.matterReference ?? "—"}</TableCell>
                       <TableCell className="text-sm">{t.assigneeName ?? "—"}</TableCell>

@@ -35,20 +35,25 @@ describe("Role-based task visibility (backend enforced)", () => {
     const lawyerB = await a.users.create({ name: `LawyerB ${stamp}`, email: `lb${stamp}@x.com`, password: PW, role: "lawyer", reportsToId: partner.id });
     const lawyerC = await a.users.create({ name: `LawyerC ${stamp}`, email: `lc${stamp}@x.com`, password: PW, role: "lawyer" }); // no supervisor
 
+    // Every task must be client-scoped (no orphan tasks); visibility is by
+    // assignee/creator/role, so a shared client doesn't affect these assertions.
+    const client = await a.clients.create({ clientName: `VisClient ${stamp}`, clientStatus: "Existing Client" });
+
     // Tasks created by admin, assigned variously.
-    const tA = await a.tasks.create({ title: `tA ${stamp}`, assignedTo: lawyerA.id });
-    const tB = await a.tasks.create({ title: `tB ${stamp}`, assignedTo: lawyerB.id });
-    const tC = await a.tasks.create({ title: `tC ${stamp}`, assignedTo: lawyerC.id });
-    const tP = await a.tasks.create({ title: `tP ${stamp}`, assignedTo: partner.id });
-    const tNone = await a.tasks.create({ title: `tNone ${stamp}` }); // unassigned, created by admin
+    const tA = await a.tasks.create({ title: `tA ${stamp}`, clientId: client.id, assignedTo: lawyerA.id });
+    const tB = await a.tasks.create({ title: `tB ${stamp}`, clientId: client.id, assignedTo: lawyerB.id });
+    const tC = await a.tasks.create({ title: `tC ${stamp}`, clientId: client.id, assignedTo: lawyerC.id });
+    const tP = await a.tasks.create({ title: `tP ${stamp}`, clientId: client.id, assignedTo: partner.id });
+    const tNone = await a.tasks.create({ title: `tNone ${stamp}`, clientId: client.id }); // unassigned, created by admin
 
     const taskIds = [tA, tB, tC, tP, tNone].map(t => t.id);
     async function cleanup() {
       for (const id of taskIds) await a.tasks.delete({ id });
+      await a.clients.delete({ id: client.id });
       // Delete supervised lawyers BEFORE their supervising partner (reports_to_id FK).
       for (const u of [lawyerA, lawyerB, lawyerC, partner]) await a.users.delete({ userId: u.id });
     }
-    return { a, partner, lawyerA, lawyerB, lawyerC, tA, tB, tC, tP, tNone, taskIds, cleanup };
+    return { a, partner, lawyerA, lawyerB, lawyerC, client, tA, tB, tC, tP, tNone, taskIds, cleanup };
   }
 
   it("Admin and Manager see all tasks", async () => {
@@ -76,7 +81,7 @@ describe("Role-based task visibility (backend enforced)", () => {
       expect(aIds).not.toContain(s.tNone.id);     // unassigned admin task
 
       // created-by path: lawyerA creates an unassigned task → visible to A only.
-      const own = await callerFor("lawyer", s.lawyerA.id).tasks.create({ title: `selfA ${Date.now()}` });
+      const own = await callerFor("lawyer", s.lawyerA.id).tasks.create({ title: `selfA ${Date.now()}`, clientId: s.client.id });
       try {
         const aIds2 = (await callerFor("lawyer", s.lawyerA.id).tasks.list()).map(t => t.id);
         expect(aIds2).toContain(own.id);
@@ -127,7 +132,7 @@ describe("Role-based task visibility (backend enforced)", () => {
       // Lawyer A has exactly one visible non-done task (tA).
       const aStats = await callerFor("lawyer", s.lawyerA.id).dashboard.stats();
       const before = aStats.pendingTasks;
-      const extra = await s.a.tasks.create({ title: `extraA ${Date.now()}`, assignedTo: s.lawyerA.id });
+      const extra = await s.a.tasks.create({ title: `extraA ${Date.now()}`, clientId: s.client.id, assignedTo: s.lawyerA.id });
       try {
         const after = (await callerFor("lawyer", s.lawyerA.id).dashboard.stats()).pendingTasks;
         expect(after - before).toBe(1); // only A's own task increments A's count

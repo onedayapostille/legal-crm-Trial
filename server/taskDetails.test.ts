@@ -156,10 +156,11 @@ describe("Task Details (tasks.get) — full context", () => {
     const stamp = Date.now();
     const lawyer = await a.users.create({ name: `Solo ${stamp}`, email: `solo${stamp}@x.com`, password: PW, role: "lawyer" });
     const other = await a.users.create({ name: `Other ${stamp}`, email: `other${stamp}@x.com`, password: PW, role: "lawyer" });
+    const client = await a.clients.create({ clientName: `PrivClient ${stamp}`, clientStatus: "Existing Client" });
     let taskId: number | undefined;
     try {
       // Task assigned to + created for `other`, with no link to `lawyer`.
-      const t = await a.tasks.create({ title: `Private ${stamp}`, assignedTo: other.id });
+      const t = await a.tasks.create({ title: `Private ${stamp}`, clientId: client.id, assignedTo: other.id });
       taskId = t.id;
 
       const lawyerCaller = callerFor("lawyer", lawyer.id);
@@ -171,6 +172,7 @@ describe("Task Details (tasks.get) — full context", () => {
       expect(adminDetail).toBeTruthy();
     } finally {
       if (taskId) await a.tasks.delete({ id: taskId });
+      await a.clients.delete({ id: client.id });
       for (const u of [lawyer, other]) await a.users.delete({ userId: u.id });
     }
   }, 30000); // creates+deletes users (bcrypt) over the remote pooler — needs headroom

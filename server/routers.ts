@@ -345,8 +345,9 @@ export const appRouter = router({
         priority: z.string().optional(),
         matterId: z.number().optional(),
         leadId: z.number().optional(),
-        // Client context (from the client profile Tasks tab).
-        clientId: z.number().optional(),
+        // Client context is REQUIRED — every task must belong to a client (no
+        // orphan tasks). A matter-scoped task additionally carries clientMatterId.
+        clientId: z.number(),
         clientMatterId: z.number().optional(),
         // Provenance: where the task was created from (Action Log, Call, Meeting,
         // Email, Follow-up, Financial Review). clientActionLogId additionally links
