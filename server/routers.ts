@@ -5,6 +5,7 @@ import { TRPCError } from "@trpc/server";
 import type { Request } from "express";
 import { z } from "zod";
 import * as db from "./db";
+import { testNvidiaConnection } from "./_core/nvidia";
 import { USER_ROLES, USER_STATUSES, type UserRole, type UserStatus } from "../shared/const";
 
 function formatDbError(err: any) {
@@ -1294,6 +1295,17 @@ export const appRouter = router({
         await db.updateChatSubmissionStatus(input.id, input.status);
         return { success: true };
       }),
+  }),
+
+  // ─── AI Assistant (NVIDIA NIM) ──────────────────────────────────────────────
+  // The full management assistant (ai.ask) is added in the next phase. For now,
+  // an admin-only connectivity check verifies the server-side key works before
+  // we build the UI. Equivalent to the requested POST /api/ai/test-nvidia, but
+  // expressed as a tRPC procedure (this project's API layer is tRPC at
+  // /api/trpc). adminProcedure enforces admin-only access; the result reports
+  // success/failure and NEVER includes the API key.
+  ai: router({
+    testNvidia: adminProcedure.mutation(async () => testNvidiaConnection()),
   }),
 });
 

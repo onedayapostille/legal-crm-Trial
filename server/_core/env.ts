@@ -9,4 +9,11 @@ export const ENV = {
   isProduction: process.env.NODE_ENV === "production",
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
+
+  // ── NVIDIA NIM (internal AI Assistant) ──────────────────────────────────────
+  // SERVER-SIDE ONLY. Never prefixed with VITE_/NEXT_PUBLIC_/REACT_APP_, so the
+  // key is never shipped to the browser bundle. Read from process.env only.
+  nvidiaApiKey:  process.env.NVIDIA_API_KEY  ?? "",
+  nvidiaBaseUrl: process.env.NVIDIA_BASE_URL ?? "https://integrate.api.nvidia.com/v1",
+  nvidiaModel:   process.env.NVIDIA_MODEL    ?? "google/diffusiongemma-26b-a4b-it",
 };

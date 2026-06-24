@@ -52,6 +52,52 @@ The seed script creates an admin only when the users table is empty. After the f
 | `ADMIN_PASSWORD` | First setup only | Initial admin password |
 | `ADMIN_NAME` | No | Initial admin display name |
 | `PORT` | No | Defaults to `3000` |
+| `NVIDIA_API_KEY` | For AI Assistant | NVIDIA NIM API key. **Server-side only** — never exposed to the browser |
+| `NVIDIA_BASE_URL` | No | Defaults to `https://integrate.api.nvidia.com/v1` |
+| `NVIDIA_MODEL` | No | Defaults to `google/diffusiongemma-26b-a4b-it` |
+
+## NVIDIA AI Assistant — environment configuration
+
+The internal AI Management Assistant calls the **NVIDIA NIM Chat Completions API
+from the backend only**. The API key is read from `process.env` on the server and
+is **never** sent to the browser, included in API responses, written to logs, or
+baked into the Docker image.
+
+Use exactly these names (do **not** add a `VITE_`, `NEXT_PUBLIC_`, or `REACT_APP_`
+prefix — those would publish the key to the frontend bundle):
+
+```env
+NVIDIA_API_KEY=<your real key>
+NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
+NVIDIA_MODEL=google/diffusiongemma-26b-a4b-it
+```
+
+**Local development** — add the three variables to your git-ignored **`.env`**
+file (copy from `.env.example`), then restart `pnpm dev` so they are loaded.
+
+**Production (deployed CRM)** — add them in your hosting platform's
+**App Settings → Edit Environment Variables**, then **Save & Redeploy**.
+Do not put the real key in `.env.example`, `docker-compose.yml`, or any committed
+file — the compose file only references the names as `${PLACEHOLDERS}`.
+
+> **Restart / redeploy required.** Environment variables are read into
+> `process.env` at process start. After adding or changing any NVIDIA variable in
+> production you **must restart or redeploy** the server for the new value to take
+> effect — a running container will not pick it up otherwise.
+
+**Verify the key before building on it.** Two options, neither prints the key:
+
+- CLI script (reads `.env`): `pnpm test:nvidia`
+- Admin-only API route: `ai.testNvidia` (tRPC mutation at `/api/trpc/ai.testNvidia`,
+  the project's equivalent of `POST /api/ai/test-nvidia`). It sends a tiny test
+  prompt and returns `{ ok, message, model? }`.
+
+If the key is missing, the backend returns the safe message
+**“NVIDIA API key is not configured on the server.”** If the upstream call fails,
+it returns **“AI analysis is temporarily unavailable. Please try again later.”**
+
+You can also confirm the key reached a deployed container (presence only, never
+the value) via `GET /health` → `envPresence.NVIDIA_API_KEY: true`.
 
 ## Secrets & Security
 
