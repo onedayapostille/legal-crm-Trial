@@ -10,7 +10,7 @@ import {
   activityLogs, auditLogs, chatSubmissions,
   clients, clientMatters, clientLeadDetails, rejectedClients,
   financialRecords, clientActionLogs, matterLawyerRates, systemSettings,
-  userNotifications,
+  userNotifications, aiAuditLogs,
   type Lead, type InsertUser, type InsertLead, type InsertMatter,
   type InsertTask, type InsertNote, type InsertPayment,
   type InsertCompany, type InsertActivityLog, type InsertChatSubmission,
@@ -1742,7 +1742,7 @@ export async function getClientStatusCounts() {
   return result;
 }
 
-export type ConversionRange = "month" | "quarter" | "all";
+export type ConversionRange = "month" | "quarter" | "year" | "all";
 
 // Inclusive lower-bound date for a conversion range, or null for "all time".
 // Exported for reuse/testing.
@@ -1753,6 +1753,9 @@ export function conversionRangeStart(range: ConversionRange, now: Date): Date | 
   if (range === "quarter") {
     const quarterStartMonth = Math.floor(now.getMonth() / 3) * 3;
     return new Date(now.getFullYear(), quarterStartMonth, 1);
+  }
+  if (range === "year") {
+    return new Date(now.getFullYear(), 0, 1);
   }
   return null; // all time
 }
@@ -3018,3 +3021,41 @@ export async function getClientDashboardStats() {
   return { ...clientCounts, ...financialSummary, actionsThisWeek };
 }
 
+
+// ─── AI Assistant audit trail ─────────────────────────────────────────────────
+
+/**
+ * Record one AI Assistant question for accountability. The full AI answer is
+ * intentionally NOT persisted — only the question + metadata (period, the data
+ * scope used, and the model). Never pass the API key or raw CRM payloads here.
+ */
+export async function createAiAuditLog(entry: {
+  userId: number | null;
+  question: string;
+  period: string;
+  dataScopeUsed: string;
+  model: string;
+}) {
+  const db = getDb();
+  const [row] = await db
+    .insert(aiAuditLogs)
+    .values({
+      userId: entry.userId,
+      question: entry.question.slice(0, 4000),
+      period: entry.period,
+      dataScopeUsed: entry.dataScopeUsed,
+      model: entry.model,
+    })
+    .returning();
+  return row;
+}
+
+/** Recent AI Assistant audit rows, newest first (admin-only at the router). */
+export async function getAiAuditLogs(limit = 100) {
+  const db = getDb();
+  return db
+    .select()
+    .from(aiAuditLogs)
+    .orderBy(desc(aiAuditLogs.createdAt))
+    .limit(limit);
+}
