@@ -34,6 +34,7 @@ import { FinancialAuditTrail } from "@/components/FinancialAuditTrail";
 import ConflictWarningDialog from "@/components/ConflictWarningDialog";
 import type { ConflictMatch } from "@/components/ConflictMatchTable";
 import { useGoBack } from "@/hooks/useGoBack";
+import { useQueryParam } from "@/hooks/useQueryParam";
 import { ClientTasksSection, RelatedTasks } from "@/components/ClientTasks";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -53,6 +54,12 @@ export default function ClientDetail({ id }: { id: number }) {
   const canViewFinancial = hasPermission(user?.role, "financial:view");
   const canViewTasks = hasPermission(user?.role, "tasks:manage");
   const utils = trpc.useUtils();
+
+  // Deep-link support: /clients/:id?tab=tasks&taskId=NN opens the Tasks tab and
+  // auto-opens that task's details (used when navigating from a task list).
+  const [activeTab, setActiveTab] = useQueryParam("tab", "overview");
+  const [taskIdParam] = useQueryParam("taskId", "");
+  const initialTaskId = taskIdParam ? Number(taskIdParam) : null;
 
   const { data: client, isLoading } = trpc.clients.get.useQuery({ id });
   const { data: matters = [] } = trpc.clientMatters.list.useQuery({ clientId: id });
@@ -243,8 +250,8 @@ export default function ClientDetail({ id }: { id: number }) {
           </div>
         )}
 
-        {/* Tabs */}
-        <Tabs defaultValue="overview">
+        {/* Tabs (controlled by ?tab= so task deep-links land on the right tab) */}
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList>
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="matters">Matters ({matters.length})</TabsTrigger>
@@ -328,6 +335,7 @@ export default function ClientDetail({ id }: { id: number }) {
                 clientName={client.clientName}
                 matters={matters}
                 canManage={canManageActive}
+                initialTaskId={initialTaskId}
               />
             </TabsContent>
           )}

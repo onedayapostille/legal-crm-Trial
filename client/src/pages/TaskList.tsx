@@ -9,6 +9,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue
 } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { TaskDetailDialog } from "@/components/TaskDetailDialog";
 import { toast } from "sonner";
 
 const STATUS_OPTIONS = ["all", "todo", "in_progress", "done", "cancelled"];
@@ -28,6 +29,7 @@ function StatusIcon({ status }: { status: string }) {
 
 export default function TaskList() {
   const [statusFilter, setStatusFilter] = useState("all");
+  const [detailTaskId, setDetailTaskId] = useState<number | null>(null);
   const utils = trpc.useUtils();
 
   const { data: tasks = [], isLoading } = trpc.tasks.list.useQuery(
@@ -107,7 +109,12 @@ export default function TaskList() {
                         <StatusIcon status={task.status ?? "todo"} />
                       </button>
 
-                      <div className="flex-1 min-w-0">
+                      <button
+                        type="button"
+                        onClick={() => setDetailTaskId(task.id)}
+                        className="flex-1 min-w-0 text-left"
+                        title="View task details"
+                      >
                         <p className={`font-medium text-sm ${task.status === "done" ? "line-through text-muted-foreground" : ""}`}>
                           {task.title}
                         </p>
@@ -124,12 +131,16 @@ export default function TaskList() {
                           <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${pri?.color}`}>
                             {pri?.label}
                           </span>
+                          {(task as any).matterReference && (
+                            <span className="text-xs text-muted-foreground">· {(task as any).matterReference}</span>
+                          )}
                         </div>
-                      </div>
+                      </button>
 
                       <button
                         onClick={() => deleteTask.mutate({ id: task.id })}
                         className="text-xs text-muted-foreground hover:text-red-500 flex-shrink-0"
+                        title="Delete task"
                       >
                         ✕
                       </button>
@@ -141,6 +152,12 @@ export default function TaskList() {
           </div>
         )}
       </div>
+
+      <TaskDetailDialog
+        taskId={detailTaskId}
+        open={detailTaskId != null}
+        onClose={() => setDetailTaskId(null)}
+      />
     </DashboardLayout>
   );
 }

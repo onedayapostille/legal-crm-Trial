@@ -1,4 +1,5 @@
 import { and, count, desc, eq, getTableColumns, gte, inArray, lt, lte, ne, or, sql, ilike } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { TRPCError } from "@trpc/server";
 import postgres from "postgres";
@@ -1041,11 +1042,45 @@ export async function getAllTasks(
     .orderBy(tasks.dueDate, desc(tasks.createdAt));
 }
 
+/**
+ * Single task enriched with all the context the Task Details view needs:
+ * client (name + status), matter (reference, type, lead partner), assignee and
+ * creator names, and the originating action-log entry when one is linked. The
+ * row-level visibility check is preserved — returns null when the viewer may not
+ * see the task (no data leak). Read access is intentionally NOT blocked for
+ * Rejected clients: historical tasks stay viewable for audit/history.
+ */
 export async function getTaskById(id: number, viewer?: TaskViewer) {
   const db = getDb();
-  const result = await db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
-  const task = result[0] ?? null;
-  if (task && viewer && !(await isTaskVisibleTo(task, viewer))) return null;
+  const creator = alias(users, "task_creator");
+  const actionLog = alias(clientActionLogs, "task_source_action_log");
+  const [task] = await db
+    .select({
+      ...getTableColumns(tasks),
+      assigneeName: users.name,
+      creatorName: creator.name,
+      clientName: clients.clientName,
+      clientStatus: clients.clientStatus,
+      matterReference: clientMatters.matterReference,
+      matterType: clientMatters.matterType,
+      matterLeadPartner: clientMatters.leadPartnerFullName,
+      // Originating action-log entry (when the task was created from one) so the
+      // detail view can show its context and link back to it.
+      actionLogId: actionLog.id,
+      actionLogType: actionLog.actionType,
+      actionLogDate: actionLog.actionDate,
+      actionLogDetails: actionLog.actionDetails,
+    })
+    .from(tasks)
+    .leftJoin(users, eq(users.id, tasks.assignedTo))
+    .leftJoin(creator, eq(creator.id, tasks.createdBy))
+    .leftJoin(clients, eq(clients.id, tasks.clientId))
+    .leftJoin(clientMatters, eq(clientMatters.id, tasks.clientMatterId))
+    .leftJoin(actionLog, eq(actionLog.id, tasks.clientActionLogId))
+    .where(eq(tasks.id, id))
+    .limit(1);
+  if (!task) return null;
+  if (viewer && !(await isTaskVisibleTo(task, viewer))) return null;
   return task;
 }
 

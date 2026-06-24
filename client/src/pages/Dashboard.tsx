@@ -14,6 +14,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import DashboardLayout from "@/components/DashboardLayout";
+import { TaskDetailDialog } from "@/components/TaskDetailDialog";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { hasPermission } from "@shared/const";
 
@@ -80,6 +81,9 @@ export default function Dashboard() {
 
   // Conflict Check dialog
   const [conflictOpen, setConflictOpen] = useState(false);
+
+  // Task details modal (opened from the Pending Tasks widget).
+  const [detailTaskId, setDetailTaskId] = useState<number | null>(null);
 
   const pendingTasks = tasks?.filter(t => t.status !== "done") ?? [];
   const overdueTasks = pendingTasks.filter(t => t.dueDate && new Date(t.dueDate) < new Date());
@@ -478,7 +482,13 @@ export default function Dashboard() {
                   {pendingTasks.slice(0, 5).map(task => {
                     const isOverdue = task.dueDate && new Date(task.dueDate) < new Date();
                     return (
-                      <div key={task.id} className="flex items-start gap-3 py-2 px-3 rounded-lg hover:bg-muted/50 transition-colors">
+                      <button
+                        key={task.id}
+                        type="button"
+                        onClick={() => setDetailTaskId(task.id)}
+                        className="w-full text-left flex items-start gap-3 py-2 px-3 rounded-lg hover:bg-muted/50 transition-colors"
+                        title="View task details"
+                      >
                         {isOverdue ? (
                           <AlertCircle className="h-4 w-4 text-orange-500 mt-0.5 flex-shrink-0" />
                         ) : (
@@ -493,7 +503,7 @@ export default function Dashboard() {
                           )}
                         </div>
                         <PriorityBadge priority={task.priority ?? "medium"} />
-                      </div>
+                      </button>
                     );
                   })}
                 </div>
@@ -529,6 +539,11 @@ export default function Dashboard() {
       </div>
 
       <ConflictCheckDialog open={conflictOpen} onClose={() => setConflictOpen(false)} />
+      <TaskDetailDialog
+        taskId={detailTaskId}
+        open={detailTaskId != null}
+        onClose={() => setDetailTaskId(null)}
+      />
     </DashboardLayout>
   );
 }

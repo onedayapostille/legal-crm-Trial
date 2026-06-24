@@ -348,6 +348,12 @@ export const appRouter = router({
         // Client context (from the client profile Tasks tab).
         clientId: z.number().optional(),
         clientMatterId: z.number().optional(),
+        // Provenance: where the task was created from (Action Log, Call, Meeting,
+        // Email, Follow-up, Financial Review). clientActionLogId additionally links
+        // the concrete action-log row so the detail view can jump back to it.
+        sourceType: z.string().optional(),
+        sourceId: z.number().optional(),
+        clientActionLogId: z.number().optional(),
         assignedTo: z.number().optional(),
         dueDate: z.string().optional(),
       }))

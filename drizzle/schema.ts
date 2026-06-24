@@ -247,6 +247,12 @@ export const tasks = pgTable("tasks", {
   clientId: integer("client_id"),
   clientMatterId: integer("client_matter_id"),
   clientActionLogId: integer("client_action_log_id"),
+  // Generic provenance of the task: where it was created from (e.g. "action_log",
+  // "call", "meeting", "email", "follow_up", "financial_review"). source_id points
+  // at the originating record's id (e.g. a client_action_logs.id). Both nullable —
+  // tasks created directly carry no source.
+  sourceType: varchar("source_type", { length: 50 }),
+  sourceId: integer("source_id"),
   assignedTo: integer("assigned_to").references(() => users.id),
   dueDate: date("due_date"),
   completedAt: timestamp("completed_at"),
