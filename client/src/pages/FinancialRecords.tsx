@@ -50,6 +50,16 @@ const formatCurrency = (v: string | number | null | undefined) =>
 const fmt = (n: number) =>
   `SAR ${n.toLocaleString("en-US", { minimumFractionDigits: 0 })}`;
 
+/** Net Fees for a record, falling back to Agreed Fees on legacy rows where
+ *  net_fees was never populated (no discount ⇒ netFees == agreedFees). */
+const netFeesOf = (r: { netFees?: string | number | null; agreedFees?: string | number | null }) =>
+  Number(r.netFees) || Number(r.agreedFees) || 0;
+
+/** To Be Billed = MAX(0, Net Fees − Revenue). Single source of truth for the UI,
+ *  mirroring the backend SUM(GREATEST(0, netFees − revenue)) per record. */
+const toBeBilledOf = (r: { netFees?: string | number | null; agreedFees?: string | number | null; revenue?: string | number | null }) =>
+  Math.max(0, netFeesOf(r) - (Number(r.revenue) || 0));
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface ClientSummaryRow {
@@ -224,6 +234,9 @@ export default function FinancialRecords() {
       row.agreedFees        += Number(r.agreedFees)        || 0;
       row.netFees           += Number(r.netFees)           || 0;
       row.revenue           += Number(r.revenue)           || 0;
+      // To Be Billed accrues per record from Net Fees (after discount), matching
+      // the backend SUM(GREATEST(0, netFees - revenue)) exactly.
+      row.toBeBilled        += toBeBilledOf(r);
       row.outstandingAmount += Number(r.outstandingAmount) || 0;
       row.collectedAmount   += Number(r.collectedAmount)   || 0;
       if (r.collectionStatus) row._statuses.add(r.collectionStatus);
@@ -231,7 +244,6 @@ export default function FinancialRecords() {
     return Array.from(map.values())
       .map(({ _statuses, ...row }) => ({
         ...row,
-        toBeBilled: Math.max(0, row.agreedFees - row.revenue),
         statuses:   Array.from(_statuses),
       }))
       .sort((a, b) => a.clientName.localeCompare(b.clientName));
@@ -268,6 +280,8 @@ export default function FinancialRecords() {
       row.agreedFees        += Number(r.agreedFees)        || 0;
       row.netFees           += Number(r.netFees)           || 0;
       row.revenue           += Number(r.revenue)           || 0;
+      // To Be Billed accrues per record from Net Fees (after discount).
+      row.toBeBilled        += toBeBilledOf(r);
       row.outstandingAmount += Number(r.outstandingAmount) || 0;
       row.collectedAmount   += Number(r.collectedAmount)   || 0;
       if (r.collectionStatus)  row._statuses.add(r.collectionStatus);
@@ -276,7 +290,6 @@ export default function FinancialRecords() {
     return Array.from(map.values())
       .map(({ _statuses, _lawyers, ...row }) => ({
         ...row,
-        toBeBilled:         Math.max(0, row.agreedFees - row.revenue),
         statuses:           Array.from(_statuses),
         responsibleLawyers: Array.from(_lawyers),
       }))
@@ -293,12 +306,10 @@ export default function FinancialRecords() {
   // ── Grand totals (follow the filtered set) ─────────────────────────────────
   const grandTotals = useMemo((): GrandTotals => {
     return filteredRecords.reduce((acc, r) => {
-      const agreed  = Number(r.agreedFees) || 0;
-      const revenue = Number(r.revenue)    || 0;
-      acc.agreedFees        += agreed;
+      acc.agreedFees        += Number(r.agreedFees)        || 0;
       acc.netFees           += Number(r.netFees)           || 0;
-      acc.revenue           += revenue;
-      acc.toBeBilled        += Math.max(0, agreed - revenue);
+      acc.revenue           += Number(r.revenue)           || 0;
+      acc.toBeBilled        += toBeBilledOf(r);
       acc.outstandingAmount += Number(r.outstandingAmount) || 0;
       acc.collectedAmount   += Number(r.collectedAmount)   || 0;
       return acc;
@@ -628,13 +639,13 @@ export default function FinancialRecords() {
                           <TableCell className="text-sm">{formatCurrency(r.agreedFees)}</TableCell>
                           <TableCell className="text-sm">
                             {(() => {
-                              // Revenue is the single amount source (Billed Amount removed).
-                              const agreed  = Number(r.agreedFees) || 0;
-                              const revenue = Number(r.revenue)    || 0;
-                              const tbb     = Math.max(0, agreed - revenue);
-                              const over    = agreed > 0 && revenue > agreed;
+                              // To Be Billed is based on Net Fees (after discount), not Agreed Fees.
+                              const net     = netFeesOf(r);
+                              const revenue = Number(r.revenue) || 0;
+                              const tbb     = Math.max(0, net - revenue);
+                              const over    = net > 0 && revenue > net;
                               if (over) return <span className="text-red-600 font-medium text-xs">Over-recognized</span>;
-                              if (tbb === 0 && agreed > 0) return <span className="text-green-700 text-xs font-medium">Fully billed</span>;
+                              if (tbb === 0 && net > 0) return <span className="text-green-700 text-xs font-medium">Fully billed</span>;
                               return <span className={tbb > 0 ? "text-amber-700 font-medium" : "text-muted-foreground"}>{formatCurrency(tbb)}</span>;
                             })()}
                           </TableCell>
@@ -948,11 +959,12 @@ function StatusBadges({ statuses }: { statuses: string[] }) {
 
 // ─── TBB Cell ─────────────────────────────────────────────────────────────────
 
-function TbbCell({ agreed, revenue }: { agreed: number; revenue: number }) {
-  const tbb  = Math.max(0, agreed - revenue);
-  const over = agreed > 0 && revenue > agreed;
+// `tbb` is the pre-aggregated To Be Billed (SUM of per-record MAX(0, netFees − revenue)).
+// `net`/`revenue` (summed) drive only the over-recognized / fully-billed display states.
+function TbbCell({ tbb, net, revenue }: { tbb: number; net: number; revenue: number }) {
+  const over = net > 0 && revenue > net;
   if (over)               return <span className="text-red-600 font-medium text-xs">Over-recognized</span>;
-  if (tbb === 0 && agreed > 0) return <span className="text-green-700 text-xs font-medium">Fully billed</span>;
+  if (tbb === 0 && net > 0) return <span className="text-green-700 text-xs font-medium">Fully billed</span>;
   if (tbb === 0)          return <span className="text-muted-foreground text-xs">—</span>;
   return <span className="text-amber-700 font-semibold text-sm">{fmt(tbb)}</span>;
 }
@@ -991,7 +1003,7 @@ function ClientSummaryTable({ rows, totals }: { rows: ClientSummaryRow[]; totals
               <TableCell className="text-right text-sm">{fmt(r.netFees)}</TableCell>
               <TableCell className="text-right text-sm font-medium text-green-700">{fmt(r.revenue)}</TableCell>
               <TableCell className="text-right">
-                <TbbCell agreed={r.agreedFees} revenue={r.revenue} />
+                <TbbCell tbb={r.toBeBilled} net={r.netFees} revenue={r.revenue} />
               </TableCell>
               <TableCell className="text-right text-sm text-red-600">{fmt(r.outstandingAmount)}</TableCell>
               <TableCell><StatusBadges statuses={r.statuses} /></TableCell>
@@ -1083,7 +1095,7 @@ function MatterSummaryTable({ rows, totals }: { rows: MatterSummaryRow[]; totals
               <TableCell className="text-right text-sm">{fmt(r.netFees)}</TableCell>
               <TableCell className="text-right text-sm font-medium text-green-700">{fmt(r.revenue)}</TableCell>
               <TableCell className="text-right">
-                <TbbCell agreed={r.agreedFees} revenue={r.revenue} />
+                <TbbCell tbb={r.toBeBilled} net={r.netFees} revenue={r.revenue} />
               </TableCell>
               <TableCell className="text-right text-sm text-red-600">{fmt(r.outstandingAmount)}</TableCell>
               <TableCell><StatusBadges statuses={r.statuses} /></TableCell>

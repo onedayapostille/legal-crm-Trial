@@ -123,7 +123,7 @@ describe("Financial amounts — Revenue as the single source", () => {
     }
   });
 
-  it("To Be Billed report uses revenue (= agreedFees - revenue)", async () => {
+  it("To Be Billed report uses Net Fees after discount (= netFees - revenue)", async () => {
     const caller = adminCaller();
     const stamp = Date.now();
     const client = await caller.clients.create({ clientName: `FinTbb ${stamp}`, clientStatus: "Existing Client" });
@@ -139,11 +139,40 @@ describe("Financial amounts — Revenue as the single source", () => {
       recId = rec.id;
       const after = await caller.financial.summary();
       expect(Number(rec.netFees)).toBe(900);
-      // Current approved formula is agreedFees - revenue = 400. Using netFees
-      // instead would produce 300 and must wait for Finance approval.
-      expect(Math.round(after.totalToBeBilled - before.totalToBeBilled)).toBe(400);
+      // To Be Billed is derived from Net Fees (after discount), NOT Agreed Fees:
+      // netFees(900) - revenue(600) = 300. (The old agreedFees-based formula gave 400.)
+      expect(Math.round(after.totalToBeBilled - before.totalToBeBilled)).toBe(300);
       // revenue contribution to totalRevenue = 600
       expect(Math.round(after.totalRevenue - before.totalRevenue)).toBe(600);
+    } finally {
+      if (recId) await caller.financial.delete({ id: recId });
+      await caller.clients.delete({ id: client.id });
+    }
+  });
+
+  // Exact scenario from the live CRM (AlGhazzawi finance review):
+  //   Agreed Fees 50,000 · CEO 10% discount (5,000) · Net Fees 45,000 · Revenue 25,000
+  //   ⇒ To Be Billed must be 45,000 - 25,000 = 20,000 (NOT 50,000 - 25,000 = 25,000).
+  it("To Be Billed = netFees - revenue for the 50k/10%/25k scenario (= 20000)", async () => {
+    const caller = adminCaller();
+    const stamp = Date.now();
+    const client = await caller.clients.create({ clientName: `FinTbb50 ${stamp}`, clientStatus: "Existing Client" });
+    let recId: number | undefined;
+    try {
+      const before = await caller.financial.summary();
+      const rec = await caller.financial.create({
+        clientId: client.id,
+        agreedFees: "50000",
+        discountApproval: "CEO",
+        revenue: "25000",
+      });
+      recId = rec.id;
+      const after = await caller.financial.summary();
+      // Discount engine: 10% of 50,000 = 5,000 ⇒ netFees = 45,000.
+      expect(Number(rec.discountAmount)).toBe(5000);
+      expect(Number(rec.netFees)).toBe(45000);
+      // To Be Billed = 45,000 - 25,000 = 20,000.
+      expect(Math.round(after.totalToBeBilled - before.totalToBeBilled)).toBe(20000);
     } finally {
       if (recId) await caller.financial.delete({ id: recId });
       await caller.clients.delete({ id: client.id });

@@ -51,8 +51,10 @@ function calcFinancials(f: {
   // Revenue is the single amount field (billed amount was removed; it duplicated this).
   const revenue   = Number(f.revenue)         || 0;
   const collected = Number(f.collectedAmount) || 0;
-  const toBeBilled = Math.max(0, Math.round((agreed - revenue) * 100) / 100);
-  const overbilled = agreed > 0 && revenue > agreed;
+  // To Be Billed is derived from Net Fees (after discount), not Agreed Fees.
+  // When there is no discount, netFees === agreedFees so the result is unchanged.
+  const toBeBilled = Math.max(0, Math.round((netFees - revenue) * 100) / 100);
+  const overbilled = netFees > 0 && revenue > netFees;
   return {
     discountPercentage: String(pct),
     discountAmount:     String(discAmt),
@@ -572,7 +574,7 @@ export default function FinancialDialog({
               className="h-8 text-sm bg-amber-50 border-amber-200 font-semibold text-amber-900"
             />
             <p className="text-xs text-muted-foreground mt-0.5">
-              = MAX(0, Agreed Fees − Revenue)
+              = MAX(0, Net Fees − Revenue)
             </p>
           </div>
 
@@ -643,6 +645,16 @@ export default function FinancialDialog({
                 ))}
               </SelectContent>
             </Select>
+            {/* Invoice Status is a manual field; warn (don't block) on a contradictory
+                "Fully Collected" while Outstanding > 0 so it is set only by design. */}
+            {form.collectionStatus === "Fully Collected" && Number(derived.outstandingAmount) > 0 && (
+              <p className="mt-1 flex items-start gap-1 text-[11px] text-amber-700">
+                <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
+                <span>
+                  Marked “Fully Collected” but Outstanding is SAR {Number(derived.outstandingAmount).toLocaleString("en-US")} (Revenue − Collected). Confirm this is intended.
+                </span>
+              </p>
+            )}
           </div>
 
           {/* ── Finance Notes ─────────────────────────────────────────────── */}

@@ -1517,14 +1517,16 @@ function FinancialSection({
                       <TableCell className="text-sm">
                         {(() => {
                           // Revenue is the single active amount field (Billed Amount
-                          // is legacy/read-only — CRM-012). To Be Billed = agreed − revenue.
-                          const agreed  = Number(r.agreedFees) || 0;
-                          const revenue = Number(r.revenue)    || 0;
-                          const tbb     = Math.max(0, agreed - revenue);
-                          const over    = agreed > 0 && revenue > agreed;
+                          // is legacy/read-only — CRM-012). To Be Billed = Net Fees − Revenue
+                          // (after discount). Net Fees falls back to Agreed Fees on legacy
+                          // rows where net_fees was never populated (no discount).
+                          const net     = Number(r.netFees) || Number(r.agreedFees) || 0;
+                          const revenue = Number(r.revenue) || 0;
+                          const tbb     = Math.max(0, net - revenue);
+                          const over    = net > 0 && revenue > net;
                           if (over) return <span className="text-red-600 font-medium text-xs">Overbilled</span>;
-                          if (tbb === 0 && agreed > 0) return <span className="text-green-700 text-xs font-medium">Fully billed</span>;
-                          return <span className="text-amber-700 font-medium">{agreed > 0 ? fmtSAR(tbb) : "—"}</span>;
+                          if (tbb === 0 && net > 0) return <span className="text-green-700 text-xs font-medium">Fully billed</span>;
+                          return <span className="text-amber-700 font-medium">{net > 0 ? fmtSAR(tbb) : "—"}</span>;
                         })()}
                       </TableCell>
                       <TableCell className="text-sm">{fmtSAR(r.netFees)}</TableCell>

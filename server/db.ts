@@ -2645,8 +2645,10 @@ export async function getFinancialSummary() {
         AND   ${financialRecords.billingDate} IS NOT NULL
         AND   CURRENT_DATE - ${financialRecords.billingDate}::date >= ${overdaysSql}
       )`,
-      // To Be Billed uses Revenue (the single amount source) = MAX(0, agreedFees - revenue).
-      totalToBeBilled:  sql<string>`COALESCE(SUM(GREATEST(0, COALESCE(${financialRecords.agreedFees}, 0)::numeric - COALESCE(${financialRecords.revenue}, 0)::numeric)), 0)`,
+      // To Be Billed = MAX(0, netFees - revenue), using Net Fees (after discount).
+      // Fall back to agreedFees when netFees is NULL (legacy rows never re-saved):
+      // with no discount applied netFees == agreedFees, so the result is unchanged.
+      totalToBeBilled:  sql<string>`COALESCE(SUM(GREATEST(0, COALESCE(${financialRecords.netFees}, ${financialRecords.agreedFees}, 0)::numeric - COALESCE(${financialRecords.revenue}, 0)::numeric)), 0)`,
     })
     .from(financialRecords);
   return {
@@ -2663,9 +2665,11 @@ export async function getFinancialSummary() {
 export async function getToBeBilledBreakdown() {
   const db = getDb();
 
-  // Reusable SQL expression: MAX(0, agreedFees - revenue) per row, then SUM.
-  // Revenue is the single amount source; legacy billed_amount is not used.
-  const tbbSum = sql<string>`COALESCE(SUM(GREATEST(0, COALESCE(${financialRecords.agreedFees}, 0)::numeric - COALESCE(${financialRecords.revenue}, 0)::numeric)), 0)`;
+  // Reusable SQL expression: MAX(0, netFees - revenue) per row, then SUM.
+  // Net Fees (after discount) is the basis; falls back to agreedFees when netFees
+  // is NULL (legacy rows). Revenue is the single amount source; legacy
+  // billed_amount is not used.
+  const tbbSum = sql<string>`COALESCE(SUM(GREATEST(0, COALESCE(${financialRecords.netFees}, ${financialRecords.agreedFees}, 0)::numeric - COALESCE(${financialRecords.revenue}, 0)::numeric)), 0)`;
 
   // ── By Client ──────────────────────────────────────────────────────────────
   const byClientRaw = await db
