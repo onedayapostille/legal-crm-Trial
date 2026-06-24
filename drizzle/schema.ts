@@ -361,6 +361,24 @@ export const auditLogs = pgTable("audit_logs", {
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type InsertAuditLog = typeof auditLogs.$inferInsert;
 
+// ─── AI Assistant audit trail ─────────────────────────────────────────────────
+// One row per AI Assistant question. Records WHO asked WHAT, over WHICH period,
+// and WHICH data scope + model were used. The AI's full answer is intentionally
+// NOT stored (it can contain aggregated business detail); only the question and
+// metadata are kept for accountability.
+export const aiAuditLogs = pgTable("ai_audit_logs", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").references(() => users.id),
+  question: text("question").notNull(),
+  period: varchar("period", { length: 20 }),
+  dataScopeUsed: text("data_scope_used"),
+  model: varchar("model", { length: 200 }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export type AiAuditLog = typeof aiAuditLogs.$inferSelect;
+export type InsertAiAuditLog = typeof aiAuditLogs.$inferInsert;
+
 // ─── In-app Notifications ─────────────────────────────────────────────────────
 export const userNotifications = pgTable("user_notifications", {
   id: serial("id").primaryKey(),

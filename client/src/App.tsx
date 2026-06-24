@@ -16,6 +16,7 @@ import StatusTracker from "@/pages/StatusTracker";
 import KPIDashboard from "@/pages/KPIDashboard";
 import PaymentTracker from "@/pages/PaymentTracker";
 import PipelineForecast from "@/pages/PipelineForecast";
+import AIAssistant from "@/pages/AIAssistant";
 import UserManagement from "@/pages/UserManagement";
 import MatterList from "@/pages/MatterList";
 import MatterNew from "@/pages/MatterNew";
@@ -144,6 +145,9 @@ function Router() {
         <ProtectedRoute>
           <DashboardLayout><PipelineForecast /></DashboardLayout>
         </ProtectedRoute>
+      </Route>
+      <Route path="/ai-assistant">
+        <ProtectedRoute permission="ai:assistant"><AIAssistant /></ProtectedRoute>
       </Route>
 
       {/* Admin */}

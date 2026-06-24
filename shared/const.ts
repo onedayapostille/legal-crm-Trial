@@ -32,6 +32,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "payments:view",
     "financial:view",
     "actions:manage",
+    "ai:assistant",
   ],
   partner: [
     "dashboard:view",
@@ -44,6 +45,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "payments:view",
     "financial:view",
     "actions:manage",
+    "ai:assistant",
   ],
   lawyer: [
     "dashboard:view",
@@ -53,6 +55,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "tasks:manage",
     "analytics:view",
     "actions:manage",
+    "ai:assistant",
   ],
   finance: [
     "dashboard:view",
@@ -61,6 +64,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "financial:manage",
     "payments:view",
     "analytics:view",
+    "ai:assistant",
   ],
   staff: [
     "dashboard:view",

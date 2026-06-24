@@ -23,7 +23,7 @@ import { useIsMobile } from "@/hooks/useMobile";
 import {
   LayoutDashboard, LogOut, PanelLeft, Users, FileText, BarChart3,
   DollarSign, TrendingUp, UserCog, Briefcase, CheckSquare, Home,
-  Building2, UserCheck, UserX, Calendar, Upload,
+  Building2, UserCheck, UserX, Calendar, Upload, Sparkles,
 } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
@@ -48,6 +48,7 @@ const menuItems = [
   { icon: BarChart3,     label: "Status Tracker",     path: "/status-tracker",    permission: "analytics:view" },
   { icon: LayoutDashboard, label: "KPI Dashboard",   path: "/kpi-dashboard",     permission: "analytics:view" },
   { icon: TrendingUp,    label: "Pipeline",           path: "/pipeline-forecast", permission: "analytics:view" },
+  { icon: Sparkles,      label: "AI Assistant",       path: "/ai-assistant",      permission: "ai:assistant" },
   { icon: UserCog,       label: "User Management",   path: "/user-management",   permission: "users:manage" },
 ];
 

@@ -5,7 +5,10 @@ import { TRPCError } from "@trpc/server";
 import type { Request } from "express";
 import { z } from "zod";
 import * as db from "./db";
-import { testNvidiaConnection } from "./_core/nvidia";
+import { testNvidiaConnection, callNvidiaChat, NVIDIA_UNAVAILABLE_MESSAGE } from "./_core/nvidia";
+import {
+  gatherCrmData, buildAiMessages, checkAiRateLimit, AI_MODEL_NAME,
+} from "./aiAnalytics";
 import { USER_ROLES, USER_STATUSES, type UserRole, type UserStatus } from "../shared/const";
 
 function formatDbError(err: any) {
@@ -1305,7 +1308,68 @@ export const appRouter = router({
   // /api/trpc). adminProcedure enforces admin-only access; the result reports
   // success/failure and NEVER includes the API key.
   ai: router({
+    // Admin-only connectivity check (POST /api/ai/test-nvidia equivalent).
     testNvidia: adminProcedure.mutation(async () => testNvidiaConnection()),
+
+    // Management AI Assistant (POST /api/ai/ask equivalent). RBAC-gated by
+    // "ai:assistant" (admin/manager/partner/lawyer/finance). The model receives
+    // ONLY role-scoped structured JSON from safe read-only analytics — never the
+    // database, never SQL, never the API key.
+    ask: permissionProcedure("ai:assistant")
+      .input(z.object({
+        question: z.string().trim().min(1).max(2000),
+        period: z.enum(["month", "quarter", "year", "all"]).default("month"),
+      }))
+      .mutation(async ({ input, ctx }) => {
+        const user = ctx.user!;
+
+        // Rate limit per user to prevent abuse.
+        const rl = checkAiRateLimit(user.id);
+        if (!rl.allowed) {
+          throw new TRPCError({
+            code: "TOO_MANY_REQUESTS",
+            message: "Too many AI requests. Please wait a moment and try again.",
+          });
+        }
+
+        // Gather only the data this role may use. The AI cannot reach anything else.
+        const { data, scope } = await gatherCrmData({ id: user.id, role: user.role }, input.period);
+
+        // Audit the question + scope used (NOT the answer, NOT the raw payload).
+        await db.createAiAuditLog({
+          userId: user.id,
+          question: input.question,
+          period: input.period,
+          dataScopeUsed: scope.sections.join(","),
+          model: AI_MODEL_NAME,
+        }).catch(() => { /* never block the request on audit write */ });
+
+        // Call NVIDIA; ANY failure (incl. missing key / timeout) → safe fallback.
+        let answer: string;
+        let ok = true;
+        try {
+          const result = await callNvidiaChat({
+            messages: buildAiMessages(input.question, data, input.period),
+            maxTokens: 4096,
+            temperature: 0.2,
+            topP: 0.95,
+            timeoutMs: 30_000,
+          });
+          answer = (result.content ?? "").trim() || NVIDIA_UNAVAILABLE_MESSAGE;
+          if (answer === NVIDIA_UNAVAILABLE_MESSAGE) ok = false;
+        } catch {
+          ok = false;
+          answer = NVIDIA_UNAVAILABLE_MESSAGE;
+        }
+
+        // dataScope lists section NAMES only (no raw values leave the server here).
+        return { ok, answer, period: input.period, dataScope: scope.sections };
+      }),
+
+    // Admin-only access to the AI audit trail (access control on stored records).
+    auditLog: adminProcedure
+      .input(z.object({ limit: z.number().int().positive().max(500).default(100) }).optional())
+      .query(async ({ input }) => db.getAiAuditLogs(input?.limit ?? 100)),
   }),
 });
 
