@@ -22,11 +22,10 @@ ENV JWT_SECRET="493b960b0dc88a0595aa6388f9b1c5c2c82c6a114ff91ba6c28e21b702879dd0
 ENV AUTH_SECRET="493b960b0dc88a0595aa6388f9b1c5c2c82c6a114ff91ba6c28e21b702879dd0"
 
 # AI Assistant (NVIDIA NIM). Same "host doesn't inject runtime env" workaround as
-# above, but the KEY is passed at BUILD TIME via --build-arg so it is NOT
-# committed to git:  docker build --build-arg NVIDIA_API_KEY=nvapi-xxxx .
-# BASE_URL/MODEL are not secrets; these match the code defaults. Correct base URL
-# is the API host (integrate.api.nvidia.com), NOT the model's build.nvidia.com page.
-ARG NVIDIA_API_KEY=""
+# the DB/JWT above. TEMPORARY — this key is exposed in git history; ROTATE it once
+# the assistant is confirmed working, and move to real runtime env injection.
+# A --build-arg still overrides this default if your build supports it.
+ARG NVIDIA_API_KEY="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"
 ENV NVIDIA_API_KEY=$NVIDIA_API_KEY
 ENV NVIDIA_BASE_URL="https://integrate.api.nvidia.com/v1"
 ENV NVIDIA_MODEL="google/diffusiongemma-26b-a4b-it"
