@@ -1027,16 +1027,20 @@ export async function getAllTasks(
     if (vis) conditions.push(vis);
   }
 
-  // Join assignee + client matter so the per-client/per-matter task lists can show
-  // names without extra round-trips.
+  // Join assignee + client + client matter so BOTH the main Tasks page and the
+  // per-client tab render full context (client name, matter reference/type,
+  // assignee) from one query — they read the exact same rows, just filtered.
   return db
     .select({
       ...getTableColumns(tasks),
       assigneeName: users.name,
+      clientName: clients.clientName,
       matterReference: clientMatters.matterReference,
+      matterType: clientMatters.matterType,
     })
     .from(tasks)
     .leftJoin(users, eq(users.id, tasks.assignedTo))
+    .leftJoin(clients, eq(clients.id, tasks.clientId))
     .leftJoin(clientMatters, eq(clientMatters.id, tasks.clientMatterId))
     .where(conditions.length > 0 ? and(...conditions) : undefined)
     .orderBy(tasks.dueDate, desc(tasks.createdAt));
@@ -2833,12 +2837,19 @@ async function syncTaskFromActionLog(
 
   const title = (log.nextStep ?? "").trim().slice(0, 500);
   const description = log.actionType ? `${log.actionType}: ${log.nextStep}` : log.nextStep;
+  // Provenance so the Tasks UI can label the origin clearly (e.g. Document, Call,
+  // Meeting, Email). The concrete action-log row is `source_id`; the one-to-one
+  // `client_action_log_id` remains the idempotent upsert key + detail back-link,
+  // which is why these auto-created tasks are never duplicated.
+  const sourceType = (log.actionType ?? "").trim() || "action_log";
   const values = {
     title,
     description: description ?? null,
     clientId: log.clientId,
     clientMatterId: log.clientMatterId ?? null,
     clientActionLogId: log.id,
+    sourceType,
+    sourceId: log.id,
     dueDate: log.actionDate ?? null,
     createdBy: userId ?? undefined,
     updatedAt: new Date(),
@@ -2853,6 +2864,8 @@ async function syncTaskFromActionLog(
         title: values.title!,
         description: values.description ?? null,
         clientMatterId: values.clientMatterId ?? null,
+        sourceType,
+        sourceId: log.id,
         dueDate: values.dueDate ?? null,
         updatedAt: new Date(),
       })

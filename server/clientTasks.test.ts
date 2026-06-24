@@ -112,17 +112,13 @@ describe("Client tasks — client/matter scoping, filters, rejected lock", () =>
     }
   });
 
-  it("global task creation (no client) still works for cross-client view", async () => {
+  it("rejects orphan tasks: a task must be linked to a client", async () => {
     const caller = adminCaller();
     const stamp = Date.now();
-    let id: number | undefined;
-    try {
-      const t = await caller.tasks.create({ title: `Global ${stamp}` });
-      id = t.id;
-      expect(t.id).toBeGreaterThan(0);
-      expect(t.clientId == null).toBe(true);
-    } finally {
-      if (id) await caller.tasks.delete({ id });
-    }
+    // No clientId → validation error (BAD_REQUEST). Enforces "no orphan tasks".
+    await expect(
+      // @ts-expect-error clientId is intentionally omitted to assert it is required
+      caller.tasks.create({ title: `Orphan ${stamp}` }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 });

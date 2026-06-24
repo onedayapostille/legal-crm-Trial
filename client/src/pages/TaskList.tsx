@@ -19,6 +19,23 @@ const PRIORITY_LABELS: Record<string, { label: string; color: string }> = {
   high:   { label: "High",   color: "bg-orange-100 text-orange-700" },
   urgent: { label: "Urgent", color: "bg-red-100 text-red-700" },
 };
+const STATUS_LABELS: Record<string, string> = {
+  todo: "To Do", in_progress: "In Progress", done: "Done", cancelled: "Cancelled",
+};
+const STATUS_BADGE: Record<string, string> = {
+  todo: "bg-gray-100 text-gray-700",
+  in_progress: "bg-blue-100 text-blue-700",
+  done: "bg-green-100 text-green-700",
+  cancelled: "bg-zinc-100 text-zinc-500",
+};
+// Friendly label for a task's source/provenance (action_log, Call, Meeting, …).
+const SOURCE_LABELS: Record<string, string> = {
+  action_log: "Action Log", call: "Call", meeting: "Meeting",
+  email: "Email", document: "Document", follow_up: "Follow-up",
+  financial_review: "Financial Review",
+};
+const sourceLabel = (s?: string | null) =>
+  s ? (SOURCE_LABELS[s.toLowerCase()] ?? s.replace(/_/g, " ")) : "";
 
 function StatusIcon({ status }: { status: string }) {
   if (status === "done") return <CheckCircle2 className="h-4 w-4 text-green-500" />;
@@ -121,18 +138,44 @@ export default function TaskList() {
                         {task.description && (
                           <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{task.description}</p>
                         )}
+                        {/* Client / matter context — same record shown on the client tab */}
+                        <div className="flex items-center gap-1.5 mt-1 flex-wrap text-xs">
+                          {(task as any).clientName ? (
+                            <Badge variant="secondary" className="font-normal">
+                              {(task as any).clientName}
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="font-normal text-muted-foreground">No client</Badge>
+                          )}
+                          {(task as any).clientMatterId ? (
+                            <Badge variant="outline" className="font-normal">
+                              {(task as any).matterReference ?? "Matter"}
+                              {(task as any).matterType ? ` · ${(task as any).matterType}` : ""}
+                            </Badge>
+                          ) : (
+                            (task as any).clientName && <span className="text-muted-foreground">Client-level</span>
+                          )}
+                          {task.sourceType && (
+                            <Badge variant="outline" className="font-normal capitalize bg-amber-50 text-amber-700 border-amber-200">
+                              {sourceLabel(task.sourceType)}
+                            </Badge>
+                          )}
+                        </div>
                         <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_BADGE[task.status ?? "todo"]}`}>
+                            {STATUS_LABELS[task.status ?? "todo"] ?? task.status}
+                          </span>
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${pri?.color}`}>
+                            {pri?.label}
+                          </span>
+                          {(task as any).assigneeName && (
+                            <span className="text-xs text-muted-foreground">· {(task as any).assigneeName}</span>
+                          )}
                           {task.dueDate && (
                             <span className={`text-xs flex items-center gap-1 ${isOverdue ? "text-orange-500" : "text-muted-foreground"}`}>
                               {isOverdue && <AlertCircle className="h-3 w-3" />}
                               {new Date(task.dueDate).toLocaleDateString()}
                             </span>
-                          )}
-                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${pri?.color}`}>
-                            {pri?.label}
-                          </span>
-                          {(task as any).matterReference && (
-                            <span className="text-xs text-muted-foreground">· {(task as any).matterReference}</span>
                           )}
                         </div>
                       </button>
