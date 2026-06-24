@@ -1,5 +1,5 @@
-import { useState, useMemo } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { useState, useMemo, useEffect } from "react";
+import { Plus, Trash2, Eye } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,7 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
+import { TaskDetailDialog } from "@/components/TaskDetailDialog";
 
 export const TASK_STATUSES = ["todo", "in_progress", "done", "cancelled"] as const;
 export const TASK_STATUS_LABELS: Record<string, string> = {
@@ -32,8 +33,12 @@ function isOpenMatter(m: any): boolean {
 
 /** Tasks tab inside the client profile: filterable, client-scoped task list. */
 export function ClientTasksSection({
-  clientId, clientName, matters, canManage,
-}: { clientId: number; clientName: string; matters: any[]; canManage: boolean }) {
+  clientId, clientName, matters, canManage, initialTaskId,
+}: {
+  clientId: number; clientName: string; matters: any[]; canManage: boolean;
+  /** When provided (e.g. from ?taskId= in the URL), auto-opens that task's details. */
+  initialTaskId?: number | null;
+}) {
   const utils = trpc.useUtils();
   const { data: tasks = [] } = trpc.tasks.list.useQuery({ clientId });
   const { data: lawyers = [] } = trpc.users.assignableLawyers.useQuery();
@@ -42,6 +47,12 @@ export function ClientTasksSection({
   const [statusFilter, setStatusFilter] = useState("all");
   const [assigneeFilter, setAssigneeFilter] = useState("all");
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [detailTaskId, setDetailTaskId] = useState<number | null>(initialTaskId ?? null);
+
+  // Open the requested task's details when arriving via ?tab=tasks&taskId=…
+  useEffect(() => {
+    if (initialTaskId != null) setDetailTaskId(initialTaskId);
+  }, [initialTaskId]);
 
   const invalidate = () => utils.tasks.list.invalidate();
   const updateTask = trpc.tasks.update.useMutation({
@@ -117,16 +128,21 @@ export function ClientTasksSection({
                     <TableHead>Status</TableHead>
                     <TableHead>Priority</TableHead>
                     <TableHead>Due</TableHead>
-                    {canManage && <TableHead />}
+                    <TableHead className="text-right">Details</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filtered.map((t: any) => (
-                    <TableRow key={t.id}>
-                      <TableCell className="font-medium">{t.title}</TableCell>
+                    <TableRow key={t.id} className="cursor-pointer hover:bg-muted/40" onClick={() => setDetailTaskId(t.id)}>
+                      <TableCell className="font-medium">
+                        <span className="hover:underline">{t.title}</span>
+                        <span className="ml-2 align-middle text-[11px] text-muted-foreground">
+                          {t.clientMatterId ? "Matter-level" : "Client-level"}
+                        </span>
+                      </TableCell>
                       <TableCell className="text-sm text-muted-foreground">{t.matterReference ?? "—"}</TableCell>
                       <TableCell className="text-sm">{t.assigneeName ?? "—"}</TableCell>
-                      <TableCell>
+                      <TableCell onClick={e => e.stopPropagation()}>
                         {canManage ? (
                           <Select value={t.status} onValueChange={v => updateTask.mutate({ id: t.id, status: v })}>
                             <SelectTrigger className="h-7 w-32 text-xs"><SelectValue /></SelectTrigger>
@@ -142,14 +158,22 @@ export function ClientTasksSection({
                       <TableCell className="text-sm text-muted-foreground">
                         {t.dueDate ? new Date(t.dueDate).toLocaleDateString() : "—"}
                       </TableCell>
-                      {canManage && (
-                        <TableCell>
-                          <Button variant="ghost" size="sm" className="text-destructive"
-                            onClick={() => deleteTask.mutate({ id: t.id })} disabled={deleteTask.isPending}>
-                            <Trash2 className="h-4 w-4" />
+                      <TableCell className="text-right" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center justify-end gap-1">
+                          <Button variant="ghost" size="sm" title="View details"
+                            onClick={() => setDetailTaskId(t.id)}>
+                            <Eye className="h-4 w-4" />
                           </Button>
-                        </TableCell>
-                      )}
+                          {/* Delete only with manage permission (and disabled for Rejected
+                              clients, where canManage is already false → read-only history). */}
+                          {canManage && (
+                            <Button variant="ghost" size="sm" className="text-destructive"
+                              onClick={() => deleteTask.mutate({ id: t.id })} disabled={deleteTask.isPending}>
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -165,6 +189,12 @@ export function ClientTasksSection({
         clientId={clientId}
         clientName={clientName}
         matters={matters}
+      />
+
+      <TaskDetailDialog
+        taskId={detailTaskId}
+        open={detailTaskId != null}
+        onClose={() => setDetailTaskId(null)}
       />
     </div>
   );
