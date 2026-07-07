@@ -16,8 +16,8 @@ source is `applyDiscountRules()` in `server/db.ts` and the To-Be-Billed SQL in
 | Discount % / Discount Amount | Active (derived) | Computed from Discount Approval. |
 | Net Fees | Active (derived) | Computed from Agreed Fees − Discount Amount. |
 | Collected Amount | Active (input) | Basis for Outstanding. |
-| Outstanding Amount | Active (derived) | Computed from Revenue − Collected. |
-| To Be Billed | Active (derived, view-layer) | Computed from Agreed Fees − Revenue. |
+| Outstanding Amount | Active (derived) | Computed from Revenue − Collected, clamped at 0. |
+| To Be Billed | Active (derived, view-layer) | Computed from **Net Fees** − Revenue (after discount), clamped at 0. |
 | Invoice Status (`collection_status`) | Active (input) | Not Billed / Partially Billed / Billed / Partially Collected / Fully Collected / Overdue. |
 | **Billed Amount** (`billed_amount`) | **Legacy, read-only** | NEVER written by the app (CRM-012). Historical values preserved. |
 | **Remaining Advanced** (`remaining_advanced`) | **Legacy, read-only** | NEVER written by the app (CRM-012). Historical values preserved. |
@@ -31,8 +31,18 @@ Discount %        = DISCOUNT_RATES[discountApproval]
 Discount Amount   = round2(agreedFees * Discount% / 100)
 Net Fees          = round2(max(0, agreedFees - Discount Amount))
 Outstanding       = round2(max(0, revenue - collectedAmount))
-To Be Billed      = max(0, agreedFees - revenue)        // computed in UI + getToBeBilledBreakdown SQL
+To Be Billed      = max(0, netFees - revenue)           // computed in UI + getFinancialSummary/getToBeBilledBreakdown SQL
 ```
+
+Finance / Invoicing edits: `agreedFees`, `revenue`, and `collectedAmount` are
+validated as **non-negative** at the API boundary (`nonNegativeMoney` in
+`server/routers.ts`) and again in `assertNonNegativeFinancialAmounts`
+(`server/db.ts`). Editing an existing record updates the same row by `id` (no new
+invoice is created); every changed field is recorded in `audit_logs`
+(`entityType = "financial_record"`). Invoice Status (`collection_status`) is a
+**manually controlled** field — it is not auto-derived from the collected amount,
+because the enum also encodes billing-workflow states (Not Billed / Partially
+Billed / Billed) that a collected-amount comparison cannot express.
 
 ### Discount Approval → Discount %
 
@@ -58,11 +68,10 @@ To Be Billed      = max(0, agreedFees - revenue)        // computed in UI + getT
 
 ## Items flagged for finance confirmation
 
-- **[NEEDS FINANCE APPROVAL]** Whether `To Be Billed` should be
-  `agreedFees - revenue` or `netFees - revenue` (i.e. before vs after discount).
-  Current logic uses **Agreed Fees**. If finance intends net-of-discount, this is
-  a one-line change in `applyDiscountRules`/`getToBeBilledBreakdown` — not changed
-  here pending confirmation.
+- **[RESOLVED]** `To Be Billed` uses **Net Fees** (net-of-discount):
+  `max(0, netFees - revenue)`. Implemented in `getFinancialSummary`/
+  `getToBeBilledBreakdown` SQL and mirrored in the UI; covered by
+  `server/financialRevenue.test.ts` (the 50k/10%/25k ⇒ 20k scenario).
 - **[NEEDS FINANCE APPROVAL]** Whether `Outstanding` should derive from `revenue`
   or `netFees` when a discount applies. Current logic uses **Revenue**.
 - **[NEEDS FINANCE APPROVAL]** Disposition of the legacy `billed_amount` /

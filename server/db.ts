@@ -199,6 +199,27 @@ function round2(n: number) {
   return Math.round(n * 100) / 100;
 }
 
+// Finance / Invoicing: monetary inputs must be finite and NON-NEGATIVE.
+// The public router validates this via zod (nonNegativeMoney), but this guard is
+// defense-in-depth for any internal caller of create/updateFinancialRecord.
+// Empty / null / undefined means "leave unset" and is allowed. Throws BAD_REQUEST
+// (HTTP 400) on a negative or non-numeric amount. Outstanding is separately
+// clamped to max(0, revenue - collected) in applyDiscountRules and so can never
+// be persisted negative.
+export function assertNonNegativeFinancialAmounts(data: Record<string, unknown>) {
+  for (const field of ["agreedFees", "revenue", "collectedAmount"] as const) {
+    const raw = data[field];
+    if (raw === null || raw === undefined || raw === "") continue;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `${field} must be a valid non-negative number.`,
+      });
+    }
+  }
+}
+
 export function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
@@ -2653,6 +2674,7 @@ export async function assertMatterBelongsToClient(
 export async function createFinancialRecord(data: InsertFinancialRecord, userId: number) {
   const db = getDb();
   await assertMatterBelongsToClient((data as any).clientMatterId, (data as any).clientId);
+  assertNonNegativeFinancialAmounts(data as Record<string, unknown>);
   const computed = applyDiscountRules(data as Record<string, unknown>) as InsertFinancialRecord;
   const [record] = await db
     .insert(financialRecords)
@@ -2683,6 +2705,9 @@ export async function updateFinancialRecord(id: number, data: Partial<InsertFina
     remainingAdvanced: _legacyRemainingAdvanced,
     ...editableData
   } = data;
+
+  // Finance amounts (agreedFees, revenue, collectedAmount) must never be negative.
+  assertNonNegativeFinancialAmounts(editableData as Record<string, unknown>);
 
   // CRM-010: if the matter link is being set/changed (and not cleared), it must
   // belong to this record's client. clientId is immutable on update.
