@@ -11,6 +11,16 @@ import {
 } from "./aiAnalytics";
 import { USER_ROLES, USER_STATUSES, type UserRole, type UserStatus } from "../shared/const";
 
+// Money input validation (Finance / Invoicing). A monetary string must be a
+// finite, NON-NEGATIVE number. Negative fees, revenue, or collected amounts are
+// never valid — a refund/adjustment is modelled by lowering the amount, not by a
+// negative value. An empty string means "leave unset" and is allowed. A failing
+// refine surfaces to the client as a tRPC BAD_REQUEST (HTTP 400).
+const nonNegativeMoney = z.string().refine(
+  v => v === "" || (Number.isFinite(Number(v)) && Number(v) >= 0),
+  { message: "Amount must be a valid non-negative number (e.g. 10000)." },
+);
+
 function formatDbError(err: any) {
   const messages = [err?.message, err?.cause?.message]
     .filter((message): message is string => Boolean(message));
@@ -1121,14 +1131,14 @@ export const appRouter = router({
         clientId: z.number(),
         clientMatterId: z.number().optional(),
         feeType: z.enum(["Billable Hours", "Fixed / Project-Based Fees", "Retainers", "Success Fees", "Advisory / Special Mandates", "Blended"]).optional(),
-        agreedFees: z.string().optional(),
+        agreedFees: nonNegativeMoney.optional(),
         discountApproval: z.enum(["N/A", "P&L Head Lawyers", "CEO", "Board"]).default("N/A"),
         // discountPercentage, discountAmount, netFees are server-computed from discountApproval.
         // Revenue is the single active amount field. billed_amount is NOT written
         // (legacy/read-only, CRM-012) and is NOT mirrored to revenue — see
         // applyDiscountRules and FINANCIAL_FORMULAS.md.
-        revenue: z.string().optional(),
-        collectedAmount: z.string().optional(),
+        revenue: nonNegativeMoney.optional(),
+        collectedAmount: nonNegativeMoney.optional(),
         // outstandingAmount is server-computed; remainingAdvanced is legacy/read-only.
         collectionStatus: z.enum(["Not Billed", "Partially Billed", "Billed", "Partially Collected", "Fully Collected", "Overdue"]).default("Not Billed"),
         billingDate: z.string().optional(),
@@ -1148,13 +1158,13 @@ export const appRouter = router({
         id: z.number(),
         clientMatterId: z.number().nullable().optional(), // null = unlink matter
         feeType: z.enum(["Billable Hours", "Fixed / Project-Based Fees", "Retainers", "Success Fees", "Advisory / Special Mandates", "Blended"]).optional(),
-        agreedFees: z.string().optional(),
+        agreedFees: nonNegativeMoney.optional(),
         discountApproval: z.enum(["N/A", "P&L Head Lawyers", "CEO", "Board"]).optional(),
         // discountPercentage, discountAmount, netFees are server-computed.
         // Revenue is the single active amount field. billed_amount stays legacy/
         // read-only (CRM-012) — never mirrored. See FINANCIAL_FORMULAS.md.
-        revenue: z.string().optional(),
-        collectedAmount: z.string().optional(),
+        revenue: nonNegativeMoney.optional(),
+        collectedAmount: nonNegativeMoney.optional(),
         // outstandingAmount is server-computed; remainingAdvanced is legacy/read-only.
         collectionStatus: z.enum(["Not Billed", "Partially Billed", "Billed", "Partially Collected", "Fully Collected", "Overdue"]).optional(),
         billingDate: z.string().optional(),

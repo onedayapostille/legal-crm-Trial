@@ -259,6 +259,11 @@ export default function FinancialDialog({
         setFormError(`${label} must be a valid number (e.g. 10000).`);
         return;
       }
+      // Finance amounts can never be negative (mirrors the server-side guard).
+      if (v !== "" && Number(v) < 0) {
+        setFormError(`${label} cannot be negative.`);
+        return;
+      }
     }
 
     // clientMatterId: number to link, null to unlink (edit), omit on create with no matter
@@ -474,6 +479,8 @@ export default function FinancialDialog({
           <div>
             <Label className="text-xs">Agreed Fees (SAR)</Label>
             <Input
+              type="number"
+              min="0"
               value={form.agreedFees}
               onChange={e => setField("agreedFees", e.target.value)}
               className="h-8 text-sm"
@@ -536,6 +543,8 @@ export default function FinancialDialog({
                 {key === "revenue" ? "Revenue" : "Collected Amount"}
               </Label>
               <Input
+                type="number"
+                min="0"
                 value={form[key]}
                 onChange={e => setField(key, e.target.value)}
                 className="h-8 text-sm"
