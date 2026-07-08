@@ -266,8 +266,6 @@ export const appRouter = router({
       }),
 
     statusSummary: permissionProcedure("analytics:view").query(async () => db.getLeadStatusSummary()),
-    kpiMetrics: permissionProcedure("analytics:view").query(async ({ ctx }) => db.getLeadKpiMetrics(ctx.user!)),
-    pipelineForecast: permissionProcedure("analytics:view").query(async () => db.getPipelineForecast()),
   }),
 
   // ─── Matters ──────────────────────────────────────────────────────────────

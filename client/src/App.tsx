@@ -13,9 +13,7 @@ import Dashboard from "@/pages/Dashboard";
 import EnquiryForm from "@/pages/EnquiryForm";
 import EnquiriesLog from "@/pages/EnquiriesLog";
 import StatusTracker from "@/pages/StatusTracker";
-import KPIDashboard from "@/pages/KPIDashboard";
 import PaymentTracker from "@/pages/PaymentTracker";
-import PipelineForecast from "@/pages/PipelineForecast";
 import AIAssistant from "@/pages/AIAssistant";
 import UserManagement from "@/pages/UserManagement";
 import MatterList from "@/pages/MatterList";
@@ -131,19 +129,9 @@ function Router() {
           <DashboardLayout><StatusTracker /></DashboardLayout>
         </ProtectedRoute>
       </Route>
-      <Route path="/kpi-dashboard">
-        <ProtectedRoute>
-          <DashboardLayout><KPIDashboard /></DashboardLayout>
-        </ProtectedRoute>
-      </Route>
       <Route path="/payment-tracker">
         <ProtectedRoute>
           <DashboardLayout><PaymentTracker /></DashboardLayout>
-        </ProtectedRoute>
-      </Route>
-      <Route path="/pipeline-forecast">
-        <ProtectedRoute>
-          <DashboardLayout><PipelineForecast /></DashboardLayout>
         </ProtectedRoute>
       </Route>
       <Route path="/ai-assistant">
