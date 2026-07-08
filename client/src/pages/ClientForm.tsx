@@ -40,7 +40,6 @@ function NewClientForm() {
       // the Recent Leads widget, and the client list update without a manual
       // refresh. Refetch (not optimistic merge) → no duplicate rows.
       utils.dashboard.stats.invalidate();
-      utils.leads.kpiMetrics.invalidate();
       utils.clients.list.invalidate();
       utils.clients.recentLeads.invalidate();
       utils.clients.statusCounts.invalidate();

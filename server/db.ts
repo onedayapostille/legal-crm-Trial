@@ -877,36 +877,6 @@ export async function getLeadKpiMetrics(viewer?: TaskViewer) {
   };
 }
 
-export async function getPipelineForecast() {
-  const db = getDb();
-  const weights: Record<string, number> = {
-    New: 0.05,
-    Contacted: 0.15,
-    "Meeting Scheduled": 0.35,
-    "Proposal Sent": 0.6,
-    Converted: 1.0,
-    Lost: 0,
-    "On Hold": 0.1,
-  };
-
-  const rows = await db
-    .select({
-      status: leads.currentStatus,
-      count: count(),
-      totalValue: sql<string>`COALESCE(SUM(${leads.proposalValue}), 0)`,
-    })
-    .from(leads)
-    .groupBy(leads.currentStatus);
-
-  return rows.map(r => ({
-    status: r.status,
-    count: r.count,
-    totalValue: Number(r.totalValue),
-    probability: weights[r.status ?? ""] ?? 0,
-    weightedValue: Number(r.totalValue) * (weights[r.status ?? ""] ?? 0),
-  }));
-}
-
 export async function getRecentActivity(limit = 20) {
   const db = getDb();
   return db

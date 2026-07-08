@@ -71,7 +71,7 @@ describe("Enquiry datetime — UTC storage, local override, report correctness",
     const caller = adminCaller();
     const stamp = Date.now();
 
-    const before = await caller.leads.kpiMetrics();
+    const before = await caller.dashboard.stats();
 
     // An old enquiry (years ago) must NOT count toward this month.
     const old = await caller.leads.create({
@@ -88,7 +88,7 @@ describe("Enquiry datetime — UTC storage, local override, report correctness",
       enquiryAt: new Date().toISOString(),
     });
     try {
-      const after = await caller.leads.kpiMetrics();
+      const after = await caller.dashboard.stats();
       // newLeads (this month) increased by exactly 1 (the current one, not the old one).
       expect(after.newLeads - before.newLeads).toBe(1);
     } finally {

@@ -85,7 +85,6 @@ export default function EnquiryForm({ id }: EnquiryFormProps) {
   // intake is visible immediately without a manual refresh (same-user real-time).
   const invalidateCanonicalIntake = () => {
     utils.leads.list.invalidate();
-    utils.leads.kpiMetrics.invalidate();
     utils.dashboard.stats.invalidate();
     utils.clients.list.invalidate();
     utils.clients.recentLeads.invalidate();
