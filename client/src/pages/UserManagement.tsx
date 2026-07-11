@@ -87,7 +87,14 @@ export default function UserManagement() {
 
   const { data: users, isLoading, error } = trpc.users.list.useQuery();
 
-  const refreshUsers = () => utils.users.list.invalidate();
+  const refreshUsers = () => {
+    utils.users.list.invalidate();
+    // Lawyer-assignment dropdowns feed off these queries — refetch so a user
+    // created/deactivated/reactivated here appears/disappears immediately.
+    utils.users.eligibleLawyers.invalidate();
+    utils.users.assignableLawyers.invalidate();
+    utils.users.leadLawyers.invalidate();
+  };
 
   const createMutation = trpc.users.create.useMutation({
     onSuccess: () => {

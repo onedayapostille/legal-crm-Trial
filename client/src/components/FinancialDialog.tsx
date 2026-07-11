@@ -11,6 +11,7 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
+import LawyerSelect from "@/components/LawyerSelect";
 import { toast } from "sonner";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -86,6 +87,9 @@ const BLANK_FORM = {
   billingDate:       "",
   paymentDate:       "",
   invoiceNumber:     "",
+  // Responsible Lawyer as a real user (authoritative). The text value is kept
+  // only as a legacy/inactive display fallback — the server mirrors the name.
+  responsibleLawyerId: null as number | null,
   responsibleLawyer: "",
   financeNotes:      "",
 };
@@ -104,6 +108,7 @@ function recordToForm(r: any): FormState {
     billingDate:       r.billingDate       ?? "",
     paymentDate:       r.paymentDate       ?? "",
     invoiceNumber:     r.invoiceNumber     ?? "",
+    responsibleLawyerId: r.responsibleLawyerId ?? null,
     responsibleLawyer: r.responsibleLawyer ?? "",
     financeNotes:      r.financeNotes      ?? "",
   };
@@ -195,7 +200,7 @@ export default function FinancialDialog({
 
   const derived = calcFinancials(form);
 
-  function setField(key: keyof FormState, value: string) {
+  function setField<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm(f => ({ ...f, [key]: value }));
   }
 
@@ -279,7 +284,9 @@ export default function FinancialDialog({
       ...(form.billingDate       ? { billingDate:       form.billingDate }       : {}),
       ...(form.paymentDate       ? { paymentDate:       form.paymentDate }       : {}),
       ...(form.invoiceNumber     ? { invoiceNumber:     form.invoiceNumber }     : {}),
-      ...(form.responsibleLawyer ? { responsibleLawyer: form.responsibleLawyer } : {}),
+      // Responsible Lawyer: user id only — the legacy text is a server-managed
+      // display mirror and is never sent from the form.
+      ...(form.responsibleLawyerId != null ? { responsibleLawyerId: form.responsibleLawyerId } : {}),
       ...(form.financeNotes      ? { financeNotes:      form.financeNotes }      : {}),
     };
 
@@ -287,6 +294,8 @@ export default function FinancialDialog({
       update.mutate({
         id: record.id,
         ...payload,
+        // Edit always sends the link explicitly so clearing it unlinks (null).
+        responsibleLawyerId: form.responsibleLawyerId,
         ...(effectiveMatters !== undefined ? { clientMatterId: matterIdValue } : {}),
       });
     } else {
@@ -607,14 +616,24 @@ export default function FinancialDialog({
             />
           </div>
 
-          {/* ── Responsible Lawyer ───────────────────────────────────────── */}
+          {/* ── Responsible Lawyer — searchable dropdown over eligible active
+                 users; historical/legacy values stay visible as fallback. ── */}
           <div>
             <Label className="text-xs">Responsible Lawyer</Label>
-            <Input
-              value={form.responsibleLawyer}
-              onChange={e => setField("responsibleLawyer", e.target.value)}
-              className="h-8 text-sm"
+            <LawyerSelect
+              field="responsibleLawyer"
+              value={form.responsibleLawyerId}
+              onChange={(id, name) => {
+                setField("responsibleLawyerId", id);
+                setField("responsibleLawyer", id != null ? (name ?? form.responsibleLawyer) : "");
+              }}
+              fallbackLabel={form.responsibleLawyer}
             />
+            {form.responsibleLawyerId == null && form.responsibleLawyer.trim() !== "" && (
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                Legacy value: <span className="font-medium">{form.responsibleLawyer}</span> (not linked to a user).
+              </p>
+            )}
           </div>
 
           {/* ── Billing Date ─────────────────────────────────────────────── */}
