@@ -505,11 +505,20 @@ export const clientMatters = pgTable("client_matters", {
   attorney1: varchar("attorney_1", { length: 100 }),
   attorney2: varchar("attorney_2", { length: 100 }),
   attorney3: varchar("attorney_3", { length: 100 }),
+  attorney4: varchar("attorney_4", { length: 100 }),
   attorneyFullName: varchar("attorney_full_name", { length: 255 }),
   matterDescription: text("matter_description"),
   // Assigned lead lawyer as a real user (authoritative). leadPartner* remain as
   // legacy free-text display fields; the Hourly Rate section uses this FK.
   leadLawyerId: integer("lead_lawyer_id").references(() => users.id),
+  // Lawyer assignments as real users (authoritative). The matching free-text
+  // columns above are kept as legacy values / server-derived display mirrors.
+  supportLeadId: integer("support_lead_id").references(() => users.id),
+  attorneyHeadId: integer("attorney_head_id").references(() => users.id),
+  attorney1Id: integer("attorney_1_id").references(() => users.id),
+  attorney2Id: integer("attorney_2_id").references(() => users.id),
+  attorney3Id: integer("attorney_3_id").references(() => users.id),
+  attorney4Id: integer("attorney_4_id").references(() => users.id),
   // Adverse / opposing party for conflict-of-interest checks.
   opposingParty: varchar("opposing_party", { length: 255 }),
   matterStatus: varchar("matter_status", { length: 100 }),
@@ -610,6 +619,9 @@ export const financialRecords = pgTable("financial_records", {
   paymentDate: date("payment_date"),
   invoiceNumber: varchar("invoice_number", { length: 100 }),
   responsibleLawyer: varchar("responsible_lawyer", { length: 255 }),
+  // Responsible Lawyer as a real user (authoritative); the free-text column
+  // above is kept as legacy value / server-derived display mirror.
+  responsibleLawyerId: integer("responsible_lawyer_id").references(() => users.id),
   financeNotes: text("finance_notes"),
   createdBy: integer("created_by").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),

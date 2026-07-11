@@ -10,6 +10,7 @@ import {
   gatherCrmData, buildAiMessages, checkAiRateLimit, AI_MODEL_NAME,
 } from "./aiAnalytics";
 import { USER_ROLES, USER_STATUSES, type UserRole, type UserStatus } from "../shared/const";
+import { ASSIGNMENT_FIELD_NAMES, type AssignmentField } from "../shared/assignmentEligibility";
 
 // Money input validation (Finance / Invoicing). A monetary string must be a
 // finite, NON-NEGATIVE number. Negative fees, revenue, or collected amounts are
@@ -536,6 +537,16 @@ export const appRouter = router({
     leadLawyers: permissionProcedure("leads:manage")
       .query(async () => db.getLeadLawyers()),
 
+    // Users eligible for a NEW assignment to a specific lawyer field (Matter
+    // forms, Financial Records). Active + role-eligible only, filtered
+    // server-side per shared/assignmentEligibility.ts. clients:view so every
+    // role that can open these forms (incl. finance) can populate dropdowns.
+    eligibleLawyers: permissionProcedure("clients:view")
+      .input(z.object({
+        field: z.enum(ASSIGNMENT_FIELD_NAMES as [AssignmentField, ...AssignmentField[]]),
+      }))
+      .query(async ({ input }) => db.getEligibleLawyers(input.field)),
+
     create: adminProcedure
       .input(z.object({
         name: z.string().trim().min(1, "Name is required").max(120),
@@ -958,9 +969,16 @@ export const appRouter = router({
           "Advisory / Special Mandates",
           "Blended",
         ]).optional(),
-        // Lead Partner as a real user (validated server-side). leadPartner* text
-        // remain accepted for legacy/free-text entry.
+        // Lawyer assignments as real users (validated server-side: must exist,
+        // be active, and hold an eligible role). The free-text fields below
+        // remain accepted for legacy entry/back-compat.
         leadLawyerId: z.number().int().positive().optional(),
+        supportLeadId: z.number().int().positive().nullable().optional(),
+        attorneyHeadId: z.number().int().positive().nullable().optional(),
+        attorney1Id: z.number().int().positive().nullable().optional(),
+        attorney2Id: z.number().int().positive().nullable().optional(),
+        attorney3Id: z.number().int().positive().nullable().optional(),
+        attorney4Id: z.number().int().positive().nullable().optional(),
         leadPartner: z.string().optional(),
         leadPartnerFullName: z.string().optional(),
         supportLead: z.string().optional(),
@@ -1016,8 +1034,15 @@ export const appRouter = router({
           "Advisory / Special Mandates",
           "Blended",
         ]).optional().nullable(),
-        // Lead Partner user link: number assigns/validates, null unlinks.
+        // Lawyer-assignment user links: number assigns/validates, null unlinks.
+        // Unchanged ids are preserved even if the user is now inactive.
         leadLawyerId: z.number().int().positive().nullable().optional(),
+        supportLeadId: z.number().int().positive().nullable().optional(),
+        attorneyHeadId: z.number().int().positive().nullable().optional(),
+        attorney1Id: z.number().int().positive().nullable().optional(),
+        attorney2Id: z.number().int().positive().nullable().optional(),
+        attorney3Id: z.number().int().positive().nullable().optional(),
+        attorney4Id: z.number().int().positive().nullable().optional(),
         leadPartner: z.string().optional(),
         leadPartnerFullName: z.string().optional(),
         supportLead: z.string().optional(),
@@ -1143,6 +1168,9 @@ export const appRouter = router({
         paymentDate: z.string().optional(),
         invoiceNumber: z.string().optional(),
         responsibleLawyer: z.string().optional(),
+        // Responsible Lawyer as a real user (validated server-side); the text
+        // field above remains accepted for legacy entry.
+        responsibleLawyerId: z.number().int().positive().nullable().optional(),
         financeNotes: z.string().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
@@ -1169,6 +1197,8 @@ export const appRouter = router({
         paymentDate: z.string().optional(),
         invoiceNumber: z.string().optional(),
         responsibleLawyer: z.string().optional(),
+        // Responsible Lawyer user link: number assigns/validates, null unlinks.
+        responsibleLawyerId: z.number().int().positive().nullable().optional(),
         financeNotes: z.string().optional(),
       }))
       .mutation(async ({ input, ctx }) => {

@@ -12,6 +12,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import DashboardLayout from "@/components/DashboardLayout";
 import ConflictWarningDialog from "@/components/ConflictWarningDialog";
+import LawyerSelect from "@/components/LawyerSelect";
 import type { ConflictMatch } from "@/components/ConflictMatchTable";
 import { toast } from "sonner";
 
@@ -27,16 +28,17 @@ export default function MatterNew() {
   // tracks the value inherited from the selected client.
   const [serialTouched, setSerialTouched] = useState(false);
   const [form, setForm] = useState({
-    originalSerial: "", matterReference: "", matterType: "", leadPartner: "",
-    leadPartnerFullName: "", supportLead: "", attorneyHead: "", attorney1: "",
-    attorney2: "", attorney3: "", attorneyFullName: "",
+    originalSerial: "", matterReference: "", matterType: "",
+    attorneyFullName: "",
     matterDescription: "", opposingParty: "", matterStatus: "",
     balanceWorkLeft: "", achievementPercentage: "", achievementStatus: "",
     priority: "medium" as Priority,
   });
-  // Lead Partner as a real user (Phase 3). Tracked separately from the text form.
-  const [leadLawyerId, setLeadLawyerId] = useState<number | null>(null);
-  const { data: leadLawyers = [] } = trpc.users.leadLawyers.useQuery();
+  // Lawyer assignments as real users, selected from eligible active users.
+  const [assignments, setAssignments] = useState<Record<string, number | null>>({
+    leadLawyerId: null, supportLeadId: null, attorneyHeadId: null,
+    attorney1Id: null, attorney2Id: null, attorney3Id: null, attorney4Id: null,
+  });
 
   // Conflict check state: the matches awaiting acknowledgement, if any.
   const [pendingConflicts, setPendingConflicts] = useState<ConflictMatch[] | null>(null);
@@ -80,7 +82,11 @@ export default function MatterNew() {
       if (k === "priority") continue;
       if (typeof v === "string" && v.trim() !== "") payload[k] = v.trim();
     }
-    if (leadLawyerId != null) payload.leadLawyerId = leadLawyerId;
+    // Lawyer assignments: only real selections are sent on create. The server
+    // validates each user and mirrors names into the legacy display columns.
+    for (const [k, id] of Object.entries(assignments)) {
+      if (id != null) payload[k] = id;
+    }
     return payload;
   }
 
@@ -176,40 +182,59 @@ export default function MatterNew() {
               </p>
             </div>
 
-            {/* Lead Partner — chosen from active Partners/Lawyers (Phase 3). */}
+            {/* Lead Partner — searchable dropdown over eligible active users. */}
             <div>
               <Label className="text-xs">Lead Partner</Label>
-              <Select
-                value={leadLawyerId != null ? String(leadLawyerId) : "__none__"}
-                onValueChange={v => {
-                  if (v === "__none__") { setLeadLawyerId(null); return; }
-                  const id = Number(v);
-                  const picked = leadLawyers.find(l => l.id === id);
-                  setLeadLawyerId(id);
-                  setForm(f => ({ ...f, leadPartnerFullName: picked?.name ?? f.leadPartnerFullName }));
-                }}
-              >
-                <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="— select a lead partner —" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">— None —</SelectItem>
-                  {leadLawyers.map(l => (
-                    <SelectItem key={l.id} value={String(l.id)}>
-                      {l.name}{l.role ? ` — ${l.role}` : ""}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <LawyerSelect
+                field="leadPartner"
+                value={assignments.leadLawyerId}
+                onChange={id => setAssignments(a => ({ ...a, leadLawyerId: id }))}
+                placeholder="— select a lead partner —"
+              />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               {[
                 ["matterReference", "Matter Reference * (unique per client)"],
                 ["matterType", "Matter Type *"],
-                ["supportLead", "Support Lead"],
-                ["attorneyHead", "Attorney Head"],
-                ["attorney1", "Attorney 1"],
-                ["attorney2", "Attorney 2"],
-                ["attorney3", "Attorney 3"],
+              ].map(([key, label]) => (
+                <div key={key}>
+                  <Label className="text-xs">{label}</Label>
+                  <Input
+                    value={(form as any)[key]}
+                    onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+                    className="h-8 text-sm"
+                  />
+                </div>
+              ))}
+              {/* Lawyer assignments — searchable dropdowns over eligible active
+                  users. A user may be picked only once across Attorney 1–4. */}
+              {([
+                ["supportLeadId", "supportLead", "Support Lead"],
+                ["attorneyHeadId", "attorneyHead", "Attorney Head"],
+                ["attorney1Id", "attorney1", "Attorney 1"],
+                ["attorney2Id", "attorney2", "Attorney 2"],
+                ["attorney3Id", "attorney3", "Attorney 3"],
+                ["attorney4Id", "attorney4", "Attorney 4"],
+              ] as const).map(([idKey, field, label]) => (
+                <div key={idKey}>
+                  <Label className="text-xs">{label}</Label>
+                  <LawyerSelect
+                    field={field}
+                    value={assignments[idKey]}
+                    onChange={id => setAssignments(a => ({ ...a, [idKey]: id }))}
+                    excludeIds={
+                      idKey.startsWith("attorney")
+                        ? (["attorney1Id", "attorney2Id", "attorney3Id", "attorney4Id"] as const)
+                            .filter(k => k !== idKey)
+                            .map(k => assignments[k])
+                            .filter((id): id is number => id != null)
+                        : []
+                    }
+                  />
+                </div>
+              ))}
+              {[
                 ["attorneyFullName", "Attorney Full Name"],
                 ["opposingParty", "Opposing Party (for conflict check)"],
                 ["matterStatus", "Matter Status (short, e.g. Active)"],

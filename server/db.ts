@@ -22,6 +22,7 @@ import { hashPassword } from "./_core/auth";
 import { channelMediumRequired } from "../shared/const";
 import { notifyLawyerAssignment } from "./emailNotifications";
 import type { UserRole, UserStatus } from "../shared/const";
+import { ASSIGNMENT_FIELDS, type AssignmentField } from "../shared/assignmentEligibility";
 
 /**
  * Validate the two-level communication channel.
@@ -2047,14 +2048,11 @@ export async function createClientMatter(
   // Matter Reference is the matter-level identifier and must be unique per client.
   await assertMatterReferenceUniqueForClient(clientId, clean.matterReference);
 
-  // Lead Partner may be assigned as a real user (CRM-013). Validate the user is
-  // active + eligible, and mirror the name into the legacy display column. The
-  // legacy leadPartner* free-text remains supported for records without a user.
-  if (data.leadLawyerId != null) {
-    const lawyer = await resolveAssignedUser(Number(data.leadLawyerId));
-    clean.leadLawyerId = lawyer.id;
-    clean.leadPartnerFullName = lawyer.name ?? clean.leadPartnerFullName;
-  }
+  // Lawyer assignments as real users (Lead Partner, Support Lead, Attorney
+  // Head, Attorney 1–4). Each is validated as active + role-eligible and its
+  // name mirrored into the legacy display column. Legacy free-text values
+  // remain supported for records without a linked user.
+  await applyMatterAssignments(data, clean as Record<string, unknown>);
 
   let matter: typeof clientMatters.$inferSelect;
   try {
@@ -2128,18 +2126,11 @@ export async function updateClientMatter(id: number, data: Record<string, unknow
     }
   }
 
-  // Lead Partner user link (CRM-013). A number assigns + validates the user and
-  // syncs the legacy display name; an explicit null unlinks (keeping any legacy
-  // free-text). Handled off the raw input because the sanitizer drops null.
-  if (data.leadLawyerId !== undefined) {
-    if (data.leadLawyerId === null) {
-      clean.leadLawyerId = null;
-    } else {
-      const lawyer = await resolveAssignedUser(Number(data.leadLawyerId));
-      clean.leadLawyerId = lawyer.id;
-      clean.leadPartnerFullName = lawyer.name ?? clean.leadPartnerFullName;
-    }
-  }
+  // Lawyer-assignment user links (Lead Partner, Support Lead, Attorney Head,
+  // Attorney 1–4). Change-only validation: unchanged ids are preserved even if
+  // the user has since become inactive; new ids must be active + role-eligible;
+  // null unlinks and clears the mirrored display name.
+  await applyMatterAssignments(data, clean as Record<string, unknown>, existing);
 
   let matter: typeof clientMatters.$inferSelect;
   try {
@@ -2170,6 +2161,106 @@ export async function updateClientMatter(id: number, data: Record<string, unknow
 export async function deleteClientMatter(id: number) {
   const db = getDb();
   await db.delete(clientMatters).where(eq(clientMatters.id, id));
+}
+
+// ─── Lawyer assignment (central eligibility service) ──────────────────────────
+
+/**
+ * Users eligible for a NEW assignment to the given lawyer field: active users
+ * whose role is in the field's eligible set (shared/assignmentEligibility.ts).
+ * Filtering is enforced here, not in the frontend. Never exposes password
+ * hashes or other sensitive columns.
+ */
+export async function getEligibleLawyers(field: AssignmentField) {
+  const db = getDb();
+  const { roles } = ASSIGNMENT_FIELDS[field];
+  return db
+    .select({
+      id: users.id,
+      fullName: users.name,
+      email: users.email,
+      role: users.role,
+      status: users.status,
+    })
+    .from(users)
+    .where(and(eq(users.status, "active"), inArray(users.role, [...roles] as any)))
+    .orderBy(users.name);
+}
+
+/**
+ * Fetch + validate a user being NEWLY assigned to a lawyer field. Throws a
+ * clear BAD_REQUEST naming the field when the user does not exist, is not
+ * active, or lacks an eligible role.
+ */
+async function resolveEligibleAssignee(field: AssignmentField, userId: number) {
+  const { label, roles } = ASSIGNMENT_FIELDS[field];
+  const db = getDb();
+  const [u] = await db
+    .select({ id: users.id, name: users.name, role: users.role, status: users.status })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!u) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: `Selected ${label} does not exist.` });
+  }
+  if (u.status !== "active") {
+    throw new TRPCError({ code: "BAD_REQUEST", message: `Selected ${label} is inactive and cannot receive new assignments.` });
+  }
+  if (!(roles as readonly string[]).includes(u.role)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: `Selected ${label} does not have an eligible role (${u.role}).` });
+  }
+  return u;
+}
+
+// Matter lawyer-assignment columns: user FK key → eligibility field + legacy
+// free-text display column the linked user's name is mirrored into.
+const MATTER_ASSIGNMENT_COLUMNS = [
+  { idKey: "leadLawyerId",  field: "leadPartner",  nameKey: "leadPartnerFullName" },
+  { idKey: "supportLeadId", field: "supportLead",  nameKey: "supportLead" },
+  { idKey: "attorneyHeadId", field: "attorneyHead", nameKey: "attorneyHead" },
+  { idKey: "attorney1Id",   field: "attorney1",    nameKey: "attorney1" },
+  { idKey: "attorney2Id",   field: "attorney2",    nameKey: "attorney2" },
+  { idKey: "attorney3Id",   field: "attorney3",    nameKey: "attorney3" },
+  { idKey: "attorney4Id",   field: "attorney4",    nameKey: "attorney4" },
+] as const;
+
+/**
+ * Apply submitted lawyer-assignment user ids onto a sanitized matter payload.
+ * For each FK field present in the raw input:
+ *   • number → validated (must exist, be active, have an eligible role) and the
+ *     user's name is mirrored into the legacy display column — EXCEPT when the
+ *     value equals the row's existing assignment, which is preserved untouched
+ *     so historical assignments to now-inactive users survive unrelated edits;
+ *   • null → unlinks, and clears the mirrored display name when the row had a
+ *     linked user (pure legacy free-text without a link is left alone).
+ * Handled off the raw input because the sanitizer drops nulls.
+ */
+async function applyMatterAssignments(
+  data: Record<string, unknown>,
+  clean: Record<string, unknown>,
+  existing?: Record<string, unknown> | null,
+) {
+  for (const { idKey, field, nameKey } of MATTER_ASSIGNMENT_COLUMNS) {
+    const raw = data[idKey];
+    if (raw === undefined) continue;
+    if (raw === null) {
+      clean[idKey] = null;
+      if (existing && existing[idKey] != null) clean[nameKey] = null;
+      continue;
+    }
+    const userId = Number(raw);
+    if (!Number.isFinite(userId)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: `Invalid user for ${ASSIGNMENT_FIELDS[field].label}.` });
+    }
+    if (existing && existing[idKey] === userId) {
+      // Unchanged: keep the historical assignment (user may now be inactive).
+      clean[idKey] = userId;
+      continue;
+    }
+    const u = await resolveEligibleAssignee(field, userId);
+    clean[idKey] = u.id;
+    if (u.name) clean[nameKey] = u.name;
+  }
 }
 
 // ─── Matter Lawyer Rates ──────────────────────────────────────────────────────
@@ -2645,6 +2736,13 @@ export async function createFinancialRecord(data: InsertFinancialRecord, userId:
   const db = getDb();
   await assertMatterBelongsToClient((data as any).clientMatterId, (data as any).clientId);
   assertNonNegativeFinancialAmounts(data as Record<string, unknown>);
+  // Responsible Lawyer as a real user: validate active + role-eligible and
+  // mirror the name into the legacy display column.
+  if ((data as any).responsibleLawyerId != null) {
+    const lawyer = await resolveEligibleAssignee("responsibleLawyer", Number((data as any).responsibleLawyerId));
+    (data as any).responsibleLawyerId = lawyer.id;
+    if (lawyer.name) (data as any).responsibleLawyer = lawyer.name;
+  }
   const computed = applyDiscountRules(data as Record<string, unknown>) as InsertFinancialRecord;
   const [record] = await db
     .insert(financialRecords)
@@ -2683,6 +2781,20 @@ export async function updateFinancialRecord(id: number, data: Partial<InsertFina
   // belong to this record's client. clientId is immutable on update.
   if (editableData.clientMatterId != null) {
     await assertMatterBelongsToClient(editableData.clientMatterId, existing.clientId);
+  }
+
+  // Responsible Lawyer user link. Change-only validation: an unchanged id is
+  // preserved even if the user has since become inactive; a new id must be
+  // active + role-eligible; null unlinks and clears the mirrored display name.
+  if ((editableData as any).responsibleLawyerId !== undefined) {
+    const submitted = (editableData as any).responsibleLawyerId as number | null;
+    if (submitted === null) {
+      if (existing.responsibleLawyerId != null) (editableData as any).responsibleLawyer = null;
+    } else if (submitted !== existing.responsibleLawyerId) {
+      const lawyer = await resolveEligibleAssignee("responsibleLawyer", Number(submitted));
+      (editableData as any).responsibleLawyerId = lawyer.id;
+      if (lawyer.name) (editableData as any).responsibleLawyer = lawyer.name;
+    }
   }
 
   // Only pass the 5 user-editable inputs to applyDiscountRules — never spread

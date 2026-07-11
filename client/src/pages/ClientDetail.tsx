@@ -33,6 +33,8 @@ import { LawyerRatesDialog } from "@/components/LawyerRatesDialog";
 import { FinancialAuditTrail } from "@/components/FinancialAuditTrail";
 import ConflictWarningDialog from "@/components/ConflictWarningDialog";
 import type { ConflictMatch } from "@/components/ConflictMatchTable";
+import LawyerSelect from "@/components/LawyerSelect";
+import type { AssignmentField } from "@shared/assignmentEligibility";
 import { useGoBack } from "@/hooks/useGoBack";
 import { useQueryParam } from "@/hooks/useQueryParam";
 import { ClientTasksSection, RelatedTasks } from "@/components/ClientTasks";
@@ -853,11 +855,16 @@ const FEE_TYPE_OPTIONS = [
 type MatterFormState = {
   originalSerial: string; matterReference: string; matterType: string;
   billingType: string;
-  // Lead Partner as a real user (authoritative). leadPartner/leadPartnerFullName
-  // remain for legacy/free-text display on records without a linked user.
+  // Lawyer assignments as real users (authoritative). The matching free-text
+  // fields below are kept only as legacy/inactive display fallbacks — they are
+  // never sent back to the server (it mirrors the linked user's name itself).
   leadLawyerId: number | null;
+  supportLeadId: number | null; attorneyHeadId: number | null;
+  attorney1Id: number | null; attorney2Id: number | null;
+  attorney3Id: number | null; attorney4Id: number | null;
   leadPartner: string; leadPartnerFullName: string; supportLead: string;
   attorneyHead: string; attorney1: string; attorney2: string; attorney3: string;
+  attorney4: string;
   attorneyFullName: string; matterDescription: string; opposingParty: string; matterStatus: string;
   balanceWorkLeft: string; achievementPercentage: string; achievementStatus: string;
   priority: "low" | "medium" | "high" | "urgent";
@@ -866,21 +873,21 @@ type MatterFormState = {
 const MATTER_FORM_DEFAULT: MatterFormState = {
   originalSerial: "", matterReference: "", matterType: "", billingType: "",
   leadLawyerId: null,
+  supportLeadId: null, attorneyHeadId: null,
+  attorney1Id: null, attorney2Id: null, attorney3Id: null, attorney4Id: null,
   leadPartner: "", leadPartnerFullName: "", supportLead: "", attorneyHead: "",
-  attorney1: "", attorney2: "", attorney3: "", attorneyFullName: "",
+  attorney1: "", attorney2: "", attorney3: "", attorney4: "", attorneyFullName: "",
   matterDescription: "", opposingParty: "", matterStatus: "",
   balanceWorkLeft: "", achievementPercentage: "", achievementStatus: "",
   priority: "medium",
 };
 
-const MATTER_TEXT_FIELDS: [keyof MatterFormState, string][] = [
+const MATTER_TEXT_FIELDS_TOP: [keyof MatterFormState, string][] = [
   ["matterReference",      "Matter Reference * (unique per client)"],
   ["matterType",           "Matter Type *"],
-  ["supportLead",          "Support Lead"],
-  ["attorneyHead",         "Attorney Head"],
-  ["attorney1",            "Attorney 1"],
-  ["attorney2",            "Attorney 2"],
-  ["attorney3",            "Attorney 3"],
+];
+
+const MATTER_TEXT_FIELDS_REST: [keyof MatterFormState, string][] = [
   ["attorneyFullName",     "Attorney Full Name"],
   ["opposingParty",        "Opposing Party (for conflict check)"],
   ["matterStatus",         "Matter Status (e.g. Active)"],
@@ -889,24 +896,57 @@ const MATTER_TEXT_FIELDS: [keyof MatterFormState, string][] = [
   ["achievementStatus",    "Achievement Status"],
 ];
 
+// Lawyer dropdown fields: user-id form key → eligibility field, label, and the
+// legacy text key used as display fallback for unlinked/inactive values.
+const MATTER_LAWYER_FIELDS: {
+  idKey: keyof MatterFormState; field: AssignmentField; label: string; textKey: keyof MatterFormState;
+}[] = [
+  { idKey: "supportLeadId",  field: "supportLead",  label: "Support Lead",  textKey: "supportLead" },
+  { idKey: "attorneyHeadId", field: "attorneyHead", label: "Attorney Head", textKey: "attorneyHead" },
+  { idKey: "attorney1Id",    field: "attorney1",    label: "Attorney 1",    textKey: "attorney1" },
+  { idKey: "attorney2Id",    field: "attorney2",    label: "Attorney 2",    textKey: "attorney2" },
+  { idKey: "attorney3Id",    field: "attorney3",    label: "Attorney 3",    textKey: "attorney3" },
+  { idKey: "attorney4Id",    field: "attorney4",    label: "Attorney 4",    textKey: "attorney4" },
+];
+
+// A user may appear only once across Attorney 1–4.
+const ATTORNEY_ID_KEYS: (keyof MatterFormState)[] = ["attorney1Id", "attorney2Id", "attorney3Id", "attorney4Id"];
+
+const MATTER_USER_ID_KEYS = [
+  "leadLawyerId", "supportLeadId", "attorneyHeadId",
+  "attorney1Id", "attorney2Id", "attorney3Id", "attorney4Id",
+] as const;
+
+// Legacy text fields are server-managed mirrors of the linked user's name —
+// the form never sends them (attorneyFullName stays a real, sent text field).
+const MATTER_MIRROR_TEXT_KEYS = [
+  "leadPartner", "leadPartnerFullName", "supportLead", "attorneyHead",
+  "attorney1", "attorney2", "attorney3", "attorney4",
+] as const;
+
 function buildMatterPayload(
   form: MatterFormState,
   extra: Record<string, unknown> = {},
+  mode: "create" | "edit" = "create",
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = { priority: form.priority, ...extra };
   for (const [k, v] of Object.entries(form)) {
     if (k === "priority") continue;
     if (k === "billingType") {
-      // Always include billingType so it can be explicitly cleared (null = no billing type)
-      payload[k] = v !== "" ? v : null;
+      // Edit includes billingType even when empty so it can be explicitly
+      // cleared (null). The create schema takes no null — omit when empty.
+      if (v !== "") payload[k] = v;
+      else if (mode === "edit") payload[k] = null;
       continue;
     }
-    if (k === "leadLawyerId") {
-      // Only a real selection is sent here; an explicit unlink (null) is added by
-      // the edit caller so the create schema (no null) is not violated.
+    if ((MATTER_USER_ID_KEYS as readonly string[]).includes(k)) {
+      // Create: only real selections (the create schema takes no null).
+      // Edit: always sent so clearing a dropdown explicitly unlinks (null).
       if (typeof v === "number") payload[k] = v;
+      else if (mode === "edit") payload[k] = null;
       continue;
     }
+    if ((MATTER_MIRROR_TEXT_KEYS as readonly string[]).includes(k)) continue;
     if (typeof v === "string" && v.trim() !== "") payload[k] = v.trim();
   }
   return payload;
@@ -925,11 +965,6 @@ function MatterFormFields({
   /** Called when the user types into Original Serial, to stop auto-inheriting. */
   onSerialEdited?: () => void;
 }) {
-  // Active Partners/Lawyers eligible to lead a matter (Phase 3 dropdown source).
-  const { data: leadLawyers = [] } = trpc.users.leadLawyers.useQuery();
-  // A matter may have a lead lawyer who is no longer in the active list (e.g.
-  // edited later) — keep them selectable so the value is not silently lost.
-  const selectedKnown = leadLawyers.some(l => l.id === form.leadLawyerId);
   return (
     <div className="grid grid-cols-2 gap-3 py-2">
       {/* Original Serial — inherited from the client, shown distinctly so it is
@@ -948,49 +983,70 @@ function MatterFormFields({
             : "Shared by all of this client's matters — not the matter's unique identifier."}
         </p>
       </div>
-      {/* Lead Partner — chosen from active Partners/Lawyers (Phase 3). Selecting a
-          user links the matter to a real user and populates the display name. */}
+      {/* Lead Partner — searchable dropdown over eligible active users.
+          Selecting links the matter to a real user; the server mirrors the
+          display name. */}
       <div className="col-span-2">
         <Label className="text-xs">Lead Partner</Label>
-        <Select
-          value={form.leadLawyerId != null ? String(form.leadLawyerId) : "__none__"}
-          onValueChange={v => {
-            if (v === "__none__") {
-              setForm(f => ({ ...f, leadLawyerId: null }));
-              return;
-            }
-            const id = Number(v);
-            const picked = leadLawyers.find(l => l.id === id);
-            setForm(f => ({
-              ...f,
-              leadLawyerId: id,
-              leadPartnerFullName: picked?.name ?? f.leadPartnerFullName,
-            }));
-          }}
-        >
-          <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="— select a lead partner —" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__none__">— None —</SelectItem>
-            {/* Keep an out-of-list current value selectable */}
-            {!selectedKnown && form.leadLawyerId != null && (
-              <SelectItem value={String(form.leadLawyerId)}>
-                {form.leadPartnerFullName || `User #${form.leadLawyerId}`} (inactive)
-              </SelectItem>
-            )}
-            {leadLawyers.map(l => (
-              <SelectItem key={l.id} value={String(l.id)}>
-                {l.name}{l.role ? ` — ${l.role}` : ""}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <LawyerSelect
+          field="leadPartner"
+          value={form.leadLawyerId}
+          onChange={(id, name) => setForm(f => ({
+            ...f,
+            leadLawyerId: id,
+            leadPartnerFullName: id != null ? (name ?? f.leadPartnerFullName) : "",
+          }))}
+          fallbackLabel={form.leadPartnerFullName || form.leadPartner}
+          placeholder="— select a lead partner —"
+        />
         {form.leadLawyerId == null && form.leadPartnerFullName.trim() !== "" && (
           <p className="text-[11px] text-muted-foreground mt-0.5">
             Legacy value: <span className="font-medium">{form.leadPartnerFullName}</span> (not linked to a user). Select a lead partner to link it.
           </p>
         )}
       </div>
-      {MATTER_TEXT_FIELDS.map(([key, label]) => (
+      {MATTER_TEXT_FIELDS_TOP.map(([key, label]) => (
+        <div key={key}>
+          <Label className="text-xs">{label}</Label>
+          <Input
+            value={form[key] as string}
+            onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+            className="h-8 text-sm"
+          />
+        </div>
+      ))}
+      {/* Lawyer assignments — searchable dropdowns over eligible active users.
+          A user can be picked only once across Attorney 1–4. */}
+      {MATTER_LAWYER_FIELDS.map(({ idKey, field, label, textKey }) => {
+        const value = form[idKey] as number | null;
+        const legacyText = (form[textKey] as string).trim();
+        const excludeIds = ATTORNEY_ID_KEYS.includes(idKey)
+          ? ATTORNEY_ID_KEYS.filter(k => k !== idKey).map(k => form[k] as number | null)
+              .filter((id): id is number => id != null)
+          : [];
+        return (
+          <div key={idKey}>
+            <Label className="text-xs">{label}</Label>
+            <LawyerSelect
+              field={field}
+              value={value}
+              onChange={(id, name) => setForm(f => ({
+                ...f,
+                [idKey]: id,
+                [textKey]: id != null ? (name ?? f[textKey]) : "",
+              }))}
+              fallbackLabel={legacyText}
+              excludeIds={excludeIds}
+            />
+            {value == null && legacyText !== "" && (
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                Legacy value: <span className="font-medium">{legacyText}</span> (not linked to a user).
+              </p>
+            )}
+          </div>
+        );
+      })}
+      {MATTER_TEXT_FIELDS_REST.map(([key, label]) => (
         <div key={key}>
           <Label className="text-xs">{label}</Label>
           <Input
@@ -1162,6 +1218,12 @@ function MatterEditDialog({
     matterType:            matter.matterType            ?? "",
     billingType:           matter.billingType           ?? "",
     leadLawyerId:          matter.leadLawyerId          ?? null,
+    supportLeadId:         matter.supportLeadId         ?? null,
+    attorneyHeadId:        matter.attorneyHeadId        ?? null,
+    attorney1Id:           matter.attorney1Id           ?? null,
+    attorney2Id:           matter.attorney2Id           ?? null,
+    attorney3Id:           matter.attorney3Id           ?? null,
+    attorney4Id:           matter.attorney4Id           ?? null,
     leadPartner:           matter.leadPartner           ?? "",
     leadPartnerFullName:   matter.leadPartnerFullName   ?? "",
     supportLead:           matter.supportLead           ?? "",
@@ -1169,6 +1231,7 @@ function MatterEditDialog({
     attorney1:             matter.attorney1             ?? "",
     attorney2:             matter.attorney2             ?? "",
     attorney3:             matter.attorney3             ?? "",
+    attorney4:             matter.attorney4             ?? "",
     attorneyFullName:      matter.attorneyFullName      ?? "",
     matterDescription:     matter.matterDescription     ?? "",
     opposingParty:         matter.opposingParty         ?? "",
@@ -1217,11 +1280,9 @@ function MatterEditDialog({
                 toast.error("Matter Reference is required");
                 return;
               }
-              const payload = buildMatterPayload(form);
-              // Explicit unlink: the lead lawyer was cleared on a matter that had one.
-              if (form.leadLawyerId == null && matter.leadLawyerId != null) {
-                payload.leadLawyerId = null;
-              }
+              // Edit mode sends every lawyer user-id field explicitly (number
+              // or null) so clearing a dropdown unlinks server-side.
+              const payload = buildMatterPayload(form, {}, "edit");
               update.mutate({ id: matter.id, ...payload } as any);
             }}
             disabled={update.isPending}
