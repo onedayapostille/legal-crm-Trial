@@ -11,6 +11,8 @@ import {
 } from "./aiAnalytics";
 import { USER_ROLES, USER_STATUSES, type UserRole, type UserStatus } from "../shared/const";
 import { ASSIGNMENT_FIELD_NAMES, type AssignmentField } from "../shared/assignmentEligibility";
+import * as financialReports from "./financialReports";
+import { reportFilterSchema, EXPORT_REPORT_TYPES } from "./financialReports";
 
 // Money input validation (Finance / Invoicing). A monetary string must be a
 // finite, NON-NEGATIVE number. Negative fees, revenue, or collected amounts are
@@ -1225,6 +1227,83 @@ export const appRouter = router({
     auditLog: permissionProcedure("financial:view")
       .input(z.object({ id: z.number() }))
       .query(async ({ input }) => db.getFinancialAuditLogs(input.id)),
+  }),
+
+  // ─── Financial Reporting (central service, shared filter schema) ────────────
+  // Every endpoint accepts the SAME filter object and aggregates from the SAME
+  // one-row-per-financial-record dataset (server/financialReports.ts), so KPI
+  // cards, grouped reports, detail tables, and exports always reconcile.
+  // Gated by financial:view — identical exposure to the existing financial
+  // module (admin / manager / partner / finance). Not widened.
+
+  financialReports: router({
+    summary: permissionProcedure("financial:view")
+      .input(reportFilterSchema)
+      .query(async ({ input }) => financialReports.getReportSummary(input)),
+
+    byLawyer: permissionProcedure("financial:view")
+      .input(reportFilterSchema)
+      .query(async ({ input }) => financialReports.getRevenueByLawyer(input)),
+
+    byLeadPartner: permissionProcedure("financial:view")
+      .input(reportFilterSchema)
+      .query(async ({ input }) => financialReports.getRevenueByLeadPartner(input)),
+
+    byHeadOfPractice: permissionProcedure("financial:view")
+      .input(reportFilterSchema)
+      .query(async ({ input }) => financialReports.getRevenueByHeadOfPractice(input)),
+
+    byClient: permissionProcedure("financial:view")
+      .input(reportFilterSchema)
+      .query(async ({ input }) => financialReports.getRevenueByClient(input)),
+
+    byMatter: permissionProcedure("financial:view")
+      .input(reportFilterSchema)
+      .query(async ({ input }) => financialReports.getRevenueByMatter(input)),
+
+    outstandingByLawyer: permissionProcedure("financial:view")
+      .input(reportFilterSchema)
+      .query(async ({ input }) => financialReports.getOutstandingByLawyer(input)),
+
+    toBeBilledByLawyer: permissionProcedure("financial:view")
+      .input(reportFilterSchema)
+      .query(async ({ input }) => financialReports.getToBeBilledByLawyer(input)),
+
+    collectedByLawyer: permissionProcedure("financial:view")
+      .input(reportFilterSchema)
+      .query(async ({ input }) => financialReports.getCollectedByLawyer(input)),
+
+    discountReport: permissionProcedure("financial:view")
+      .input(reportFilterSchema)
+      .query(async ({ input }) => financialReports.getDiscountReport(input)),
+
+    invoiceStatus: permissionProcedure("financial:view")
+      .input(reportFilterSchema)
+      .query(async ({ input }) => financialReports.getInvoiceStatusReport(input)),
+
+    overdue: permissionProcedure("financial:view")
+      .input(reportFilterSchema)
+      .query(async ({ input }) => financialReports.getOverdueReport(input)),
+
+    details: permissionProcedure("financial:view")
+      .input(reportFilterSchema.extend({
+        page: z.number().int().positive().default(1),
+        pageSize: z.number().int().positive().max(200).default(25),
+      }))
+      .query(async ({ input }) => {
+        const { page, pageSize, ...filters } = input;
+        return financialReports.getReportDetails(filters, page, pageSize);
+      }),
+
+    // CSV export — same filters + same calculation functions as the screen.
+    export: permissionProcedure("financial:view")
+      .input(reportFilterSchema.extend({
+        reportType: z.enum(EXPORT_REPORT_TYPES),
+      }))
+      .mutation(async ({ input }) => {
+        const { reportType, ...filters } = input;
+        return financialReports.exportReportCsv(reportType, filters);
+      }),
   }),
 
   // ─── System Settings ───────────────────────────────────────────────────────
