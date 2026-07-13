@@ -287,8 +287,15 @@ describe("Matter Type is authoritative at the matter level", () => {
       expect(corp.matterType).toBe("Corporate");
       expect(lit.matterType).toBe("Litigation");
 
-      const edited = await caller.clientMatters.update({ id: corp.id, matterType: "Advisory" });
-      expect(edited.matterType).toBe("Advisory");
+      // Matter Type is now restricted to the shared MATTER_TYPES values
+      // (Litigation / Corporate) — editing to another supported value works,
+      // but arbitrary new values are rejected (legacy values on old rows are
+      // covered in server/matterTypeAndAttorneyCreate.test.ts).
+      const edited = await caller.clientMatters.update({ id: corp.id, matterType: "Litigation" });
+      expect(edited.matterType).toBe("Litigation");
+      await expect(
+        caller.clientMatters.update({ id: corp.id, matterType: "Advisory" }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     } finally {
       for (const id of ids) await caller.clientMatters.delete({ id });
       await caller.clients.delete({ id: client.id });

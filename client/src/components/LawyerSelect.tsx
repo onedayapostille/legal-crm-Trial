@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Check, ChevronsUpDown, Loader2, UserX } from "lucide-react";
+import { Check, ChevronsUpDown, Loader2, Plus, UserX } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,10 @@ import {
   Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
 } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import AddAttorneyDialog from "@/components/AddAttorneyDialog";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { hasPermission } from "@shared/const";
 import type { AssignmentField } from "@shared/assignmentEligibility";
 
 /**
@@ -18,6 +22,13 @@ import type { AssignmentField } from "@shared/assignmentEligibility";
  * email. A current value pointing at a user who is no longer eligible (e.g.
  * deactivated) is kept visible as "(inactive)" via `fallbackLabel`, but
  * inactive users are never offered as new options.
+ *
+ * `allowCreate` renders a small `+` button beside the dropdown that opens the
+ * shared Add New Attorney dialog (AddAttorneyDialog). The button is shown only
+ * to users who may create users (users:manage — user creation itself is an
+ * admin-only endpoint, enforced server-side). After a successful creation the
+ * eligible-lawyers cache is invalidated and the new ACTIVE user is selected in
+ * this field automatically; the surrounding form state is untouched.
  */
 export default function LawyerSelect({
   field,
@@ -26,6 +37,7 @@ export default function LawyerSelect({
   fallbackLabel,
   excludeIds = [],
   allowNone = true,
+  allowCreate = false,
   disabled = false,
   placeholder = "— select —",
   className,
@@ -41,11 +53,16 @@ export default function LawyerSelect({
   /** User ids to hide from the options (e.g. already picked as another attorney). */
   excludeIds?: number[];
   allowNone?: boolean;
+  /** Offer a `+` create-attorney button (visible only with users:manage). */
+  allowCreate?: boolean;
   disabled?: boolean;
   placeholder?: string;
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const { user } = useAuth();
+  const canCreateUsers = hasPermission(user?.role, "users:manage");
   const { data: lawyers, isLoading, error, refetch } = trpc.users.eligibleLawyers.useQuery({ field });
 
   const options = useMemo(
@@ -62,7 +79,10 @@ export default function LawyerSelect({
       ? placeholder
       : selected?.fullName ?? (fallbackLabel ? `${fallbackLabel} (inactive)` : `User #${value} (inactive)`);
 
+  const showCreate = allowCreate && canCreateUsers;
+
   return (
+    <div className={cn("flex items-center gap-1", className)}>
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
@@ -72,9 +92,8 @@ export default function LawyerSelect({
           aria-expanded={open}
           disabled={disabled}
           className={cn(
-            "h-8 w-full justify-between text-sm font-normal px-3",
+            "h-8 w-full justify-between text-sm font-normal px-3 min-w-0 flex-1",
             value == null && "text-muted-foreground",
-            className,
           )}
         >
           <span className="truncate flex items-center gap-1">
@@ -151,5 +170,36 @@ export default function LawyerSelect({
         </Command>
       </PopoverContent>
     </Popover>
+    {showCreate && (
+      <>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="h-8 w-8 shrink-0"
+              disabled={disabled}
+              onClick={() => setCreateOpen(true)}
+              aria-label="Add new attorney"
+            >
+              <Plus className="h-4 w-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Add new attorney</TooltipContent>
+        </Tooltip>
+        <AddAttorneyDialog
+          open={createOpen}
+          onClose={() => setCreateOpen(false)}
+          field={field}
+          onCreated={(u) => {
+            // Auto-select only ACTIVE users — inactive users are not assignable
+            // (also enforced server-side on matter save).
+            if (u.status === "active") onChange(u.id, u.name ?? undefined);
+          }}
+        />
+      </>
+    )}
+    </div>
   );
 }

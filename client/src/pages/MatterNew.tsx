@@ -14,6 +14,7 @@ import DashboardLayout from "@/components/DashboardLayout";
 import ConflictWarningDialog from "@/components/ConflictWarningDialog";
 import LawyerSelect from "@/components/LawyerSelect";
 import type { ConflictMatch } from "@/components/ConflictMatchTable";
+import { MATTER_TYPES, isSupportedMatterType } from "@shared/const";
 import { toast } from "sonner";
 
 type Priority = "low" | "medium" | "high" | "urgent";
@@ -190,23 +191,39 @@ export default function MatterNew() {
                 value={assignments.leadLawyerId}
                 onChange={id => setAssignments(a => ({ ...a, leadLawyerId: id }))}
                 placeholder="— select a lead partner —"
+                allowCreate
               />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              {[
-                ["matterReference", "Matter Reference * (unique per client)"],
-                ["matterType", "Matter Type *"],
-              ].map(([key, label]) => (
-                <div key={key}>
-                  <Label className="text-xs">{label}</Label>
-                  <Input
-                    value={(form as any)[key]}
-                    onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
-                    className="h-8 text-sm"
-                  />
-                </div>
-              ))}
+              <div>
+                <Label className="text-xs">Matter Reference * (unique per client)</Label>
+                <Input
+                  value={form.matterReference}
+                  onChange={e => setForm(f => ({ ...f, matterReference: e.target.value }))}
+                  className="h-8 text-sm"
+                />
+              </div>
+              {/* Matter Type — restricted dropdown (shared MATTER_TYPES). */}
+              <div>
+                <Label className="text-xs">Matter Type *</Label>
+                <Select
+                  value={form.matterType || undefined}
+                  onValueChange={v => setForm(f => ({ ...f, matterType: v }))}
+                >
+                  <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="— select —" /></SelectTrigger>
+                  <SelectContent>
+                    {form.matterType !== "" && !isSupportedMatterType(form.matterType) && (
+                      <SelectItem value={form.matterType} disabled>
+                        {form.matterType} (legacy)
+                      </SelectItem>
+                    )}
+                    {MATTER_TYPES.map(t => (
+                      <SelectItem key={t} value={t}>{t}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
               {/* Lawyer assignments — searchable dropdowns over eligible active
                   users. A user may be picked only once across Attorney 1–4. */}
               {([
@@ -223,6 +240,7 @@ export default function MatterNew() {
                     field={field}
                     value={assignments[idKey]}
                     onChange={id => setAssignments(a => ({ ...a, [idKey]: id }))}
+                    allowCreate
                     excludeIds={
                       idKey.startsWith("attorney")
                         ? (["attorney1Id", "attorney2Id", "attorney3Id", "attorney4Id"] as const)

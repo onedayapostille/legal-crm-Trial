@@ -9,7 +9,7 @@ import { testNvidiaConnection, callNvidiaChat, NVIDIA_UNAVAILABLE_MESSAGE } from
 import {
   gatherCrmData, buildAiMessages, checkAiRateLimit, AI_MODEL_NAME,
 } from "./aiAnalytics";
-import { USER_ROLES, USER_STATUSES, type UserRole, type UserStatus } from "../shared/const";
+import { USER_ROLES, USER_STATUSES, MATTER_TYPES, type UserRole, type UserStatus } from "../shared/const";
 import { ASSIGNMENT_FIELD_NAMES, type AssignmentField } from "../shared/assignmentEligibility";
 import * as financialReports from "./financialReports";
 import { reportFilterSchema, EXPORT_REPORT_TYPES } from "./financialReports";
@@ -962,7 +962,11 @@ export const appRouter = router({
         clientId: z.number(),
         originalSerial: z.string().max(50).optional(),
         matterReference: z.string().optional(),
-        matterType: z.string().optional(),
+        // New matters accept only the supported values (shared/const.ts).
+        // Legacy free-text values live only on pre-existing rows.
+        matterType: z.enum(MATTER_TYPES, {
+          message: `Matter Type must be one of: ${MATTER_TYPES.join(", ")}.`,
+        }),
         billingType: z.enum([
           "Billable Hours",
           "Fixed / Project-Based Fees",
