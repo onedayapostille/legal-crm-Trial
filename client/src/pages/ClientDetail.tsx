@@ -40,7 +40,7 @@ import { useQueryParam } from "@/hooks/useQueryParam";
 import { ClientTasksSection, RelatedTasks } from "@/components/ClientTasks";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { hasPermission, CHANNEL_TYPES, DIGITAL_MEDIUMS, channelMediumLabel } from "@shared/const";
+import { hasPermission, CHANNEL_TYPES, DIGITAL_MEDIUMS, channelMediumLabel, MATTER_TYPES, isSupportedMatterType } from "@shared/const";
 
 const STATUS_COLORS: Record<string, string> = {
   "Existing Client": "bg-green-100 text-green-800 border-green-200",
@@ -884,7 +884,6 @@ const MATTER_FORM_DEFAULT: MatterFormState = {
 
 const MATTER_TEXT_FIELDS_TOP: [keyof MatterFormState, string][] = [
   ["matterReference",      "Matter Reference * (unique per client)"],
-  ["matterType",           "Matter Type *"],
 ];
 
 const MATTER_TEXT_FIELDS_REST: [keyof MatterFormState, string][] = [
@@ -998,6 +997,7 @@ function MatterFormFields({
           }))}
           fallbackLabel={form.leadPartnerFullName || form.leadPartner}
           placeholder="— select a lead partner —"
+          allowCreate
         />
         {form.leadLawyerId == null && form.leadPartnerFullName.trim() !== "" && (
           <p className="text-[11px] text-muted-foreground mt-0.5">
@@ -1015,6 +1015,33 @@ function MatterFormFields({
           />
         </div>
       ))}
+      {/* Matter Type — restricted dropdown (shared MATTER_TYPES). A legacy
+          free-text value on an old matter stays visible and selected (never
+          silently replaced); picking Litigation/Corporate updates it. */}
+      <div>
+        <Label className="text-xs">Matter Type *</Label>
+        <Select
+          value={form.matterType || undefined}
+          onValueChange={v => setForm(f => ({ ...f, matterType: v }))}
+        >
+          <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="— select —" /></SelectTrigger>
+          <SelectContent>
+            {form.matterType !== "" && !isSupportedMatterType(form.matterType) && (
+              <SelectItem value={form.matterType} disabled>
+                {form.matterType} (legacy)
+              </SelectItem>
+            )}
+            {MATTER_TYPES.map(t => (
+              <SelectItem key={t} value={t}>{t}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {form.matterType !== "" && !isSupportedMatterType(form.matterType) && (
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            Legacy value — kept as is unless you pick Litigation or Corporate.
+          </p>
+        )}
+      </div>
       {/* Lawyer assignments — searchable dropdowns over eligible active users.
           A user can be picked only once across Attorney 1–4. */}
       {MATTER_LAWYER_FIELDS.map(({ idKey, field, label, textKey }) => {
@@ -1037,6 +1064,7 @@ function MatterFormFields({
               }))}
               fallbackLabel={legacyText}
               excludeIds={excludeIds}
+              allowCreate
             />
             {value == null && legacyText !== "" && (
               <p className="text-[11px] text-muted-foreground mt-0.5">

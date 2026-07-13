@@ -105,6 +105,7 @@ describe("Conflict Check — search, matter check, and creation gate", () => {
       await expect(
         caller.clientMatters.create({
           clientId: owner.id,
+          matterType: "Corporate",
           matterReference: `M-block-${stamp}`,
           opposingParty: adverseName,
         }),

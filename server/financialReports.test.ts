@@ -80,6 +80,7 @@ describe("Financial Reporting — central dataset, filters, reconciliation, doub
   let partnerId!: number;
   let lawyerId!: number;
   let attorneyId!: number;
+  let attorneyBId!: number;
   let clientId!: number;
   let matterId!: number;
   const financialIds: number[] = [];
@@ -91,7 +92,8 @@ describe("Financial Reporting — central dataset, filters, reconciliation, doub
     const partner = await admin.users.create({ name: `Rept Partner ${stamp}`, email: `rp${stamp}@x.com`, password: PW, role: "partner" });
     const lawyer = await admin.users.create({ name: `Rept Lawyer ${stamp}`, email: `rl${stamp}@x.com`, password: PW, role: "lawyer" });
     const attorney = await admin.users.create({ name: `Rept Attorney ${stamp}`, email: `ra${stamp}@x.com`, password: PW, role: "lawyer" });
-    partnerId = partner.id; lawyerId = lawyer.id; attorneyId = attorney.id;
+    const attorneyB = await admin.users.create({ name: `Rept AttorneyB ${stamp}`, email: `rb${stamp}@x.com`, password: PW, role: "lawyer" });
+    partnerId = partner.id; lawyerId = lawyer.id; attorneyId = attorney.id; attorneyBId = attorneyB.id;
 
     const client = await admin.clients.create({ clientName, clientStatus: "Existing Client" });
     clientId = client.id;
@@ -101,11 +103,13 @@ describe("Financial Reporting — central dataset, filters, reconciliation, doub
       matterType: "Corporate",
       matterReference: `RPT-M1-${stamp}`,
       billingType: "Retainers",
+      // Four DISTINCT attorneys (duplicate slots are rejected server-side) —
+      // the point is that a fully-staffed matter must not multiply financial rows.
       leadLawyerId: partnerId,
       attorney1Id: attorneyId,
-      attorney2Id: attorneyId,
-      attorney3Id: attorneyId,
-      attorney4Id: attorneyId,
+      attorney2Id: attorneyBId,
+      attorney3Id: lawyerId,
+      attorney4Id: partnerId,
       acknowledgeConflicts: true,
     });
     matterId = matter.id;
@@ -142,7 +146,7 @@ describe("Financial Reporting — central dataset, filters, reconciliation, doub
     for (const id of financialIds) await admin.financial.delete({ id }).catch(() => {});
     await admin.clientMatters.delete({ id: matterId }).catch(() => {});
     await admin.clients.delete({ id: clientId }).catch(() => {});
-    for (const id of [partnerId, lawyerId, attorneyId]) {
+    for (const id of [partnerId, lawyerId, attorneyId, attorneyBId]) {
       await admin.users.delete({ userId: id }).catch(() => {});
     }
   });

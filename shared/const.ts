@@ -104,6 +104,21 @@ export function channelMediumLabel(type: string | null | undefined): string | nu
   }
 }
 
+// ─── Matter Type (client_matters.matter_type) ────────────────────────────────
+// The single source of truth for supported Matter Type values. Stored value ==
+// display label ("Litigation" / "Corporate") because ALL existing rows, the
+// client-level matter_type enum, seeds, and tests already use these capitalized
+// values — introducing lowercase variants would create mixed historical data.
+// The column stays varchar: legacy values on old matters remain readable and
+// are preserved on edit unless the user explicitly picks a supported value
+// (change-only validation server-side).
+export const MATTER_TYPES = ["Litigation", "Corporate"] as const;
+export type MatterType = (typeof MATTER_TYPES)[number];
+
+export function isSupportedMatterType(v: string | null | undefined): v is MatterType {
+  return typeof v === "string" && (MATTER_TYPES as readonly string[]).includes(v);
+}
+
 export const DISCOUNT_APPROVAL_VALUES = ["N/A", "P&L Head Lawyers", "CEO", "Board"] as const;
 export type DiscountApproval = (typeof DISCOUNT_APPROVAL_VALUES)[number];
 

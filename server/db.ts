@@ -19,7 +19,7 @@ import {
   type InsertMatterLawyerRate,
 } from "../drizzle/schema";
 import { hashPassword } from "./_core/auth";
-import { channelMediumRequired } from "../shared/const";
+import { channelMediumRequired, MATTER_TYPES, isSupportedMatterType } from "../shared/const";
 import { notifyLawyerAssignment } from "./emailNotifications";
 import type { UserRole, UserStatus } from "../shared/const";
 import { ASSIGNMENT_FIELDS, type AssignmentField } from "../shared/assignmentEligibility";
@@ -2028,9 +2028,18 @@ export async function createClientMatter(
   const clean = sanitizeClientMatterInput(data) as Partial<InsertClientMatter>;
   const clientId = (data as any).clientId as number;
 
-  // Matter Type is authoritative at the matter level (CRM-006): require it.
+  // Matter Type is authoritative at the matter level (CRM-006): require it,
+  // and new matters accept only the supported values (shared/const.ts). The
+  // router enforces this via z.enum too; this is defense in depth for internal
+  // callers.
   if (!clean.matterType || String(clean.matterType).trim() === "") {
     throw new TRPCError({ code: "BAD_REQUEST", message: "Matter Type is required when creating a matter." });
+  }
+  if (!isSupportedMatterType(String(clean.matterType).trim())) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `Matter Type must be one of: ${MATTER_TYPES.join(", ")}.`,
+    });
   }
 
   // Matter Reference is the matter-level identifier and is required for new
@@ -2053,6 +2062,7 @@ export async function createClientMatter(
   // name mirrored into the legacy display column. Legacy free-text values
   // remain supported for records without a linked user.
   await applyMatterAssignments(data, clean as Record<string, unknown>);
+  assertDistinctAttorneys(clean as Record<string, unknown>);
 
   let matter: typeof clientMatters.$inferSelect;
   try {
@@ -2126,11 +2136,27 @@ export async function updateClientMatter(id: number, data: Record<string, unknow
     }
   }
 
+  // Matter Type: change-only validation. A legacy free-text value already on
+  // the row may be re-submitted unchanged (so editing other fields on an old
+  // matter never blocks or silently rewrites history), but any NEW value must
+  // be one of the supported types (shared/const.ts).
+  if (clean.matterType !== undefined) {
+    const submitted = String(clean.matterType).trim();
+    const current = (existing?.matterType ?? "").trim();
+    if (submitted !== current && !isSupportedMatterType(submitted)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `Matter Type must be one of: ${MATTER_TYPES.join(", ")}.`,
+      });
+    }
+  }
+
   // Lawyer-assignment user links (Lead Partner, Support Lead, Attorney Head,
   // Attorney 1–4). Change-only validation: unchanged ids are preserved even if
   // the user has since become inactive; new ids must be active + role-eligible;
   // null unlinks and clears the mirrored display name.
   await applyMatterAssignments(data, clean as Record<string, unknown>, existing);
+  assertDistinctAttorneys(clean as Record<string, unknown>, existing as Record<string, unknown> | null);
 
   let matter: typeof clientMatters.$inferSelect;
   try {
@@ -2210,6 +2236,31 @@ async function resolveEligibleAssignee(field: AssignmentField, userId: number) {
     throw new TRPCError({ code: "BAD_REQUEST", message: `Selected ${label} does not have an eligible role (${u.role}).` });
   }
   return u;
+}
+
+// Attorney 1–4 slots: a user may appear only once across them. The frontend
+// hides already-picked users; this is the server-side backstop so a crafted
+// request cannot assign the same user to two attorney slots.
+const ATTORNEY_SLOT_KEYS = ["attorney1Id", "attorney2Id", "attorney3Id", "attorney4Id"] as const;
+
+function assertDistinctAttorneys(
+  clean: Record<string, unknown>,
+  existing?: Record<string, unknown> | null,
+) {
+  const seen = new Map<number, string>();
+  for (const key of ATTORNEY_SLOT_KEYS) {
+    // Effective post-write value: the submitted one, else the row's current one.
+    const effective = clean[key] !== undefined ? clean[key] : existing?.[key];
+    if (typeof effective !== "number") continue;
+    const prior = seen.get(effective);
+    if (prior) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "The same user cannot be assigned to more than one Attorney 1–4 slot.",
+      });
+    }
+    seen.set(effective, key);
+  }
 }
 
 // Matter lawyer-assignment columns: user FK key → eligibility field + legacy
