@@ -24,6 +24,7 @@ import {
   LogOut, PanelLeft, Users, FileText, BarChart3,
   DollarSign, UserCog, Briefcase, CheckSquare, Home,
   Building2, UserCheck, UserX, Calendar, Upload, Sparkles,
+  PieChart,
 } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
@@ -41,6 +42,7 @@ const menuItems = [
   { icon: UserX,         label: "Rejected Clients",   path: "/clients/rejected",  permission: "clients:view" },
   { icon: Calendar,      label: "Action Log",         path: "/client-actions",    permission: "actions:manage" },
   { icon: DollarSign,    label: "Financial Records",  path: "/financial",         permission: "financial:view" },
+  { icon: PieChart,      label: "Financial Reports",  path: "/financial-reports", permission: "financial:view" },
   { icon: Upload,        label: "Import Clients",     path: "/import",            permission: "clients:manage" },
   // ── Legacy / Other ──
   { icon: Briefcase,     label: "Matters",            path: "/matters",           permission: "matters:manage" },

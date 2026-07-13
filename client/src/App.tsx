@@ -29,6 +29,7 @@ import ClientsExisting from "@/pages/ClientsExisting";
 import ClientsLeads from "@/pages/ClientsLeads";
 import ClientsRejected from "@/pages/ClientsRejected";
 import FinancialRecords from "@/pages/FinancialRecords";
+import FinancialReports from "@/pages/FinancialReports";
 import ClientActionLog from "@/pages/ClientActionLog";
 import ImportPage from "@/pages/ImportPage";
 
@@ -181,6 +182,11 @@ function Router() {
       <Route path="/financial">
         <ProtectedRoute permission="financial:view">
           <FinancialRecords />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/financial-reports">
+        <ProtectedRoute permission="financial:view">
+          <FinancialReports />
         </ProtectedRoute>
       </Route>
       <Route path="/client-actions">
