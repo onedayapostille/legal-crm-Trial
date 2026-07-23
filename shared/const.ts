@@ -4,77 +4,25 @@ export const AXIOS_TIMEOUT_MS = 30_000;
 export const UNAUTHED_ERR_MSG = 'Please login (10001)';
 export const NOT_ADMIN_ERR_MSG = 'You do not have required permission (10002)';
 
-export const USER_ROLES = ["admin", "manager", "partner", "lawyer", "finance", "staff", "viewer"] as const;
+import {
+  ACCOUNT_ROLES,
+  ACCOUNT_ROLE_LABELS,
+  LEGACY_ROLES,
+  LEGACY_ROLE_LABELS,
+} from "./permissions";
+
+// Every value the users.role pg enum may hold: the 11 canonical account roles
+// plus retained legacy values (never dropped — see docs/roles-permissions-
+// implementation.md). Only ACCOUNT_ROLES are assignable via User Management.
+export const USER_ROLES = [...ACCOUNT_ROLES, ...LEGACY_ROLES] as const;
 export const USER_STATUSES = ["active", "inactive", "suspended"] as const;
 
 export type UserRole = (typeof USER_ROLES)[number];
 export type UserStatus = (typeof USER_STATUSES)[number];
 
 export const ROLE_LABELS: Record<UserRole, string> = {
-  admin: "Admin",
-  manager: "Manager",
-  partner: "Partner",
-  lawyer: "Lawyer",
-  finance: "Finance",
-  staff: "Staff",
-  viewer: "Viewer",
-};
-
-export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
-  admin: ["*"],
-  manager: [
-    "dashboard:view",
-    "clients:view", "clients:manage",
-    "leads:manage",
-    "matters:view", "matters:manage",
-    "tasks:manage",
-    "analytics:view",
-    "payments:view",
-    "financial:view",
-    "actions:manage",
-    "ai:assistant",
-  ],
-  partner: [
-    "dashboard:view",
-    "clients:manage",
-    "leads:manage",
-    "matters:manage",
-    "matters:assign_lawyer",
-    "tasks:manage",
-    "analytics:view",
-    "payments:view",
-    "financial:view",
-    "actions:manage",
-    "ai:assistant",
-  ],
-  lawyer: [
-    "dashboard:view",
-    "clients:manage",
-    "leads:manage",
-    "matters:manage",
-    "tasks:manage",
-    "analytics:view",
-    "actions:manage",
-    "ai:assistant",
-  ],
-  finance: [
-    "dashboard:view",
-    "clients:view",
-    "matters:view",
-    "financial:manage",
-    "payments:view",
-    "analytics:view",
-    "ai:assistant",
-  ],
-  staff: [
-    "dashboard:view",
-    "clients:manage",
-    "leads:manage",
-    "tasks:manage",
-    "analytics:view",
-    "actions:manage",
-  ],
-  viewer: ["dashboard:view", "clients:view", "analytics:view"],
+  ...ACCOUNT_ROLE_LABELS,
+  ...LEGACY_ROLE_LABELS,
 };
 
 // ─── Communication Channel (two-level: type → medium) ────────────────────────
@@ -115,6 +63,11 @@ export function channelMediumLabel(type: string | null | undefined): string | nu
 export const MATTER_TYPES = ["Litigation", "Corporate"] as const;
 export type MatterType = (typeof MATTER_TYPES)[number];
 
+// Office locations (mirrors the pg `city` enum). Together with MATTER_TYPES
+// these are the two practice dimensions (BR-01: location + matter type).
+export const CITY_VALUES = ["Riyadh", "Dammam", "Jeddah"] as const;
+export type CityValue = (typeof CITY_VALUES)[number];
+
 export function isSupportedMatterType(v: string | null | undefined): v is MatterType {
   return typeof v === "string" && (MATTER_TYPES as readonly string[]).includes(v);
 }
@@ -129,14 +82,5 @@ export const DISCOUNT_RATES: Record<DiscountApproval, number> = {
   "Board": 15,
 };
 
-export function hasPermission(role: UserRole | string | null | undefined, permission: string) {
-  if (!role || !(role in ROLE_PERMISSIONS)) return false;
-  const permissions = ROLE_PERMISSIONS[role as UserRole];
-  if (permissions.includes("*") || permissions.includes(permission)) return true;
-  // :manage implies :view for the same resource
-  if (permission.endsWith(":view")) {
-    const manageVariant = permission.replace(":view", ":manage");
-    return permissions.includes(manageVariant);
-  }
-  return false;
-}
+// The legacy string-based hasPermission()/ROLE_PERMISSIONS matrix was replaced
+// by the capability × scope policy in shared/permissions.ts (can/scopeFor).

@@ -1,4 +1,5 @@
 import type { UserRole } from "./const";
+import { LEAD_LAWYER_ELIGIBLE_ROLES } from "./permissions";
 
 // ─── Lawyer-assignment eligibility (single source of truth) ───────────────────
 //
@@ -7,23 +8,36 @@ import type { UserRole } from "./const";
 // source AND to validate submitted assignments (defense in depth), and by the
 // client for field labels. Do not duplicate these role lists in components.
 //
-// Role-model mapping (the project has no distinct "Head of Practice" role, so
-// leadership-tier fields map to the existing partner/lawyer set used by the
-// pre-existing Lead Partner dropdown, and team-tier fields map to the broader
-// set already used for hourly-rate lawyer assignment):
-//   • Leadership tier (Lead Partner, Attorney Head): partner, lawyer
-//   • Legal team tier (Support Lead, Attorney 1–4, Responsible Lawyer):
-//     admin, manager, partner, lawyer
+// Role-model mapping (AGP Roles & Permissions Spec v1.1):
+//   • Leadership tier (Lead Lawyer / Lead Partner, Attorney Head): the
+//     Lead-Lawyer-eligible grades — Head of Practice, Senior/Executive
+//     Associate, Associate, Junior Lawyer (Trainee excluded per the Excel
+//     Position Mapping; legacy partner/lawyer retained for un-migrated
+//     accounts).
+//   • Legal team tier (Support Lead, Attorney 1–4, Responsible Lawyer): all
+//     lawyer grades including Trainee. admin/manager were removed from NEW
+//     team assignments (they are not lawyer positions); historical
+//     assignments are preserved via change-only validation.
 //
 // Only ACTIVE users are ever eligible for NEW assignments; existing/historical
 // assignments to now-inactive users are preserved and displayed, but cannot be
 // re-selected (enforced server-side, change-only validation).
 
-/** Roles that may lead a matter (existing Lead Partner dropdown set). */
-export const LEADERSHIP_ASSIGNMENT_ROLES: readonly UserRole[] = ["partner", "lawyer"];
+/** Roles that may lead a matter (Lead Lawyer designation set). */
+export const LEADERSHIP_ASSIGNMENT_ROLES: readonly UserRole[] =
+  LEAD_LAWYER_ELIGIBLE_ROLES as readonly UserRole[];
 
-/** Roles that may work on / own a matter (existing hourly-rates set). */
-export const LEGAL_TEAM_ASSIGNMENT_ROLES: readonly UserRole[] = ["admin", "manager", "partner", "lawyer"];
+/** Roles that may work on / own a matter (matter-team tier). */
+export const LEGAL_TEAM_ASSIGNMENT_ROLES: readonly UserRole[] = [
+  "head_of_practice",
+  "senior_associate",
+  "executive_associate",
+  "associate",
+  "junior_lawyer",
+  "trainee",
+  "partner",
+  "lawyer",
+];
 
 export const ASSIGNMENT_FIELDS = {
   leadPartner:       { label: "Lead Partner",       roles: LEADERSHIP_ASSIGNMENT_ROLES },

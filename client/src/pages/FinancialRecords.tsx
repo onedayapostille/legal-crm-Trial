@@ -20,7 +20,7 @@ import FinancialDialog from "@/components/FinancialDialog";
 import type { MatterOption, ClientOption } from "@/components/FinancialDialog";
 import { FinancialAuditTrail } from "@/components/FinancialAuditTrail";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { hasPermission } from "@shared/const";
+import { can } from "@shared/permissions";
 import { useQueryParam } from "@/hooks/useQueryParam";
 
 // ─── Shared constants ─────────────────────────────────────────────────────────
@@ -108,8 +108,8 @@ interface GrandTotals {
 
 export default function FinancialRecords() {
   const { user } = useAuth();
-  const canManage      = hasPermission(user?.role, "financial:manage");
-  const canViewClients = hasPermission(user?.role, "clients:view");   // NC-10
+  const canManage      = can(user?.role, "financial.edit");
+  const canViewClients = can(user?.role, "clients.view");   // NC-10
 
   // ── View / tab state (URL-backed so it survives Back navigation) ────────────
   const [viewModeRaw, setViewMode]   = useQueryParam("view", "records");
@@ -317,7 +317,7 @@ export default function FinancialRecords() {
   }, [filteredRecords]);
 
   // ── Permission guard ───────────────────────────────────────────────────────
-  if (!hasPermission(user?.role, "financial:view")) {
+  if (!can(user?.role, "financial.view")) {
     return (
       <DashboardLayout>
         <div className="p-12 text-center">

@@ -34,9 +34,9 @@ describe("Matter Hourly Rates — assigned users, read-only names, restricted re
     const admin = appRouter.createCaller(ctxFor("admin").ctx);
     const stamp = Date.now();
 
-    const leadUser = await admin.users.create({ name: `Lead Lawyer ${stamp}`, email: `lead${stamp}@x.com`, password: PW, role: "partner" });
-    const coUser   = await admin.users.create({ name: `Co Lawyer ${stamp}`,   email: `co${stamp}@x.com`,   password: PW, role: "lawyer" });
-    const viewer   = await admin.users.create({ name: `Viewer ${stamp}`,       email: `vw${stamp}@x.com`,   password: PW, role: "viewer" });
+    const leadUser = await admin.users.create({ name: `Lead Lawyer ${stamp}`, email: `lead${stamp}@x.com`, password: PW, role: "head_of_practice" });
+    const coUser   = await admin.users.create({ name: `Co Lawyer ${stamp}`,   email: `co${stamp}@x.com`,   password: PW, role: "senior_associate" });
+    const viewer   = await admin.users.create({ name: `Viewer ${stamp}`,       email: `vw${stamp}@x.com`,   password: PW, role: "manager" });
 
     const client = await admin.clients.create({ clientName: `Rates Client ${stamp}`, clientStatus: "Existing Client" });
     const matter = await admin.clientMatters.create({ clientId: client.id, matterType: "Corporate", matterReference: `RATE-${stamp}` });

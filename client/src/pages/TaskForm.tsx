@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 type TaskFormData = {
   title: string;
@@ -46,7 +47,17 @@ export default function TaskForm() {
     { clientId: Number(clientId) },
     { enabled: !!clientId },
   );
-  const { data: lawyers = [] } = trpc.users.assignableLawyers.useQuery();
+  // Task-assignment authority (BR-10): the server returns the assignee
+  // directory only for roles that may assign tasks to others (or lead a
+  // matter). Everyone else can only create tasks for themselves.
+  const { user } = useAuth();
+  const { data: assignees = [] } = trpc.users.assignees.useQuery();
+  const canAssignOthers = assignees.length > 0;
+  const assigneeOptions = canAssignOthers
+    ? assignees
+    : user
+      ? [{ id: user.id, name: user.name, email: user.email, role: user.role }]
+      : [];
 
   const createTask = trpc.tasks.create.useMutation({
     onSuccess: () => {
@@ -140,11 +151,16 @@ export default function TaskForm() {
                   <SelectTrigger><SelectValue placeholder="— Unassigned —" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value={NO_ASSIGNEE}>— Unassigned —</SelectItem>
-                    {lawyers.map((l: any) => (
+                    {assigneeOptions.map((l: any) => (
                       <SelectItem key={l.id} value={String(l.id)}>{l.name ?? `User #${l.id}`}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                {!canAssignOthers && (
+                  <p className="text-xs text-muted-foreground">
+                    Your role can only assign tasks to yourself.
+                  </p>
+                )}
               </div>
 
               <div className="space-y-2">

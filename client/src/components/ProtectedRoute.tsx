@@ -1,15 +1,19 @@
 import { useEffect } from "react";
 import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
-import { hasPermission } from "@shared/const";
+import { can, type Capability } from "@shared/permissions";
 import { Loader2 } from "lucide-react";
+import AccessDenied from "@/components/AccessDenied";
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
-  permission?: string;
+  /** Capability required to open this route (central policy, shared/permissions.ts). */
+  capability?: Capability;
+  /** Any one of these capabilities grants access (view/manage splits). */
+  anyCapability?: Capability[];
 }
 
-export default function ProtectedRoute({ children, permission }: ProtectedRouteProps) {
+export default function ProtectedRoute({ children, capability, anyCapability }: ProtectedRouteProps) {
   const [, navigate] = useLocation();
   const { data: user, isLoading, error } = trpc.auth.me.useQuery(undefined, {
     retry: false,
@@ -32,15 +36,14 @@ export default function ProtectedRoute({ children, permission }: ProtectedRouteP
 
   if (!user) return null;
 
-  if (permission && !hasPermission(user.role, permission)) {
+  const allowed =
+    (!capability || can(user.role, capability)) &&
+    (!anyCapability || anyCapability.some(c => can(user.role, c)));
+
+  if (!allowed) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-6">
-        <div className="max-w-md text-center">
-          <h1 className="text-2xl font-semibold">Access restricted</h1>
-          <p className="mt-2 text-muted-foreground">
-            Your account does not have permission to open this area.
-          </p>
-        </div>
+      <div className="min-h-screen flex items-center justify-center">
+        <AccessDenied />
       </div>
     );
   }

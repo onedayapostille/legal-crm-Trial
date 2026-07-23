@@ -48,7 +48,7 @@ function Router() {
 
       {/* Protected routes */}
       <Route path="/dashboard">
-        <ProtectedRoute><Dashboard /></ProtectedRoute>
+        <ProtectedRoute capability="dashboard.view"><Dashboard /></ProtectedRoute>
       </Route>
 
       {/* Unified intake: the Enquiry Log / Leads list is consolidated into the
@@ -58,21 +58,21 @@ function Router() {
         <Redirect to="/clients/leads" />
       </Route>
       <Route path="/leads/new">
-        <ProtectedRoute>
+        <ProtectedRoute capability="enquiries.manage">
           <DashboardLayout><EnquiryForm /></DashboardLayout>
         </ProtectedRoute>
       </Route>
       {/* Explicit edit alias (kept alongside /leads/:id for deep-link compat). */}
       <Route path="/leads/:id/edit">
         {(params) => (
-          <ProtectedRoute>
+          <ProtectedRoute capability="enquiries.manage">
             <DashboardLayout><EnquiryForm id={parseInt(params.id)} /></DashboardLayout>
           </ProtectedRoute>
         )}
       </Route>
       <Route path="/leads/:id">
         {(params) => (
-          <ProtectedRoute>
+          <ProtectedRoute anyCapability={["enquiries.view", "enquiries.manage"]}>
             <DashboardLayout><EnquiryForm id={parseInt(params.id)} /></DashboardLayout>
           </ProtectedRoute>
         )}
@@ -84,10 +84,10 @@ function Router() {
       </Route>
       {/* Filterable enquiries list for channel/marketing-source reporting */}
       <Route path="/enquiries/log">
-        <ProtectedRoute permission="leads:manage"><EnquiriesLog /></ProtectedRoute>
+        <ProtectedRoute anyCapability={["enquiries.view", "enquiries.manage"]}><EnquiriesLog /></ProtectedRoute>
       </Route>
       <Route path="/enquiries/new">
-        <ProtectedRoute>
+        <ProtectedRoute capability="enquiries.manage">
           <DashboardLayout><EnquiryForm /></DashboardLayout>
         </ProtectedRoute>
       </Route>
@@ -95,14 +95,14 @@ function Router() {
           404 on /enquiries/:id/edit deep links). */}
       <Route path="/enquiries/:id/edit">
         {(params) => (
-          <ProtectedRoute>
+          <ProtectedRoute capability="enquiries.manage">
             <DashboardLayout><EnquiryForm id={parseInt(params.id)} /></DashboardLayout>
           </ProtectedRoute>
         )}
       </Route>
       <Route path="/enquiries/:id">
         {(params) => (
-          <ProtectedRoute>
+          <ProtectedRoute anyCapability={["enquiries.view", "enquiries.manage"]}>
             <DashboardLayout><EnquiryForm id={parseInt(params.id)} /></DashboardLayout>
           </ProtectedRoute>
         )}
@@ -110,92 +110,95 @@ function Router() {
 
       {/* Matters */}
       <Route path="/matters/new">
-        <ProtectedRoute permission="clients:manage"><MatterNew /></ProtectedRoute>
+        <ProtectedRoute capability="matters.create"><MatterNew /></ProtectedRoute>
       </Route>
       <Route path="/matters">
-        <ProtectedRoute><MatterList /></ProtectedRoute>
+        <ProtectedRoute capability="matters.view"><MatterList /></ProtectedRoute>
       </Route>
 
       {/* Tasks */}
       <Route path="/tasks/new">
-        <ProtectedRoute><TaskForm /></ProtectedRoute>
+        <ProtectedRoute capability="tasks.update"><TaskForm /></ProtectedRoute>
       </Route>
       <Route path="/tasks">
-        <ProtectedRoute><TaskList /></ProtectedRoute>
+        <ProtectedRoute capability="tasks.view"><TaskList /></ProtectedRoute>
       </Route>
 
       {/* Analytics */}
       <Route path="/status-tracker">
-        <ProtectedRoute>
+        <ProtectedRoute anyCapability={["enquiries.view", "enquiries.manage"]}>
           <DashboardLayout><StatusTracker /></DashboardLayout>
         </ProtectedRoute>
       </Route>
+      {/* Payment tracker joins enquiry + payment (financial) data, so it needs
+          both: firm-wide financial visibility AND enquiries access. Finance is
+          excluded by BR: no Enquiries Log access. */}
       <Route path="/payment-tracker">
-        <ProtectedRoute>
+        <ProtectedRoute capability="financial.view" anyCapability={["enquiries.view", "enquiries.manage"]}>
           <DashboardLayout><PaymentTracker /></DashboardLayout>
         </ProtectedRoute>
       </Route>
       <Route path="/ai-assistant">
-        <ProtectedRoute permission="ai:assistant"><AIAssistant /></ProtectedRoute>
+        <ProtectedRoute capability="ai.use"><AIAssistant /></ProtectedRoute>
       </Route>
 
       {/* Admin */}
       <Route path="/user-management">
-        <ProtectedRoute permission="users:manage">
+        <ProtectedRoute capability="users.manage">
           <DashboardLayout><UserManagement /></DashboardLayout>
         </ProtectedRoute>
       </Route>
 
       {/* ── AlGhazzawi Clients Module ── */}
       <Route path="/clients">
-        <ProtectedRoute permission="clients:view">
+        <ProtectedRoute capability="clients.view">
           <ClientList />
         </ProtectedRoute>
       </Route>
       <Route path="/clients/new">
-        <ProtectedRoute permission="clients:manage">
+        <ProtectedRoute capability="clients.create">
           <ClientForm />
         </ProtectedRoute>
       </Route>
       <Route path="/clients/existing">
-        <ProtectedRoute permission="clients:view">
+        <ProtectedRoute capability="clients.view">
           <ClientsExisting />
         </ProtectedRoute>
       </Route>
       <Route path="/clients/leads">
-        <ProtectedRoute permission="clients:view">
+        <ProtectedRoute capability="clients.view">
           <ClientsLeads />
         </ProtectedRoute>
       </Route>
       <Route path="/clients/rejected">
-        <ProtectedRoute permission="clients:view">
+        <ProtectedRoute capability="clients.view">
           <ClientsRejected />
         </ProtectedRoute>
       </Route>
       <Route path="/clients/:id">
         {(params) => (
-          <ProtectedRoute permission="clients:view">
+          <ProtectedRoute capability="clients.view">
             <ClientDetail id={parseInt(params.id)} />
           </ProtectedRoute>
         )}
       </Route>
       <Route path="/financial">
-        <ProtectedRoute permission="financial:view">
+        <ProtectedRoute capability="financial.view">
           <FinancialRecords />
         </ProtectedRoute>
       </Route>
       <Route path="/financial-reports">
-        <ProtectedRoute permission="financial:view">
+        <ProtectedRoute capability="financialReports.view">
           <FinancialReports />
         </ProtectedRoute>
       </Route>
       <Route path="/client-actions">
-        <ProtectedRoute permission="actions:manage">
+        <ProtectedRoute capability="clients.view">
           <ClientActionLog />
         </ProtectedRoute>
       </Route>
       <Route path="/import">
-        <ProtectedRoute permission="clients:manage">
+        <ProtectedRoute capability="import.clients">
           <ImportPage />
         </ProtectedRoute>
       </Route>

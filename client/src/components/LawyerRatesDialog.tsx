@@ -26,6 +26,7 @@ import { Pencil, Trash2, Plus, Clock, Check, X, UserCog, ShieldCheck } from "luc
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { can } from "@shared/permissions";
 
 interface LawyerRatesDialogProps {
   open: boolean;
@@ -54,7 +55,10 @@ function fmtRate(v: string | null | undefined, currency: string | null | undefin
 export function LawyerRatesDialog({ open, onClose, matter }: LawyerRatesDialogProps) {
   const utils = trpc.useUtils();
   const { user } = useAuth();
-  const canAssignLead = user?.role === "admin" || user?.role === "partner";
+  // Lead Lawyer reassignment is an authorization-defining action:
+  // matters.assignTeam (Admin firm-wide; Head of Practice own practice —
+  // the server additionally enforces the practice bound per matter).
+  const canAssignLead = can(user?.role, "matters.assignTeam");
 
   // ── Data ─────────────────────────────────────────────────────────────────
   const { data: billable, isLoading } = trpc.clientMatters.billableLawyers.useQuery(

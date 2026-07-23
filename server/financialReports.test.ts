@@ -89,10 +89,10 @@ describe("Financial Reporting — central dataset, filters, reconciliation, doub
   const base = () => ({ clientId });
 
   beforeAll(async () => {
-    const partner = await admin.users.create({ name: `Rept Partner ${stamp}`, email: `rp${stamp}@x.com`, password: PW, role: "partner" });
-    const lawyer = await admin.users.create({ name: `Rept Lawyer ${stamp}`, email: `rl${stamp}@x.com`, password: PW, role: "lawyer" });
-    const attorney = await admin.users.create({ name: `Rept Attorney ${stamp}`, email: `ra${stamp}@x.com`, password: PW, role: "lawyer" });
-    const attorneyB = await admin.users.create({ name: `Rept AttorneyB ${stamp}`, email: `rb${stamp}@x.com`, password: PW, role: "lawyer" });
+    const partner = await admin.users.create({ name: `Rept Partner ${stamp}`, email: `rp${stamp}@x.com`, password: PW, role: "head_of_practice" });
+    const lawyer = await admin.users.create({ name: `Rept Lawyer ${stamp}`, email: `rl${stamp}@x.com`, password: PW, role: "senior_associate" });
+    const attorney = await admin.users.create({ name: `Rept Attorney ${stamp}`, email: `ra${stamp}@x.com`, password: PW, role: "senior_associate" });
+    const attorneyB = await admin.users.create({ name: `Rept AttorneyB ${stamp}`, email: `rb${stamp}@x.com`, password: PW, role: "senior_associate" });
     partnerId = partner.id; lawyerId = lawyer.id; attorneyId = attorney.id; attorneyBId = attorneyB.id;
 
     const client = await admin.clients.create({ clientName, clientStatus: "Existing Client" });
@@ -345,11 +345,16 @@ describe("Financial Reporting — central dataset, filters, reconciliation, doub
     expect((await admin.financialReports.summary({ ...base(), includeUnassignedLawyer: false })).recordCount).toBe(3);
   });
 
-  it("Head of Practice is not configured: dimension reports it and the filter matches nothing", async () => {
+  it("Head of Practice dimension resolves through practice_heads; unmapped records group as 'Unassigned practice' and an unknown filter matches nothing", async () => {
+    // These fixtures carry no city/matter-type practice mapping, so every
+    // record groups under the null (Unassigned practice) bucket.
     const hop = await admin.financialReports.byHeadOfPractice(base());
-    expect(hop.configured).toBe(false);
-    expect(hop.rows).toHaveLength(0);
-    expect(hop.reason).toContain("Head of Practice");
+    expect(hop.configured).toBe(true);
+    const unassigned = hop.rows.find((r: any) => r.headOfPracticeId === null);
+    expect(unassigned).toBeTruthy();
+    expect(unassigned!.headOfPracticeName).toBe("Unassigned practice");
+    expect(Number(unassigned!.recordCount)).toBe(4);
+    // Filtering by a head with no mapped practice matches nothing.
     const filtered = await admin.financialReports.summary({ ...base(), headOfPracticeId: 12345 });
     expect(filtered.recordCount).toBe(0);
   });

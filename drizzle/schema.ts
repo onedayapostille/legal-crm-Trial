@@ -14,7 +14,26 @@ import {
 
 // ─── Enums ───────────────────────────────────────────────────────────────────
 
-export const userRoleEnum = pgEnum("user_role", ["admin", "manager", "partner", "lawyer", "finance", "staff", "viewer"]);
+// Canonical account roles (AGP Roles & Permissions Spec v1.1) plus retained
+// legacy values (partner/lawyer/staff/viewer — never dropped; see
+// docs/roles-permissions-implementation.md). Policy lives in shared/permissions.ts.
+export const userRoleEnum = pgEnum("user_role", [
+  "admin",
+  "manager",
+  "head_of_practice",
+  "senior_associate",
+  "executive_associate",
+  "associate",
+  "junior_lawyer",
+  "trainee",
+  "paralegal",
+  "finance",
+  "coordinator",
+  "partner",
+  "lawyer",
+  "staff",
+  "viewer",
+]);
 export const userStatusEnum = pgEnum("user_status", ["active", "inactive", "suspended"]);
 
 export const leadStatusEnum = pgEnum("lead_status", [
@@ -75,7 +94,7 @@ export const users = pgTable("users", {
   email: varchar("email", { length: 320 }).notNull().unique(),
   name: text("name"),
   passwordHash: text("password_hash"),
-  role: userRoleEnum("role").default("staff").notNull(),
+  role: userRoleEnum("role").default("trainee").notNull(),
   status: userStatusEnum("status").default("active").notNull(),
   // Supervising partner (self-reference). Drives partner task-visibility:
   // a partner sees tasks of lawyers whose reportsToId = the partner's id.
@@ -662,3 +681,24 @@ export const systemSettings = pgTable("system_settings", {
 
 export type SystemSetting       = typeof systemSettings.$inferSelect;
 export type InsertSystemSetting = typeof systemSettings.$inferInsert;
+
+// ─── Practice Heads (Head-of-Practice ownership map) ─────────────────────────
+// BR-01: every client, case, and matter reports to a Head of Practice,
+// determined by location (city) and matter type. This table is the
+// authoritative (city, matter_type) → responsible Head of Practice mapping;
+// records resolve their responsible HoP through it (null-safe: an unmapped
+// combination simply belongs to no practice, so no HoP gains edit rights).
+// Admin-managed via the practices.* router.
+
+export const practiceHeads = pgTable("practice_heads", {
+  id: serial("id").primaryKey(),
+  city: cityEnum("city").notNull(),
+  matterType: clientMatterTypeEnum("matter_type").notNull(),
+  headOfPracticeId: integer("head_of_practice_id").notNull().references(() => users.id),
+  createdBy: integer("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export type PracticeHead = typeof practiceHeads.$inferSelect;
+export type InsertPracticeHead = typeof practiceHeads.$inferInsert;

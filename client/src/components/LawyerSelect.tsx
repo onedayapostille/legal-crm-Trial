@@ -10,7 +10,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import AddAttorneyDialog from "@/components/AddAttorneyDialog";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { hasPermission } from "@shared/const";
+import { can } from "@shared/permissions";
 import type { AssignmentField } from "@shared/assignmentEligibility";
 
 /**
@@ -62,7 +62,7 @@ export default function LawyerSelect({
   const [open, setOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const { user } = useAuth();
-  const canCreateUsers = hasPermission(user?.role, "users:manage");
+  const canCreateUsers = can(user?.role, "users.manage");
   const { data: lawyers, isLoading, error, refetch } = trpc.users.eligibleLawyers.useQuery({ field });
 
   const options = useMemo(

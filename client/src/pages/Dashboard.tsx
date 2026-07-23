@@ -16,7 +16,7 @@ import {
 import DashboardLayout from "@/components/DashboardLayout";
 import { TaskDetailDialog } from "@/components/TaskDetailDialog";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { hasPermission } from "@shared/const";
+import { can } from "@shared/permissions";
 
 function StatCard({
   title, value, subtitle, icon: Icon, color, href
@@ -54,9 +54,10 @@ export default function Dashboard() {
   const { data: tasks } = trpc.tasks.list.useQuery({});
   const { user } = useAuth();
 
-  // AlGhazzawi client stats
-  const canViewClients = hasPermission(user?.role, "clients:view");
-  const canViewFinancial = hasPermission(user?.role, "financial:view");
+  // AlGhazzawi client stats — capabilities from the central policy; all data
+  // below is additionally scoped server-side to what the viewer may see.
+  const canViewClients = can(user?.role, "clients.view");
+  const canViewFinancial = can(user?.role, "financial.view");
   const { data: clientStats } = trpc.clients.dashboardStats.useQuery(undefined, { enabled: canViewClients });
   // Recent Leads = Lead-status clients created in the last 30 days (newest first,
   // capped server-side). Date window uses the DB clock for timezone consistency.
@@ -393,8 +394,8 @@ export default function Dashboard() {
           </>
         )}
 
-        {/* Revenue card */}
-        {stats && stats.totalRevenue > 0 && (
+        {/* Revenue card (null when the viewer has no firm-wide financial access) */}
+        {stats && stats.totalRevenue != null && stats.totalRevenue > 0 && (
           <Card className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white border-0">
             <CardContent className="pt-6">
               <div className="flex items-center justify-between">

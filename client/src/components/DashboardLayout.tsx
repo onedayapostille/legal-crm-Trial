@@ -30,26 +30,35 @@ import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
 import NotificationBell from './NotificationBell';
-import { hasPermission } from "@shared/const";
+import { can, scopeFor, type Capability, type Scope } from "@shared/permissions";
 
-const menuItems = [
-  { icon: Home,          label: "Dashboard",         path: "/dashboard",         permission: "dashboard:view" },
+// Navigation gated by the central capability policy. `scopes` optionally
+// restricts an item to specific data scopes (e.g. registry lists are hidden
+// from assigned-matter-scope lawyers whose scoped list would always be empty).
+const menuItems: Array<{
+  icon: typeof Home;
+  label: string;
+  path: string;
+  capability: Capability;
+  scopes?: Scope[];
+}> = [
+  { icon: Home,          label: "Dashboard",         path: "/dashboard",         capability: "dashboard.view" },
   // ── Clients Module ──
-  { icon: Building2,     label: "All Clients",        path: "/clients",           permission: "clients:view" },
-  { icon: UserCheck,     label: "Existing Clients",   path: "/clients/existing",  permission: "clients:view" },
-  { icon: Users,         label: "Leads Pipeline",     path: "/clients/leads",     permission: "clients:view" },
-  { icon: FileText,      label: "Enquiries Log",      path: "/enquiries/log",     permission: "leads:manage" },
-  { icon: UserX,         label: "Rejected Clients",   path: "/clients/rejected",  permission: "clients:view" },
-  { icon: Calendar,      label: "Action Log",         path: "/client-actions",    permission: "actions:manage" },
-  { icon: DollarSign,    label: "Financial Records",  path: "/financial",         permission: "financial:view" },
-  { icon: PieChart,      label: "Financial Reports",  path: "/financial-reports", permission: "financial:view" },
-  { icon: Upload,        label: "Import Clients",     path: "/import",            permission: "clients:manage" },
+  { icon: Building2,     label: "All Clients",        path: "/clients",           capability: "clients.view" },
+  { icon: UserCheck,     label: "Existing Clients",   path: "/clients/existing",  capability: "clients.view" },
+  { icon: Users,         label: "Leads Pipeline",     path: "/clients/leads",     capability: "clients.view", scopes: ["ALL", "REGISTRY"] },
+  { icon: FileText,      label: "Enquiries Log",      path: "/enquiries/log",     capability: "enquiries.view" },
+  { icon: UserX,         label: "Rejected Clients",   path: "/clients/rejected",  capability: "clients.view", scopes: ["ALL", "REGISTRY"] },
+  { icon: Calendar,      label: "Action Log",         path: "/client-actions",    capability: "clients.view" },
+  { icon: DollarSign,    label: "Financial Records",  path: "/financial",         capability: "financial.view" },
+  { icon: PieChart,      label: "Financial Reports",  path: "/financial-reports", capability: "financialReports.view" },
+  { icon: Upload,        label: "Import Clients",     path: "/import",            capability: "import.clients" },
   // ── Legacy / Other ──
-  { icon: Briefcase,     label: "Matters",            path: "/matters",           permission: "matters:manage" },
-  { icon: CheckSquare,   label: "Tasks",              path: "/tasks",             permission: "tasks:manage" },
-  { icon: BarChart3,     label: "Status Tracker",     path: "/status-tracker",    permission: "analytics:view" },
-  { icon: Sparkles,      label: "AI Assistant",       path: "/ai-assistant",      permission: "ai:assistant" },
-  { icon: UserCog,       label: "User Management",   path: "/user-management",   permission: "users:manage" },
+  { icon: Briefcase,     label: "Matters",            path: "/matters",           capability: "matters.view" },
+  { icon: CheckSquare,   label: "Tasks",              path: "/tasks",             capability: "tasks.view" },
+  { icon: BarChart3,     label: "Status Tracker",     path: "/status-tracker",    capability: "enquiries.view" },
+  { icon: Sparkles,      label: "AI Assistant",       path: "/ai-assistant",      capability: "ai.use" },
+  { icon: UserCog,       label: "User Management",   path: "/user-management",   capability: "users.manage" },
 ];
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
@@ -107,7 +116,10 @@ function DashboardLayoutContent({
   const isCollapsed = state === "collapsed";
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
-  const visibleMenuItems = menuItems.filter(item => hasPermission(user?.role, item.permission));
+  const visibleMenuItems = menuItems.filter(item =>
+    can(user?.role, item.capability) &&
+    (!item.scopes || item.scopes.includes(scopeFor(user?.role, item.capability))),
+  );
   const activeMenuItem = visibleMenuItems.find(item => item.path === location);
   const isMobile = useIsMobile();
 

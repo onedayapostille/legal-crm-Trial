@@ -11,8 +11,15 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useState } from "react";
 import { toast } from "sonner";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { can, scopeFor } from "@shared/permissions";
 
 export default function PaymentTracker() {
+  const { user } = useAuth();
+  // Payment mutations require firm-wide financial edit rights (admin/finance);
+  // Manager, Head of Practice and Coordinator use this page read-only.
+  const canManagePayments =
+    can(user?.role, "financial.edit") && scopeFor(user?.role, "financial.edit") === "ALL";
   const [selectedEnquiry, setSelectedEnquiry] = useState<number | null>(null);
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [paymentData, setPaymentData] = useState({
@@ -261,13 +268,17 @@ export default function PaymentTracker() {
                           )}
                         </TableCell>
                         <TableCell className="text-right">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleCreatePayment(enquiry.id, enquiry.matterCode!)}
-                          >
-                            {payment ? "Edit" : "Set Up"}
-                          </Button>
+                          {canManagePayments ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleCreatePayment(enquiry.id, enquiry.matterCode!)}
+                            >
+                              {payment ? "Edit" : "Set Up"}
+                            </Button>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">Read-only</span>
+                          )}
                         </TableCell>
                       </TableRow>
                     );

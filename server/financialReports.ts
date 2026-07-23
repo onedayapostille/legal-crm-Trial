@@ -9,12 +9,11 @@
 // Attribution rules ("Attributed Revenue", NOT revenue share):
 //   • By Lawyer        → 100% of a record to financial_records.responsible_lawyer_id
 //   • By Lead Partner  → 100% of the SAME record to client_matters.lead_lawyer_id
-//   • By Head of Practice → NOT CONFIGURED. No Head-of-Practice relationship
-//     exists in the schema (not a user role, not a matter field, not a practice
-//     group). We do NOT infer it from attorney_head. The dimension is exposed as
-//     `configured: false` so the UI can render it disabled; adding a
-//     `head_of_practice_id` FK on client_matters (or a practice-group table)
-//     later slots straight into this service.
+//   • By Head of Practice → 100% of the SAME record to the responsible Head of
+//     Practice resolved through the practice_heads map (BR-01: client city +
+//     effective matter type — the matter's own type when supported, otherwise
+//     the client's). Records whose (city, matter type) is unmapped group under
+//     "Unassigned practice".
 //
 // Formulas reuse the APPROVED financial formulas verbatim (FINANCIAL_FORMULAS.md):
 //   Net Fees     = COALESCE(net_fees, agreed_fees)          (legacy-row fallback)
@@ -40,7 +39,7 @@
 import { z } from "zod";
 import { and, eq, desc, ilike, or, sql, type SQL } from "drizzle-orm";
 import { alias, type SelectedFields } from "drizzle-orm/pg-core";
-import { financialRecords, clients, clientMatters, users } from "../drizzle/schema";
+import { financialRecords, clients, clientMatters, practiceHeads, users } from "../drizzle/schema";
 import { getDb, getOverdueDays } from "./db";
 
 // ─── Central filter schema (shared by every reporting endpoint) ───────────────
@@ -66,8 +65,7 @@ export const reportFilterSchema = z.object({
   lawyerId: z.number().int().positive().optional(),
   /** Lead Partner (client_matters.lead_lawyer_id). */
   leadPartnerId: z.number().int().positive().optional(),
-  /** Accepted for forward-compatibility; the relationship is not configured, so
-   *  setting it matches no records (documented in the UI). */
+  /** Responsible Head of Practice (practice_heads map: city + matter type). */
   headOfPracticeId: z.number().int().positive().optional(),
   feeType: z.enum(FEE_TYPES).optional(),
   invoiceStatus: z.enum(INVOICE_STATUSES).optional(),
@@ -211,8 +209,8 @@ export interface DetailReportRow {
   responsibleLawyerName: string | null;
   leadPartnerId: number | null;
   leadPartnerName: string | null;
-  headOfPracticeId: null;
-  headOfPracticeName: null;
+  headOfPracticeId: number | null;
+  headOfPracticeName: string | null;
   feeType: string | null;
   billingType: string | null;
   invoiceStatus: string | null;
@@ -236,6 +234,17 @@ export interface DetailReportRow {
 const respLawyer = alias(users, "resp_lawyer");
 const leadPartner = alias(users, "lead_partner_user");
 const createdByUser = alias(users, "created_by_user");
+const hopUser = alias(users, "hop_user");
+
+/**
+ * Effective matter type for practice resolution (BR-01): the matter's own
+ * matter_type when it is a supported value, otherwise the client's.
+ */
+const EFFECTIVE_MATTER_TYPE = sql`CASE
+  WHEN ${clientMatters.matterType} IN ('Litigation', 'Corporate')
+    THEN ${clientMatters.matterType}
+  ELSE ${clients.matterType}::text
+END`;
 
 // ─── Money expressions (approved formulas, SQL numeric) ───────────────────────
 
@@ -291,8 +300,9 @@ export function buildConditions(f: ReportFilters): SQL[] {
   if (f.lawyerId)       conds.push(eq(financialRecords.responsibleLawyerId, f.lawyerId));
   // Left-joined column: NULL never matches, so no-matter records drop out — correct.
   if (f.leadPartnerId)  conds.push(eq(clientMatters.leadLawyerId, f.leadPartnerId));
-  // Head of Practice is not configured in the data model: no record can match.
-  if (f.headOfPracticeId) conds.push(sql`FALSE`);
+  // Responsible Head of Practice via the practice_heads join (unmapped
+  // records have a NULL head and never match — correct).
+  if (f.headOfPracticeId) conds.push(eq(practiceHeads.headOfPracticeId, f.headOfPracticeId));
   if (f.feeType)        conds.push(eq(financialRecords.feeType, f.feeType));
   if (f.invoiceStatus)  conds.push(eq(financialRecords.collectionStatus, f.invoiceStatus));
   if (f.billingType)    conds.push(eq(clientMatters.billingType, f.billingType));
@@ -347,7 +357,13 @@ function baseSelect(projection: SelectedFields): DynamicReportQuery {
     .leftJoin(clients, eq(financialRecords.clientId, clients.id))
     .leftJoin(clientMatters, eq(financialRecords.clientMatterId, clientMatters.id))
     .leftJoin(respLawyer, eq(financialRecords.responsibleLawyerId, respLawyer.id))
-    .leftJoin(leadPartner, eq(clientMatters.leadLawyerId, leadPartner.id)) as unknown as DynamicReportQuery;
+    .leftJoin(leadPartner, eq(clientMatters.leadLawyerId, leadPartner.id))
+    // 1:1 practice resolution (unique on city + matter type) — no row fan-out.
+    .leftJoin(
+      practiceHeads,
+      sql`${practiceHeads.city} = ${clients.city} AND ${practiceHeads.matterType}::text = ${EFFECTIVE_MATTER_TYPE}`,
+    )
+    .leftJoin(hopUser, eq(practiceHeads.headOfPracticeId, hopUser.id)) as unknown as DynamicReportQuery;
 }
 
 const sortByRevenueDesc = <T extends { revenue: string }>(rows: T[]) =>
@@ -439,19 +455,29 @@ export async function getRevenueByLeadPartner(f: ReportFilters): Promise<LeadPar
 }
 
 /**
- * C. Revenue by Head of Practice — NOT CONFIGURED.
- * No Head-of-Practice relationship exists in the schema. We do not invent one
- * or derive it from attorney_head. To enable this report, add an explicit
- * relationship (e.g. client_matters.head_of_practice_id → users.id, or a
- * practice-group table with a head user) and group on it here.
+ * C. Revenue by Head of Practice — resolved through the practice_heads map
+ * (BR-01: city + effective matter type). Records whose practice combination is
+ * unmapped group under "Unassigned practice" (null id) so totals still
+ * reconcile with the other dimensions.
  */
-export async function getRevenueByHeadOfPractice(_f: ReportFilters) {
+export async function getRevenueByHeadOfPractice(f: ReportFilters) {
+  const rows = await baseSelect({
+    headOfPracticeId: practiceHeads.headOfPracticeId,
+    headOfPracticeName: sql<string>`COALESCE(${hopUser.name}, 'Unassigned practice')`,
+    clientCount: sql<string>`COUNT(DISTINCT ${financialRecords.clientId})`,
+    matterCount: sql<string>`COUNT(DISTINCT ${financialRecords.clientMatterId})`,
+    recordCount: sql<string>`COUNT(*)`,
+    ...groupMoneyColumns,
+    collectionRate,
+  })
+    .where(whereOf(f))
+    .groupBy(
+      practiceHeads.headOfPracticeId,
+      sql`COALESCE(${hopUser.name}, 'Unassigned practice')`,
+    );
   return {
-    configured: false as const,
-    reason:
-      "Head of Practice is not represented in the data model (no user role, matter field, or practice group). " +
-      "Add an explicit relationship such as client_matters.head_of_practice_id → users.id to enable this report.",
-    rows: [] as never[],
+    configured: true as const,
+    rows: sortByRevenueDesc(rows as any[]),
   };
 }
 
@@ -722,8 +748,8 @@ export async function getReportDetails(f: ReportFilters, page = 1, pageSize = 25
     responsibleLawyerName: sql<string | null>`COALESCE(${respLawyer.name}, ${financialRecords.responsibleLawyer})`,
     leadPartnerId:   clientMatters.leadLawyerId,
     leadPartnerName: sql<string | null>`COALESCE(${leadPartner.name}, ${clientMatters.leadPartnerFullName}, ${clientMatters.leadPartner})`,
-    headOfPracticeId:   sql<null>`NULL`,      // relationship not configured
-    headOfPracticeName: sql<null>`NULL`,
+    headOfPracticeId:   practiceHeads.headOfPracticeId,
+    headOfPracticeName: hopUser.name,
     feeType: financialRecords.feeType,
     billingType: clientMatters.billingType,
     invoiceStatus: financialRecords.collectionStatus,

@@ -29,7 +29,15 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
-import { ROLE_LABELS, USER_ROLES, USER_STATUSES, type UserRole, type UserStatus } from "@shared/const";
+import { USER_STATUSES, type UserStatus } from "@shared/const";
+import {
+  ACCOUNT_ROLES,
+  ACCOUNT_ROLE_LABELS,
+  ACCOUNT_ROLE_DESCRIPTIONS,
+  LAWYER_GRADE_ROLES,
+  roleLabel,
+  type AccountRole,
+} from "@shared/permissions";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "../../../server/routers";
 import { Edit, KeyRound, Loader2, Plus, Settings, ShieldAlert, ShieldCheck, Trash2, Users } from "lucide-react";
@@ -43,19 +51,26 @@ type UserFormState = {
   name: string;
   email: string;
   password: string;
-  role: UserRole;
+  // Only the 11 canonical account roles are assignable. "" = legacy role that
+  // the admin must re-map before saving (partner/lawyer/staff/viewer rows).
+  role: AccountRole | "";
   status: UserStatus;
-  reportsToId: number | null; // supervising partner (lawyers)
+  reportsToId: number | null; // supervising Head of Practice (lawyer grades)
 };
 
 const emptyForm: UserFormState = {
   name: "",
   email: "",
   password: "",
-  role: "staff",
+  role: "trainee", // least-privilege default
   status: "active",
   reportsToId: null,
 };
+
+// Lawyer grades below Head of Practice can report to a Head of Practice.
+const REPORTS_TO_ROLES: readonly string[] = LAWYER_GRADE_ROLES.filter(
+  r => r !== "head_of_practice",
+);
 
 const statusLabels: Record<UserStatus, string> = {
   active: "Active",
@@ -154,7 +169,11 @@ export default function UserManagement() {
       name: user.name ?? "",
       email: user.email,
       password: "",
-      role: user.role as UserRole,
+      // Legacy roles (partner/lawyer/staff/viewer) are not assignable anymore:
+      // the admin must pick a canonical role before saving.
+      role: (ACCOUNT_ROLES as readonly string[]).includes(user.role)
+        ? (user.role as AccountRole)
+        : "",
       status: user.status as UserStatus,
       reportsToId: (user as any).reportsToId ?? null,
     });
@@ -171,6 +190,16 @@ export default function UserManagement() {
       toast.error("Enter a valid email address");
       return;
     }
+    if (!form.role) {
+      toast.error(
+        editingUser
+          ? `"${roleLabel(editingUser.role)}" is a legacy role — select one of the new account roles.`
+          : "Select a role",
+      );
+      return;
+    }
+    const role = form.role;
+    const reportsToId = REPORTS_TO_ROLES.includes(role) ? form.reportsToId : null;
     if (!editingUser) {
       const passwordError = validatePassword(form.password);
       if (passwordError) {
@@ -178,8 +207,8 @@ export default function UserManagement() {
         return;
       }
       createMutation.mutate({
-        ...form, email, name: form.name.trim(),
-        reportsToId: form.role === "lawyer" ? form.reportsToId : null,
+        email, name: form.name.trim(), password: form.password,
+        role, status: form.status, reportsToId,
       });
       return;
     }
@@ -188,9 +217,9 @@ export default function UserManagement() {
       userId: editingUser.id,
       name: form.name.trim(),
       email,
-      role: form.role,
+      role,
       status: form.status,
-      reportsToId: form.role === "lawyer" ? form.reportsToId : null,
+      reportsToId,
     });
   };
 
@@ -318,7 +347,7 @@ export default function UserManagement() {
                       ) : null}
                     </TableCell>
                     <TableCell>{user.email}</TableCell>
-                    <TableCell>{ROLE_LABELS[user.role as UserRole] ?? user.role}</TableCell>
+                    <TableCell>{roleLabel(user.role)}</TableCell>
                     <TableCell>{getStatusBadge(user.status)}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{formatDate(user.lastLoginAt)}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{formatDate(user.createdAt)}</TableCell>
@@ -385,14 +414,37 @@ export default function UserManagement() {
             <div className="grid gap-2 sm:grid-cols-2">
               <div className="grid gap-2">
                 <Label>Role</Label>
-                <Select value={form.role} onValueChange={value => setForm({ ...form, role: value as UserRole })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                {/* Only the 11 persistent account roles. Lead Lawyer is a
+                    per-matter designation set on the matter, never a role. */}
+                <Select value={form.role || undefined} onValueChange={value => setForm({ ...form, role: value as AccountRole })}>
+                  <SelectTrigger>
+                    <SelectValue
+                      placeholder={
+                        editingUser && !form.role
+                          ? `${roleLabel(editingUser.role)} — select new role`
+                          : "Select a role"
+                      }
+                    />
+                  </SelectTrigger>
                   <SelectContent>
-                    {USER_ROLES.map(role => (
-                      <SelectItem key={role} value={role}>{ROLE_LABELS[role]}</SelectItem>
+                    {ACCOUNT_ROLES.map(role => (
+                      <SelectItem key={role} value={role} textValue={ACCOUNT_ROLE_LABELS[role]}>
+                        <div className="flex flex-col items-start">
+                          <span>{ACCOUNT_ROLE_LABELS[role]}</span>
+                          <span className="max-w-[340px] whitespace-normal text-xs text-muted-foreground">
+                            {ACCOUNT_ROLE_DESCRIPTIONS[role]}
+                          </span>
+                        </div>
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                {editingUser && !form.role ? (
+                  <p className="text-xs text-amber-600">
+                    This account still has the legacy “{roleLabel(editingUser.role)}” role.
+                    Pick its new account role to save.
+                  </p>
+                ) : null}
               </div>
               <div className="grid gap-2">
                 <Label>Status</Label>
@@ -406,10 +458,10 @@ export default function UserManagement() {
                 </Select>
               </div>
             </div>
-            {/* Supervising partner — only for lawyers; drives task visibility */}
-            {form.role === "lawyer" && (
+            {/* Supervising Head of Practice — lawyer grades below HoP */}
+            {form.role && REPORTS_TO_ROLES.includes(form.role) && (
               <div className="grid gap-2">
-                <Label>Reports To (Partner)</Label>
+                <Label>Reports To (Head of Practice)</Label>
                 <Select
                   value={form.reportsToId ? String(form.reportsToId) : "none"}
                   onValueChange={value => setForm({ ...form, reportsToId: value === "none" ? null : Number(value) })}
@@ -418,14 +470,14 @@ export default function UserManagement() {
                   <SelectContent>
                     <SelectItem value="none">— None —</SelectItem>
                     {(users ?? [])
-                      .filter(u => u.role === "partner" && u.status === "active")
+                      .filter(u => (u.role === "head_of_practice" || u.role === "partner") && u.status === "active")
                       .map(u => (
                         <SelectItem key={u.id} value={String(u.id)}>{u.name ?? u.email}</SelectItem>
                       ))}
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  The partner who supervises this lawyer (used for task visibility).
+                  The Head of Practice who supervises this lawyer.
                 </p>
               </div>
             )}

@@ -154,8 +154,8 @@ describe("Task Details (tasks.get) — full context", () => {
   it("unauthorized viewer cannot read another user's task details (returns null)", async () => {
     const a = admin();
     const stamp = Date.now();
-    const lawyer = await a.users.create({ name: `Solo ${stamp}`, email: `solo${stamp}@x.com`, password: PW, role: "lawyer" });
-    const other = await a.users.create({ name: `Other ${stamp}`, email: `other${stamp}@x.com`, password: PW, role: "lawyer" });
+    const lawyer = await a.users.create({ name: `Solo ${stamp}`, email: `solo${stamp}@x.com`, password: PW, role: "associate" });
+    const other = await a.users.create({ name: `Other ${stamp}`, email: `other${stamp}@x.com`, password: PW, role: "associate" });
     const client = await a.clients.create({ clientName: `PrivClient ${stamp}`, clientStatus: "Existing Client" });
     let taskId: number | undefined;
     try {
@@ -163,7 +163,7 @@ describe("Task Details (tasks.get) — full context", () => {
       const t = await a.tasks.create({ title: `Private ${stamp}`, clientId: client.id, assignedTo: other.id });
       taskId = t.id;
 
-      const lawyerCaller = callerFor("lawyer", lawyer.id);
+      const lawyerCaller = callerFor("associate", lawyer.id);
       const detail = await lawyerCaller.tasks.get({ id: t.id });
       expect(detail).toBeNull();
 

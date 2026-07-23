@@ -18,6 +18,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
 import { TaskDetailDialog } from "@/components/TaskDetailDialog";
+import { useAuth } from "@/_core/hooks/useAuth";
 
 export const TASK_STATUSES = ["todo", "in_progress", "done", "cancelled"] as const;
 export const TASK_STATUS_LABELS: Record<string, string> = {
@@ -218,7 +219,16 @@ function ClientTaskDialog({
   matters: any[]; defaultMatterId?: number;
 }) {
   const utils = trpc.useUtils();
-  const { data: lawyers = [] } = trpc.users.assignableLawyers.useQuery();
+  // Assignment authority (BR-10): the server returns the directory only for
+  // roles that may assign tasks to others; everyone else self-assigns.
+  const { user } = useAuth();
+  const { data: assignees = [] } = trpc.users.assignees.useQuery();
+  const canAssignOthers = assignees.length > 0;
+  const lawyers = canAssignOthers
+    ? assignees
+    : user
+      ? [{ id: user.id, name: user.name, email: user.email, role: user.role }]
+      : [];
   const blank = {
     title: "", description: "", status: "todo", priority: "medium",
     clientMatterId: defaultMatterId ? String(defaultMatterId) : NO_MATTER,

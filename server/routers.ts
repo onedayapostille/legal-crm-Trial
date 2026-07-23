@@ -1,5 +1,12 @@
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, router, protectedProcedure, adminProcedure, permissionProcedure } from "./_core/trpc";
+import {
+  publicProcedure,
+  router,
+  protectedProcedure,
+  adminProcedure,
+  capabilityProcedure,
+  anyCapabilityProcedure,
+} from "./_core/trpc";
 import { AUTH_COOKIE, createSessionToken, verifyPassword, hashPassword, isSecureRequest } from "./_core/auth";
 import { TRPCError } from "@trpc/server";
 import type { Request } from "express";
@@ -9,7 +16,8 @@ import { testNvidiaConnection, callNvidiaChat, NVIDIA_UNAVAILABLE_MESSAGE } from
 import {
   gatherCrmData, buildAiMessages, checkAiRateLimit, AI_MODEL_NAME,
 } from "./aiAnalytics";
-import { USER_ROLES, USER_STATUSES, MATTER_TYPES, type UserRole, type UserStatus } from "../shared/const";
+import { USER_STATUSES, MATTER_TYPES, CITY_VALUES, type UserStatus } from "../shared/const";
+import { ACCOUNT_ROLES, can, scopeFor } from "../shared/permissions";
 import { ASSIGNMENT_FIELD_NAMES, type AssignmentField } from "../shared/assignmentEligibility";
 import * as financialReports from "./financialReports";
 import { reportFilterSchema, EXPORT_REPORT_TYPES } from "./financialReports";
@@ -32,7 +40,10 @@ function formatDbError(err: any) {
   return messages.join(" | ") || String(err);
 }
 
-const roleSchema = z.enum(USER_ROLES);
+// User Management accepts ONLY the 11 canonical account roles. Legacy values
+// (partner, lawyer, staff, viewer) remain readable on existing rows but can no
+// longer be assigned; lead_lawyer is a per-matter designation, never a role.
+const roleSchema = z.enum(ACCOUNT_ROLES);
 const statusSchema = z.enum(USER_STATUSES);
 
 const passwordSchema = z.string()
@@ -56,6 +67,66 @@ function getCookieOptions(ctx: { req: Request }) {
     secure: secureCookie,
     maxAge: 30 * 24 * 60 * 60 * 1000,
   };
+}
+
+type SessionUser = { id: number; role: string };
+
+/**
+ * Notes annotate other records; reading/writing a note requires access to the
+ * record it is attached to (no secondary-endpoint leaks). Unknown entity
+ * types are admin-only.
+ */
+async function assertNoteEntityAccess(
+  user: SessionUser,
+  entityType: string,
+  entityId: number,
+  mode: "view" | "write",
+) {
+  if (user.role === "admin") return;
+  switch (entityType) {
+    case "lead": {
+      const ok =
+        mode === "view"
+          ? can(user.role, "enquiries.view") || can(user.role, "enquiries.manage")
+          : can(user.role, "enquiries.manage");
+      if (!ok) throw new TRPCError({ code: "FORBIDDEN", message: "No access to this enquiry." });
+      return;
+    }
+    case "matter": {
+      if (mode === "write") {
+        await db.assertCanEditLegacyMatter(user, entityId);
+      } else {
+        const m = await db.getMatterById(entityId, user);
+        if (!m) throw new TRPCError({ code: "NOT_FOUND", message: "Matter not found." });
+      }
+      return;
+    }
+    case "client_matter": {
+      if (mode === "write") {
+        await db.assertCanEditClientMatter(user, entityId);
+      } else {
+        const m = await db.getClientMatterByIdScoped(entityId, user);
+        if (!m) throw new TRPCError({ code: "NOT_FOUND", message: "Matter not found." });
+      }
+      return;
+    }
+    case "task": {
+      await db.assertTaskVisible(entityId, user);
+      return;
+    }
+    case "company": {
+      const ok =
+        mode === "view"
+          ? can(user.role, "matters.view") ||
+            can(user.role, "enquiries.view") ||
+            can(user.role, "enquiries.manage")
+          : can(user.role, "enquiries.manage") || can(user.role, "matters.create");
+      if (!ok) throw new TRPCError({ code: "FORBIDDEN", message: "No access to this company." });
+      return;
+    }
+    default:
+      throw new TRPCError({ code: "FORBIDDEN", message: "No access to this record type." });
+  }
 }
 
 async function assertCanRemoveActiveAdmin(targetUserId: number) {
@@ -134,21 +205,23 @@ export const appRouter = router({
   // ─── Dashboard ────────────────────────────────────────────────────────────
 
   dashboard: router({
-    stats: permissionProcedure("dashboard:view").query(async ({ ctx }) => {
+    stats: capabilityProcedure("dashboard.view").query(async ({ ctx }) => {
       return db.getDashboardStats(ctx.user!);
     }),
 
-    recentActivity: permissionProcedure("dashboard:view")
+    recentActivity: capabilityProcedure("dashboard.view")
       .input(z.object({ limit: z.number().optional() }))
-      .query(async ({ input }) => {
-        return db.getRecentActivity(input.limit ?? 20);
+      .query(async ({ input, ctx }) => {
+        return db.getRecentActivity(input.limit ?? 20, ctx.user!);
       }),
   }),
 
   // ─── Leads ────────────────────────────────────────────────────────────────
 
+  // The Enquiries Log (BR-15): Coordinator creates/manages; Head of Practice
+  // and Manager view; Admin has full control. Other roles have no access.
   leads: router({
-    list: permissionProcedure("leads:manage")
+    list: anyCapabilityProcedure(["enquiries.view", "enquiries.manage"])
       .input(z.object({
         channelType: z.string().optional(),
         channelMedium: z.string().optional(),
@@ -159,13 +232,13 @@ export const appRouter = router({
       .query(async ({ input }) => db.getAllLeads(input ?? {})),
 
     // Distinct channel values for filter dropdowns.
-    channelOptions: permissionProcedure("leads:manage").query(async () => db.getLeadChannelOptions()),
+    channelOptions: anyCapabilityProcedure(["enquiries.view", "enquiries.manage"]).query(async () => db.getLeadChannelOptions()),
 
-    get: permissionProcedure("leads:manage")
+    get: anyCapabilityProcedure(["enquiries.view", "enquiries.manage"])
       .input(z.object({ id: z.number() }))
       .query(async ({ input }) => db.getLeadById(input.id)),
 
-    create: permissionProcedure("leads:manage")
+    create: capabilityProcedure("enquiries.manage")
       .input(z.object({
         dateOfEnquiry: z.string(),
         clientName: z.string().min(1),
@@ -207,7 +280,7 @@ export const appRouter = router({
         return db.createLead(input, ctx.user!.id);
       }),
 
-    update: permissionProcedure("leads:manage")
+    update: capabilityProcedure("enquiries.manage")
       .input(z.object({
         id: z.number(),
         dateOfEnquiry: z.string().optional(),
@@ -261,26 +334,32 @@ export const appRouter = router({
         return db.updateLead(id, data);
       }),
 
-    delete: permissionProcedure("leads:manage")
+    // Deleting enquiries is Admin-only (Excel matrix: Full = Admin;
+    // Coordinator holds create/edit only).
+    delete: capabilityProcedure("enquiries.delete")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await db.deleteLead(input.id);
         return { success: true };
       }),
 
-    statusSummary: permissionProcedure("analytics:view").query(async () => db.getLeadStatusSummary()),
+    statusSummary: anyCapabilityProcedure(["enquiries.view", "enquiries.manage"]).query(async () => db.getLeadStatusSummary()),
   }),
 
   // ─── Matters ──────────────────────────────────────────────────────────────
 
+  // Legacy standalone matters module (`matters` table, single assigned_to FK).
+  // Same capability set as client matters; legacy rows carry no city/matter
+  // type, so OWN_PRACTICE (Head of Practice) cannot be resolved and resolves
+  // to "no practice" — view-all, but no create/edit on this legacy module.
   matters: router({
-    list: permissionProcedure("matters:manage").query(async () => db.getAllMatters()),
+    list: capabilityProcedure("matters.view").query(async ({ ctx }) => db.getAllMatters(ctx.user!)),
 
-    get: permissionProcedure("matters:manage")
+    get: capabilityProcedure("matters.view")
       .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => db.getMatterById(input.id)),
+      .query(async ({ input, ctx }) => db.getMatterById(input.id, ctx.user!)),
 
-    create: permissionProcedure("matters:manage")
+    create: capabilityProcedure("matters.create")
       .input(z.object({
         title: z.string().min(1),
         description: z.string().optional(),
@@ -298,10 +377,20 @@ export const appRouter = router({
         billingType: z.string().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
+        if (ctx.authzScope === "OWN_PRACTICE") {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message:
+              "Legacy matters carry no practice (city + matter type); own-practice roles cannot create them.",
+          });
+        }
+        // Assignment is an authorization-defining field: validate the assignee
+        // is a real, active user (initial assignment at creation is allowed).
+        if (input.assignedTo != null) await db.assertActiveUser(input.assignedTo, "assignee");
         return db.createMatter(input, ctx.user!.id);
       }),
 
-    update: permissionProcedure("matters:manage")
+    update: capabilityProcedure("matters.edit")
       .input(z.object({
         id: z.number(),
         title: z.string().optional(),
@@ -321,12 +410,24 @@ export const appRouter = router({
         actualValue: z.string().optional(),
         billingType: z.string().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
+        const existing = await db.assertCanEditLegacyMatter(ctx.user!, id);
+        // Changing the assignee re-scopes who may access the matter: requires
+        // firm-wide team-assignment authority (legacy rows have no practice).
+        if (data.assignedTo !== undefined && data.assignedTo !== existing.assignedTo) {
+          if (scopeFor(ctx.user!.role, "matters.assignTeam") !== "ALL") {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "Changing the assigned lawyer requires team-assignment authority.",
+            });
+          }
+          if (data.assignedTo != null) await db.assertActiveUser(data.assignedTo, "assignee");
+        }
         return db.updateMatter(id, data);
       }),
 
-    delete: permissionProcedure("matters:manage")
+    delete: capabilityProcedure("matters.delete")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await db.deleteMatter(input.id);
@@ -337,7 +438,7 @@ export const appRouter = router({
   // ─── Tasks ────────────────────────────────────────────────────────────────
 
   tasks: router({
-    list: permissionProcedure("tasks:manage")
+    list: capabilityProcedure("tasks.view")
       .input(z.object({
         matterId: z.number().optional(),
         assignedTo: z.number().optional(),
@@ -348,11 +449,11 @@ export const appRouter = router({
       // Visibility is enforced server-side from the session user (role + id).
       .query(async ({ input, ctx }) => db.getAllTasks(input ?? {}, ctx.user!)),
 
-    get: permissionProcedure("tasks:manage")
+    get: capabilityProcedure("tasks.view")
       .input(z.object({ id: z.number() }))
       .query(async ({ input, ctx }) => db.getTaskById(input.id, ctx.user!)),
 
-    create: permissionProcedure("tasks:manage")
+    create: capabilityProcedure("tasks.update")
       .input(z.object({
         title: z.string().min(1),
         description: z.string().optional(),
@@ -376,10 +477,17 @@ export const appRouter = router({
       .mutation(async ({ input, ctx }) => {
         // Rejected clients are locked: no new tasks under them.
         await db.assertClientNotRejected(input.clientId);
+        // BR-10: assigning to ANOTHER user requires tasks.assign (or the Lead
+        // Lawyer overlay for this matter's tasks); assignee validated as an
+        // active user.
+        await db.assertTaskAssignmentAllowed(ctx.user!, {
+          assignedTo: input.assignedTo,
+          clientMatterId: input.clientMatterId,
+        });
         return db.createTask(input, ctx.user!.id);
       }),
 
-    update: permissionProcedure("tasks:manage")
+    update: capabilityProcedure("tasks.update")
       .input(z.object({
         id: z.number(),
         title: z.string().optional(),
@@ -394,11 +502,20 @@ export const appRouter = router({
       .mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
         // Can only modify a task the viewer is allowed to see.
-        await db.assertTaskVisible(id, ctx.user!);
+        const existing = await db.assertTaskVisible(id, ctx.user!);
+        // Re-assigning to another user requires assignment authority.
+        if (data.assignedTo !== undefined && data.assignedTo !== existing.assignedTo) {
+          await db.assertTaskAssignmentAllowed(ctx.user!, {
+            assignedTo: data.assignedTo,
+            clientMatterId: data.clientMatterId !== undefined ? data.clientMatterId : existing.clientMatterId,
+          });
+        }
         return db.updateTask(id, data);
       }),
 
-    delete: permissionProcedure("tasks:manage")
+    // Deleting tasks is Admin-only (Excel matrix: tasks are Edit for all other
+    // task-capable roles, Full only for Admin).
+    delete: capabilityProcedure("tasks.delete")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input, ctx }) => {
         await db.assertTaskVisible(input.id, ctx.user!);
@@ -410,9 +527,15 @@ export const appRouter = router({
   // ─── Notes ────────────────────────────────────────────────────────────────
 
   notes: router({
+    // Notes follow the visibility of the entity they annotate; private notes
+    // are author-only (admin excepted) — both enforced in db.getNotesByEntity
+    // and assertNoteEntityAccess.
     byEntity: protectedProcedure
       .input(z.object({ entityType: z.string(), entityId: z.number() }))
-      .query(async ({ input }) => db.getNotesByEntity(input.entityType, input.entityId)),
+      .query(async ({ input, ctx }) => {
+        await assertNoteEntityAccess(ctx.user!, input.entityType, input.entityId, "view");
+        return db.getNotesByEntity(input.entityType, input.entityId, ctx.user!);
+      }),
 
     create: protectedProcedure
       .input(z.object({
@@ -424,27 +547,44 @@ export const appRouter = router({
         isPrivate: z.boolean().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
+        await assertNoteEntityAccess(ctx.user!, input.entityType, input.entityId, "write");
         return db.createNote({ ...input, createdBy: ctx.user.id });
       }),
 
+    // Author-or-admin only (enforced in db.deleteNote).
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
-        await db.deleteNote(input.id);
+      .mutation(async ({ input, ctx }) => {
+        await db.deleteNote(input.id, ctx.user!);
         return { success: true };
       }),
   }),
 
   // ─── Payments ─────────────────────────────────────────────────────────────
 
+  // Payments are financial data linked to enquiries (no matter link exists on
+  // this legacy table): reads require FIRM-WIDE financial visibility
+  // (assigned-matter financial scopes cannot be resolved for lead-level rows);
+  // writes require firm-wide financial edit rights (admin, finance). This also
+  // fixes the pre-existing gap where a *view* permission gated the mutations.
   payments: router({
-    list: permissionProcedure("payments:view").query(async () => db.getAllPayments()),
+    list: capabilityProcedure("financial.view").query(async ({ ctx }) => {
+      if (ctx.authzScope !== "ALL") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "No firm-wide financial access." });
+      }
+      return db.getAllPayments();
+    }),
 
-    getByLead: permissionProcedure("payments:view")
+    getByLead: capabilityProcedure("financial.view")
       .input(z.object({ leadId: z.number() }))
-      .query(async ({ input }) => db.getPaymentByLeadId(input.leadId)),
+      .query(async ({ input, ctx }) => {
+        if (ctx.authzScope !== "ALL") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No firm-wide financial access." });
+        }
+        return db.getPaymentByLeadId(input.leadId);
+      }),
 
-    create: permissionProcedure("payments:view")
+    create: capabilityProcedure("financial.edit")
       .input(z.object({
         leadId: z.number(),
         matterCode: z.string(),
@@ -461,9 +601,14 @@ export const appRouter = router({
         finalPaymentAmount: z.string().optional(),
         paymentNotes: z.string().optional(),
       }))
-      .mutation(async ({ input }) => db.createPayment(input)),
+      .mutation(async ({ input, ctx }) => {
+        if (ctx.authzScope !== "ALL") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No firm-wide financial access." });
+        }
+        return db.createPayment(input);
+      }),
 
-    update: permissionProcedure("payments:view")
+    update: capabilityProcedure("financial.edit")
       .input(z.object({
         id: z.number(),
         paymentTerms: z.string().optional(),
@@ -479,7 +624,10 @@ export const appRouter = router({
         finalPaymentAmount: z.string().optional(),
         paymentNotes: z.string().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
+        if (ctx.authzScope !== "ALL") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No firm-wide financial access." });
+        }
         const { id, ...data } = input;
         return db.updatePayment(id, data);
       }),
@@ -487,10 +635,14 @@ export const appRouter = router({
 
   // ─── Companies ────────────────────────────────────────────────────────────
 
+  // Companies back the enquiry/legacy-matter forms: reads for roles that can
+  // view matters or the enquiries log; writes for intake managers and matter
+  // creators (was: any active user — pre-existing gap).
   companies: router({
-    list: protectedProcedure.query(async () => db.getAllCompanies()),
+    list: anyCapabilityProcedure(["matters.view", "enquiries.view", "enquiries.manage"])
+      .query(async () => db.getAllCompanies()),
 
-    create: protectedProcedure
+    create: anyCapabilityProcedure(["enquiries.manage", "matters.create"])
       .input(z.object({
         name: z.string().min(1),
         industry: z.string().optional(),
@@ -504,7 +656,7 @@ export const appRouter = router({
         return db.createCompany({ ...input, createdBy: ctx.user.id });
       }),
 
-    update: protectedProcedure
+    update: anyCapabilityProcedure(["enquiries.manage", "matters.create"])
       .input(z.object({
         id: z.number(),
         name: z.string().optional(),
@@ -529,34 +681,44 @@ export const appRouter = router({
       return all.map(safeUser);
     }),
 
-    // Active users who may be assigned to a matter as lead/co-lawyers. Available
-    // to anyone who can view clients so the Hourly Rate section can populate its
-    // user pickers (no free-text names).
-    assignableLawyers: permissionProcedure("clients:view")
+    // Active users who may be assigned to a matter as lead/co-lawyers.
+    // Directory-only data (name/role) for populating user pickers; available
+    // to matter viewers (no free-text names anywhere).
+    assignableLawyers: capabilityProcedure("matters.view")
       .query(async () => db.getAssignableLawyers()),
 
-    // Active Partners/Lawyers for the "Suggested Lead Lawyer" dropdown.
-    leadLawyers: permissionProcedure("leads:manage")
+    // Active Lead-Lawyer-eligible users for the "Suggested Lead Lawyer" dropdown.
+    leadLawyers: anyCapabilityProcedure(["enquiries.view", "enquiries.manage"])
       .query(async () => db.getLeadLawyers()),
 
     // Users eligible for a NEW assignment to a specific lawyer field (Matter
     // forms, Financial Records). Active + role-eligible only, filtered
-    // server-side per shared/assignmentEligibility.ts. clients:view so every
+    // server-side per shared/assignmentEligibility.ts. matters.view so every
     // role that can open these forms (incl. finance) can populate dropdowns.
-    eligibleLawyers: permissionProcedure("clients:view")
+    eligibleLawyers: capabilityProcedure("matters.view")
       .input(z.object({
         field: z.enum(ASSIGNMENT_FIELD_NAMES as [AssignmentField, ...AssignmentField[]]),
       }))
       .query(async ({ input }) => db.getEligibleLawyers(input.field)),
+
+    // Active users a task can be assigned to; only for roles that can assign
+    // tasks to others (BR-10) or that lead at least one matter (overlay).
+    assignees: capabilityProcedure("tasks.view")
+      .query(async ({ ctx }) => {
+        if (!can(ctx.user!.role, "tasks.assign") && !(await db.userLeadsAnyMatter(ctx.user!))) {
+          return [];
+        }
+        return db.getActiveAssignableUsers();
+      }),
 
     create: adminProcedure
       .input(z.object({
         name: z.string().trim().min(1, "Name is required").max(120),
         email: emailSchema,
         password: passwordSchema,
-        role: roleSchema.default("staff"),
+        role: roleSchema.default("trainee"),
         status: statusSchema.default("active"),
-        reportsToId: z.number().nullable().optional(), // supervising partner
+        reportsToId: z.number().nullable().optional(), // supervising Head of Practice
       }))
       .mutation(async ({ input, ctx }) => {
         const existing = await db.getUserByEmail(input.email);
@@ -756,18 +918,26 @@ export const appRouter = router({
         return { success: true };
       }),
 
+    // Self or admin only: no probing other users' activity by arbitrary id.
     activityStats: protectedProcedure
       .input(z.object({ userId: z.number() }))
-      .query(async ({ input }) => db.getUserActivityStats(input.userId)),
+      .query(async ({ input, ctx }) => {
+        if (input.userId !== ctx.user.id && ctx.user.role !== "admin") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "You can only view your own activity stats." });
+        }
+        return db.getUserActivityStats(input.userId);
+      }),
   }),
 
   // ─── Audit Logs ───────────────────────────────────────────────────────────
 
   auditLogs: router({
+    // Change history is as sensitive as the record itself: access requires the
+    // corresponding view authority on the underlying entity (record-scoped).
     byEntity: protectedProcedure
       .input(z.object({ entityType: z.string(), entityId: z.number() }))
-      .query(async ({ input }) => {
-        return db.getAuditLogsByEntity(input.entityType, input.entityId);
+      .query(async ({ input, ctx }) => {
+        return db.getAuditLogsByEntityScoped(input.entityType, input.entityId, ctx.user!);
       }),
   }),
 
@@ -792,7 +962,9 @@ export const appRouter = router({
   // ─── Clients ──────────────────────────────────────────────────────────────
 
   clients: router({
-    list: permissionProcedure("clients:view").input(z.object({
+    // Rows are filtered to the viewer's clients.view scope IN SQL; each row
+    // carries a server-computed viewerCanEdit flag for the UI.
+    list: capabilityProcedure("clients.view").input(z.object({
       clientStatus: z.string().optional(),
       city: z.string().optional(),
       matterType: z.string().optional(),
@@ -804,13 +976,15 @@ export const appRouter = router({
       createdTo: z.string().optional(),
       channelType: z.string().optional(),
       channelMedium: z.string().optional(),
-    }).optional()).query(async ({ input }) => db.getAllClients(input ?? {})),
+    }).optional()).query(async ({ input, ctx }) => db.getAllClients(input ?? {}, ctx.user!)),
 
-    get: permissionProcedure("clients:view")
+    // Scoped fetch: returns null (not the record) when out of the viewer's
+    // scope, so record existence is never revealed by id probing.
+    get: capabilityProcedure("clients.view")
       .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => db.getClientById(input.id)),
+      .query(async ({ input, ctx }) => db.getClientByIdScoped(input.id, ctx.user!)),
 
-    create: permissionProcedure("clients:manage")
+    create: capabilityProcedure("clients.create")
       .input(z.object({
         clientName: z.string().min(1),
         clientStatus: z.enum(["Existing Client", "Leads", "Rejected"]).default("Leads"),
@@ -820,9 +994,13 @@ export const appRouter = router({
         city: z.enum(["Riyadh", "Dammam", "Jeddah"]).optional(),
         matterType: z.enum(["Corporate", "Litigation"]).optional(),
       }))
-      .mutation(async ({ input, ctx }) => db.createClient(input as any, ctx.user!.id)),
+      .mutation(async ({ input, ctx }) => {
+        // HoP: only within own practice (city + matter type).
+        await db.assertCanCreateClient(ctx.user!, input);
+        return db.createClient(input as any, ctx.user!.id);
+      }),
 
-    update: permissionProcedure("clients:manage")
+    update: capabilityProcedure("clients.edit")
       .input(z.object({
         id: z.number(),
         clientName: z.string().optional(),
@@ -835,39 +1013,64 @@ export const appRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
+        // Re-fetches the record and verifies edit authority + practice bounds
+        // on the authorization-defining fields (city, matter type).
+        await db.assertCanEditClient(ctx.user!, id, data);
         return db.updateClient(id, data as any, ctx.user!.id);
       }),
 
-    delete: permissionProcedure("clients:manage")
+    // Deleting clients is Admin-only (Excel matrix: Full = Admin only).
+    delete: capabilityProcedure("clients.delete")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await db.deleteClient(input.id);
         return { success: true };
       }),
 
-    statusCounts: permissionProcedure("dashboard:view").query(async () => db.getClientStatusCounts()),
+    statusCounts: capabilityProcedure("dashboard.view").query(async ({ ctx }) => db.getClientStatusCounts(ctx.user!)),
 
-    dashboardStats: permissionProcedure("dashboard:view").query(async () => db.getClientDashboardStats()),
+    dashboardStats: capabilityProcedure("dashboard.view").query(async ({ ctx }) => db.getClientDashboardStats(ctx.user!)),
 
-    conversionMetrics: permissionProcedure("dashboard:view")
+    conversionMetrics: capabilityProcedure("dashboard.view")
       .input(z.object({ range: z.enum(["month", "quarter", "all"]).default("all") }).optional())
-      .query(async ({ input }) => db.getClientConversionMetrics(input?.range ?? "all")),
+      .query(async ({ input, ctx }) => {
+        // Conversion KPIs aggregate the firm-wide intake funnel; they require
+        // firm-wide/registry client visibility (matrix: Dashboard V(Asgn)
+        // covers own-scope data only).
+        const clientScope = scopeFor(ctx.user!.role, "clients.view");
+        if (clientScope !== "ALL" && clientScope !== "REGISTRY") {
+          return {
+            range: input?.range ?? "all",
+            period: input?.range ?? "all",
+            totalLeads: 0, convertedLeads: 0, convertedClients: 0, converted: 0,
+            totalIntake: 0, total: 0, totalEnquiries: 0,
+            sourceBreakdown: { lead: 0, enquiry: 0, direct: 0 },
+            conversionRate: 0,
+            restricted: true,
+          };
+        }
+        return db.getClientConversionMetrics(input?.range ?? "all");
+      }),
 
     // Recent Lead-status clients within the last N days (default 30), newest first.
     // Powers the dashboard "Recent Leads" widget; date window uses the DB clock.
-    recentLeads: permissionProcedure("clients:view")
+    recentLeads: capabilityProcedure("clients.view")
       .input(z.object({
         days: z.number().int().positive().max(365).default(30),
         limit: z.number().int().positive().max(50).default(5),
       }).optional())
-      .query(async ({ input }) => db.getRecentLeads(input?.days ?? 30, input?.limit ?? 5)),
+      .query(async ({ input, ctx }) => db.getRecentLeads(input?.days ?? 30, input?.limit ?? 5, ctx.user!)),
 
-    // Lead details sub-resource
-    getLeadDetail: permissionProcedure("clients:view")
+    // Lead details sub-resource (registry data; follows client visibility).
+    getLeadDetail: capabilityProcedure("clients.view")
       .input(z.object({ clientId: z.number() }))
-      .query(async ({ input }) => db.getClientLeadDetail(input.clientId)),
+      .query(async ({ input, ctx }) => {
+        const client = await db.getClientByIdScoped(input.clientId, ctx.user!);
+        if (!client) return null;
+        return db.getClientLeadDetail(input.clientId);
+      }),
 
-    upsertLeadDetail: permissionProcedure("clients:manage")
+    upsertLeadDetail: capabilityProcedure("clients.edit")
       .input(z.object({
         clientId: z.number(),
         clientSource: z.string().optional(),
@@ -881,30 +1084,41 @@ export const appRouter = router({
         priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
         leadStatus: z.string().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         const { clientId, ...data } = input;
+        await db.assertCanEditClient(ctx.user!, clientId);
         db.validateChannel(data.channelType, data.channelMedium, { requireType: false });
+        // assignedLawyerId is an assignment field: validate it references an
+        // active, lead-lawyer-eligible user (never trusted raw).
+        if (data.assignedLawyerId != null) await db.assertLeadLawyer(data.assignedLawyerId);
         return db.upsertClientLeadDetail(clientId, data as any);
       }),
 
     // Rejected details sub-resource
-    getRejectedDetail: permissionProcedure("clients:view")
+    getRejectedDetail: capabilityProcedure("clients.view")
       .input(z.object({ clientId: z.number() }))
-      .query(async ({ input }) => db.getRejectedClientDetail(input.clientId)),
+      .query(async ({ input, ctx }) => {
+        const client = await db.getClientByIdScoped(input.clientId, ctx.user!);
+        if (!client) return null;
+        return db.getRejectedClientDetail(input.clientId);
+      }),
 
-    upsertRejectedDetail: permissionProcedure("clients:manage")
+    upsertRejectedDetail: capabilityProcedure("clients.edit")
       .input(z.object({
         clientId: z.number(),
         rejectionReasonSource: z.enum(["Client", "Us"]).optional(),
         rejectionNotes: z.string().optional(),
         rejectedBy: z.string().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         const { clientId, ...data } = input;
+        await db.assertCanEditClient(ctx.user!, clientId);
         return db.upsertRejectedClient(clientId, data as any);
       }),
 
-    conflictCheck: permissionProcedure("clients:view")
+    // Conflict-of-interest search spans the whole firm by nature; restricted
+    // to roles that intake clients/matters (client or matter creators).
+    conflictCheck: anyCapabilityProcedure(["clients.create", "matters.create"])
       .input(z.object({ query: z.string().min(1).max(255) }))
       .query(async ({ input }) => db.searchConflicts(input.query)),
   }),
@@ -912,28 +1126,40 @@ export const appRouter = router({
   // ─── Client Matters ────────────────────────────────────────────────────────
 
   clientMatters: router({
-    list: permissionProcedure("clients:view")
+    // Matters for one client, filtered to the viewer's matters.view scope in
+    // SQL. Each row carries server-computed viewerCanEdit/viewerIsLeadLawyer.
+    list: capabilityProcedure("matters.view")
       .input(z.object({ clientId: z.number() }))
-      .query(async ({ input }) => db.getClientMatters(input.clientId)),
+      .query(async ({ input, ctx }) => db.getClientMatters(input.clientId, ctx.user!)),
 
     // Lead + co-lawyers billable on a matter, each with their effective hourly
-    // rate. The source of truth for the Hourly Rate section and billing logic.
-    billableLawyers: permissionProcedure("clients:view")
+    // rate. Rate amounts are financial data: firm-wide financial viewers, plus
+    // the matter team (lead/assigned lawyers see their own matter's rates).
+    billableLawyers: capabilityProcedure("matters.view")
       .input(z.object({ clientMatterId: z.number() }))
-      .query(async ({ input }) => db.getMatterBillableLawyers(input.clientMatterId)),
+      .query(async ({ input, ctx }) => {
+        const matter = await db.getClientMatterByIdScoped(input.clientMatterId, ctx.user!);
+        if (!matter) throw new TRPCError({ code: "NOT_FOUND", message: "Matter not found." });
+        return db.getMatterBillableLawyers(input.clientMatterId);
+      }),
 
-    // Controlled "Reassign Lead Lawyer" action — restricted to Admin/Partner via
-    // the matters:assign_lawyer permission. The name is derived from the user.
-    reassignLeadLawyer: permissionProcedure("matters:assign_lawyer")
+    // Controlled "Reassign Lead Lawyer" action. Lead Lawyer is an
+    // authorization-defining designation: requires matters.assignTeam (Admin
+    // firm-wide; Head of Practice within own practice — enforced via the
+    // field-level guard on leadLawyerId).
+    reassignLeadLawyer: capabilityProcedure("matters.assignTeam")
       .input(z.object({ clientMatterId: z.number(), userId: z.number() }))
       .mutation(async ({ input, ctx }) => {
         await db.assertMatterClientNotRejected(input.clientMatterId);
+        await db.assertCanEditClientMatter(ctx.user!, input.clientMatterId, {
+          leadLawyerId: input.userId,
+        });
         return db.reassignLeadLawyer(input.clientMatterId, input.userId, ctx.user!.id);
       }),
 
     // Conflict check for a (prospective) matter — by matter name and/or opposing
     // party. Used by the Create Matter form before submitting.
-    checkConflicts: permissionProcedure("clients:view")
+    checkConflicts: anyCapabilityProcedure(["clients.create", "matters.create"])
       .input(z.object({
         matterName: z.string().optional(),
         opposingParty: z.string().optional(),
@@ -949,15 +1175,15 @@ export const appRouter = router({
         }),
       ),
 
-    listAll: permissionProcedure("clients:view")
+    listAll: capabilityProcedure("matters.view")
       .input(z.object({ status: z.string().optional() }).optional())
-      .query(async ({ input }) => db.getAllClientMatters(input ?? {})),
+      .query(async ({ input, ctx }) => db.getAllClientMatters(input ?? {}, ctx.user!)),
 
-    get: permissionProcedure("clients:view")
+    get: capabilityProcedure("matters.view")
       .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => db.getClientMatterById(input.id)),
+      .query(async ({ input, ctx }) => db.getClientMatterByIdScoped(input.id, ctx.user!)),
 
-    create: permissionProcedure("clients:manage")
+    create: capabilityProcedure("matters.create")
       .input(z.object({
         clientId: z.number(),
         originalSerial: z.string().max(50).optional(),
@@ -1006,6 +1232,10 @@ export const appRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         const { acknowledgeConflicts, ...matterInput } = input;
+        // HoP may only create matters within own practice (client city +
+        // matter type). Initial team assignment at creation is permitted for
+        // any creator; assignees are validated as active + role-eligible.
+        await db.assertCanCreateClientMatter(ctx.user!, matterInput);
         // Rejected clients are locked: no new matters.
         await db.assertClientNotRejected(matterInput.clientId);
         // Backend enforcement (defense in depth): re-run the conflict check and
@@ -1026,7 +1256,7 @@ export const appRouter = router({
         return db.createClientMatter(matterInput as any, ctx.user!.id, conflicts);
       }),
 
-    update: permissionProcedure("clients:manage")
+    update: capabilityProcedure("matters.edit")
       .input(z.object({
         id: z.number(),
         originalSerial: z.string().max(50).optional(),
@@ -1069,10 +1299,15 @@ export const appRouter = router({
         const { id, ...data } = input;
         // Rejected clients are locked: existing matters are read-only.
         await db.assertMatterClientNotRejected(id);
+        // Re-fetch + verify: edit authority on THIS matter, and field-level
+        // authorization for the scope-defining fields (lead lawyer, team FKs,
+        // matter type) — "edit matter details" never includes those.
+        await db.assertCanEditClientMatter(ctx.user!, id, data);
         return db.updateClientMatter(id, data as any, ctx.user!.id);
       }),
 
-    delete: permissionProcedure("clients:manage")
+    // Deleting matters is Admin-only (Excel matrix: Full = Admin only).
+    delete: capabilityProcedure("matters.delete")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await db.assertMatterClientNotRejected(input.id);
@@ -1083,12 +1318,25 @@ export const appRouter = router({
 
   // ─── Matter Lawyer Rates ───────────────────────────────────────────────────
 
+  // Hourly rates are financial data tied to a matter: reads follow financial
+  // visibility (with the Lead Lawyer overlay for the led matter); writes are
+  // financial mutations (admin/finance firm-wide, HoP own practice).
   matterLawyerRates: router({
-    list: permissionProcedure("clients:view")
+    list: capabilityProcedure("financial.view", { allowLeadLawyerOverlay: true })
       .input(z.object({ clientMatterId: z.number() }))
-      .query(async ({ input }) => db.getMatterLawyerRates(input.clientMatterId)),
+      .query(async ({ input, ctx }) => {
+        const matter = await db.getClientMatterByIdScoped(input.clientMatterId, ctx.user!);
+        if (!matter) throw new TRPCError({ code: "NOT_FOUND", message: "Matter not found." });
+        if (ctx.authzScope === "NONE") {
+          // Overlay path: only the matter's designated Lead Lawyer.
+          if (!(await db.hasLeadLawyerAuthority(ctx.user!, input.clientMatterId))) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "No financial access to this matter." });
+          }
+        }
+        return db.getMatterLawyerRates(input.clientMatterId);
+      }),
 
-    create: permissionProcedure("clients:manage")
+    create: capabilityProcedure("financial.create")
       .input(z.object({
         clientMatterId: z.number(),
         // A rate must reference an assigned user. lawyerName is NOT accepted from
@@ -1106,10 +1354,11 @@ export const appRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         await db.assertMatterClientNotRejected(input.clientMatterId);
+        await db.assertCanMutateMatterRates(ctx.user!, input.clientMatterId, "create");
         return db.createMatterLawyerRate(input as any, ctx.user!.id);
       }),
 
-    update: permissionProcedure("clients:manage")
+    update: capabilityProcedure("financial.edit")
       .input(z.object({
         id: z.number(),
         // lawyerName is intentionally absent — only the linked user (userId) can
@@ -1128,10 +1377,15 @@ export const appRouter = router({
       .mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
         await db.assertRateClientNotRejected(id);
+        const rate = await db.getMatterLawyerRateById(id);
+        if (!rate) throw new TRPCError({ code: "NOT_FOUND", message: "Rate not found." });
+        await db.assertCanMutateMatterRates(ctx.user!, rate.clientMatterId, "edit");
         return db.updateMatterLawyerRate(id, data as any, ctx.user!.id);
       }),
 
-    delete: permissionProcedure("clients:manage")
+    // Rate deletion follows financial.delete (admin, finance — pre-existing
+    // financial delete surface; no new delete rights invented).
+    delete: capabilityProcedure("financial.delete")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await db.assertRateClientNotRejected(input.id);
@@ -1143,19 +1397,22 @@ export const appRouter = router({
   // ─── Financial Records ─────────────────────────────────────────────────────
 
   financial: router({
-    list: permissionProcedure("financial:view")
+    // Reads allow the Lead Lawyer overlay (an eligible lawyer designated Lead
+    // Lawyer sees the led matter's records read-only, BR-04); rows are always
+    // filtered to the viewer's financial scope in SQL.
+    list: capabilityProcedure("financial.view", { allowLeadLawyerOverlay: true })
       .input(z.object({
         clientId: z.number().optional(),
         clientMatterId: z.number().optional(),
         collectionStatus: z.string().optional(),
       }).optional())
-      .query(async ({ input }) => db.getFinancialRecords(input ?? {})),
+      .query(async ({ input, ctx }) => db.getFinancialRecords(input ?? {}, ctx.user!)),
 
-    get: permissionProcedure("financial:view")
+    get: capabilityProcedure("financial.view", { allowLeadLawyerOverlay: true })
       .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => db.getFinancialRecordById(input.id)),
+      .query(async ({ input, ctx }) => db.getFinancialRecordByIdScoped(input.id, ctx.user!)),
 
-    create: permissionProcedure("financial:manage")
+    create: capabilityProcedure("financial.create")
       .input(z.object({
         clientId: z.number(),
         clientMatterId: z.number().optional(),
@@ -1180,12 +1437,14 @@ export const appRouter = router({
         financeNotes: z.string().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
+        // BR-06: admin/finance firm-wide; Head of Practice own practice only.
+        await db.assertCanCreateFinancialRecord(ctx.user!, input);
         // Rejected clients are locked: no new financial records.
         await db.assertClientNotRejected(input.clientId);
         return db.createFinancialRecord(input as any, ctx.user!.id);
       }),
 
-    update: permissionProcedure("financial:manage")
+    update: capabilityProcedure("financial.edit")
       .input(z.object({
         id: z.number(),
         clientMatterId: z.number().nullable().optional(), // null = unlink matter
@@ -1211,85 +1470,97 @@ export const appRouter = router({
         const { id, ...data } = input;
         // Rejected clients are locked: existing financial records are read-only.
         await db.assertFinancialRecordClientNotRejected(id);
+        // Re-fetch + verify edit authority (HoP: own practice, incl. re-link
+        // targets). Lead Lawyer authority NEVER grants financial mutations.
+        await db.assertCanMutateFinancialRecord(ctx.user!, id, "edit", data);
         return db.updateFinancialRecord(id, data as any, ctx.user!.id);
       }),
 
-    delete: permissionProcedure("financial:manage")
+    // Pre-existing financial delete surface: admin + finance (Excel F-codes).
+    delete: capabilityProcedure("financial.delete")
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         await db.assertFinancialRecordClientNotRejected(input.id);
+        await db.assertCanMutateFinancialRecord(ctx.user!, input.id, "delete");
         await db.deleteFinancialRecord(input.id);
         return { success: true };
       }),
 
-    summary: permissionProcedure("financial:view").query(async () => db.getFinancialSummary()),
+    summary: capabilityProcedure("financial.view", { allowLeadLawyerOverlay: true })
+      .query(async ({ ctx }) => db.getFinancialSummary(ctx.user!)),
 
-    toBeBilledBreakdown: permissionProcedure("financial:view").query(async () => db.getToBeBilledBreakdown()),
+    toBeBilledBreakdown: capabilityProcedure("financial.view", { allowLeadLawyerOverlay: true })
+      .query(async ({ ctx }) => db.getToBeBilledBreakdown(ctx.user!)),
 
-    // Read-only audit trail for a specific financial record.
-    // Returns entries in chronological order (oldest first).
-    auditLog: permissionProcedure("financial:view")
+    // Read-only audit trail for a specific financial record — visible only
+    // when the record itself is within the viewer's scope.
+    auditLog: capabilityProcedure("financial.view", { allowLeadLawyerOverlay: true })
       .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => db.getFinancialAuditLogs(input.id)),
+      .query(async ({ input, ctx }) => {
+        const record = await db.getFinancialRecordByIdScoped(input.id, ctx.user!);
+        if (!record) return [];
+        return db.getFinancialAuditLogs(input.id);
+      }),
   }),
 
   // ─── Financial Reporting (central service, shared filter schema) ────────────
   // Every endpoint accepts the SAME filter object and aggregates from the SAME
   // one-row-per-financial-record dataset (server/financialReports.ts), so KPI
   // cards, grouped reports, detail tables, and exports always reconcile.
-  // Gated by financial:view — identical exposure to the existing financial
-  // module (admin / manager / partner / finance). Not widened.
+  // Gated by financialReports.view: Admin, Manager, Head of Practice (BR-14)
+  // and Finance (BR-12). Coordinator's read-only financial access does NOT
+  // extend to reports (matrix: Financial reports — Coordinator = no access).
 
   financialReports: router({
-    summary: permissionProcedure("financial:view")
+    summary: capabilityProcedure("financialReports.view")
       .input(reportFilterSchema)
       .query(async ({ input }) => financialReports.getReportSummary(input)),
 
-    byLawyer: permissionProcedure("financial:view")
+    byLawyer: capabilityProcedure("financialReports.view")
       .input(reportFilterSchema)
       .query(async ({ input }) => financialReports.getRevenueByLawyer(input)),
 
-    byLeadPartner: permissionProcedure("financial:view")
+    byLeadPartner: capabilityProcedure("financialReports.view")
       .input(reportFilterSchema)
       .query(async ({ input }) => financialReports.getRevenueByLeadPartner(input)),
 
-    byHeadOfPractice: permissionProcedure("financial:view")
+    byHeadOfPractice: capabilityProcedure("financialReports.view")
       .input(reportFilterSchema)
       .query(async ({ input }) => financialReports.getRevenueByHeadOfPractice(input)),
 
-    byClient: permissionProcedure("financial:view")
+    byClient: capabilityProcedure("financialReports.view")
       .input(reportFilterSchema)
       .query(async ({ input }) => financialReports.getRevenueByClient(input)),
 
-    byMatter: permissionProcedure("financial:view")
+    byMatter: capabilityProcedure("financialReports.view")
       .input(reportFilterSchema)
       .query(async ({ input }) => financialReports.getRevenueByMatter(input)),
 
-    outstandingByLawyer: permissionProcedure("financial:view")
+    outstandingByLawyer: capabilityProcedure("financialReports.view")
       .input(reportFilterSchema)
       .query(async ({ input }) => financialReports.getOutstandingByLawyer(input)),
 
-    toBeBilledByLawyer: permissionProcedure("financial:view")
+    toBeBilledByLawyer: capabilityProcedure("financialReports.view")
       .input(reportFilterSchema)
       .query(async ({ input }) => financialReports.getToBeBilledByLawyer(input)),
 
-    collectedByLawyer: permissionProcedure("financial:view")
+    collectedByLawyer: capabilityProcedure("financialReports.view")
       .input(reportFilterSchema)
       .query(async ({ input }) => financialReports.getCollectedByLawyer(input)),
 
-    discountReport: permissionProcedure("financial:view")
+    discountReport: capabilityProcedure("financialReports.view")
       .input(reportFilterSchema)
       .query(async ({ input }) => financialReports.getDiscountReport(input)),
 
-    invoiceStatus: permissionProcedure("financial:view")
+    invoiceStatus: capabilityProcedure("financialReports.view")
       .input(reportFilterSchema)
       .query(async ({ input }) => financialReports.getInvoiceStatusReport(input)),
 
-    overdue: permissionProcedure("financial:view")
+    overdue: capabilityProcedure("financialReports.view")
       .input(reportFilterSchema)
       .query(async ({ input }) => financialReports.getOverdueReport(input)),
 
-    details: permissionProcedure("financial:view")
+    details: capabilityProcedure("financialReports.view")
       .input(reportFilterSchema.extend({
         page: z.number().int().positive().default(1),
         pageSize: z.number().int().positive().max(200).default(25),
@@ -1300,7 +1571,7 @@ export const appRouter = router({
       }),
 
     // CSV export — same filters + same calculation functions as the screen.
-    export: permissionProcedure("financial:view")
+    export: capabilityProcedure("financialReports.view")
       .input(reportFilterSchema.extend({
         reportType: z.enum(EXPORT_REPORT_TYPES),
       }))
@@ -1315,7 +1586,7 @@ export const appRouter = router({
   // update: admin-only to prevent non-admins from changing business thresholds.
 
   settings: router({
-    getOverdueDays: permissionProcedure("financial:view")
+    getOverdueDays: capabilityProcedure("financial.view", { allowLeadLawyerOverlay: true })
       .query(async () => db.getOverdueDays()),
 
     update: adminProcedure
@@ -1332,11 +1603,16 @@ export const appRouter = router({
   // ─── Client Action Logs ────────────────────────────────────────────────────
 
   clientActions: router({
-    list: permissionProcedure("actions:manage")
+    // Action logs follow client visibility (rows filtered in SQL for
+    // ASSIGNED-scope viewers); reading requires client view access.
+    list: capabilityProcedure("clients.view")
       .input(z.object({ clientId: z.number().optional() }).optional())
-      .query(async ({ input }) => db.getClientActionLogs(input?.clientId)),
+      .query(async ({ input, ctx }) => db.getClientActionLogs(input?.clientId, ctx.user!)),
 
-    create: permissionProcedure("actions:manage")
+    // Logging actions: users who can edit the client OR are on the team of one
+    // of its matters (assigned lawyers keep operational logging); Manager and
+    // other read-only roles are rejected.
+    create: capabilityProcedure("clients.view")
       .input(z.object({
         clientId: z.number(),
         clientMatterId: z.number().optional(),
@@ -1347,12 +1623,13 @@ export const appRouter = router({
         actionDetails: z.string().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
+        await db.assertCanLogClientAction(ctx.user!, input.clientId);
         // Rejected clients are locked: no new actions/tasks under them.
         await db.assertClientNotRejected(input.clientId);
         return db.createClientActionLog(input as any, ctx.user!.id);
       }),
 
-    update: permissionProcedure("actions:manage")
+    update: capabilityProcedure("clients.view")
       .input(z.object({
         id: z.number(),
         actionOwner: z.string().optional(),
@@ -1363,11 +1640,15 @@ export const appRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
+        const action = await db.getClientActionLogById(id);
+        if (!action) throw new TRPCError({ code: "NOT_FOUND", message: "Action not found." });
+        await db.assertCanLogClientAction(ctx.user!, action.clientId);
         await db.assertActionClientNotRejected(id);
         return db.updateClientActionLog(id, data as any, ctx.user!.id);
       }),
 
-    delete: permissionProcedure("actions:manage")
+    // Deleting action-log entries is Admin-only (matrix F-codes).
+    delete: adminProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await db.assertActionClientNotRejected(input.id);
@@ -1377,9 +1658,10 @@ export const appRouter = router({
   }),
 
   // ─── Excel Import ──────────────────────────────────────────────────────────
+  // Bulk import writes clients firm-wide: admin + finance only.
 
   import: router({
-    clients: permissionProcedure("clients:manage")
+    clients: capabilityProcedure("import.clients")
       .input(z.object({
         rows: z.array(z.object({
           clientNumber: z.string().optional(),
@@ -1394,9 +1676,12 @@ export const appRouter = router({
   }),
 
   // ─── Contact / Chat Submissions ───────────────────────────────────────────
+  // Website contact submissions are intake data: enquiry viewers read them,
+  // enquiry managers work them (was: any active user — pre-existing gap).
 
   chat: router({
-    list: protectedProcedure.query(async () => db.getAllChatSubmissions()),
+    list: anyCapabilityProcedure(["enquiries.view", "enquiries.manage"])
+      .query(async () => db.getAllChatSubmissions()),
 
     submit: publicProcedure
       .input(z.object({
@@ -1410,7 +1695,7 @@ export const appRouter = router({
         return db.createChatSubmission(input);
       }),
 
-    updateStatus: protectedProcedure
+    updateStatus: capabilityProcedure("enquiries.manage")
       .input(z.object({
         id: z.number(),
         status: z.enum(["new", "read", "replied", "converted"]),
@@ -1433,10 +1718,10 @@ export const appRouter = router({
     testNvidia: adminProcedure.mutation(async () => testNvidiaConnection()),
 
     // Management AI Assistant (POST /api/ai/ask equivalent). RBAC-gated by
-    // "ai:assistant" (admin/manager/partner/lawyer/finance). The model receives
-    // ONLY role-scoped structured JSON from safe read-only analytics — never the
-    // database, never SQL, never the API key.
-    ask: permissionProcedure("ai:assistant")
+    // ai.use (admin/manager/head_of_practice/lawyer grades/finance). The model
+    // receives ONLY role-scoped structured JSON from safe read-only analytics —
+    // never the database, never SQL, never the API key.
+    ask: capabilityProcedure("ai.use")
       .input(z.object({
         question: z.string().trim().min(1).max(2000),
         period: z.enum(["month", "quarter", "year", "all"]).default("month"),
@@ -1495,6 +1780,31 @@ export const appRouter = router({
     auditLog: adminProcedure
       .input(z.object({ limit: z.number().int().positive().max(500).default(100) }).optional())
       .query(async ({ input }) => db.getAiAuditLogs(input?.limit ?? 100)),
+  }),
+
+  // ─── Practice Heads (BR-01 ownership map) ────────────────────────────────────
+  // Admin-managed mapping (city, matter type) → responsible Head of Practice.
+  // This map is what OWN_PRACTICE scoping resolves against. Listing is exposed
+  // to authenticated users (names of responsible heads are internal directory
+  // data); mutations are settings-level (admin only).
+
+  practices: router({
+    list: protectedProcedure.query(async () => db.getPracticeHeads()),
+
+    set: adminProcedure
+      .input(z.object({
+        city: z.enum(CITY_VALUES),
+        matterType: z.enum(MATTER_TYPES),
+        headOfPracticeId: z.number().int().positive(),
+      }))
+      .mutation(async ({ input, ctx }) => db.setPracticeHead(input, ctx.user!.id)),
+
+    remove: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        await db.removePracticeHead(input.id);
+        return { success: true };
+      }),
   }),
 });
 

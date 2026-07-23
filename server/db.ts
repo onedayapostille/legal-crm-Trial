@@ -10,19 +10,45 @@ import {
   activityLogs, auditLogs, chatSubmissions,
   clients, clientMatters, clientLeadDetails, rejectedClients,
   financialRecords, clientActionLogs, matterLawyerRates, systemSettings,
-  userNotifications, aiAuditLogs,
+  userNotifications, aiAuditLogs, practiceHeads,
   type Lead, type InsertUser, type InsertLead, type InsertMatter,
   type InsertTask, type InsertNote, type InsertPayment,
   type InsertCompany, type InsertActivityLog, type InsertChatSubmission,
   type InsertClient, type InsertClientMatter, type InsertClientLeadDetail,
   type InsertRejectedClient, type InsertFinancialRecord, type InsertClientActionLog,
-  type InsertMatterLawyerRate,
+  type InsertMatterLawyerRate, type Client, type ClientMatter, type FinancialRecord,
 } from "../drizzle/schema";
 import { hashPassword } from "./_core/auth";
 import { channelMediumRequired, MATTER_TYPES, isSupportedMatterType } from "../shared/const";
 import { notifyLawyerAssignment } from "./emailNotifications";
 import type { UserRole, UserStatus } from "../shared/const";
-import { ASSIGNMENT_FIELDS, type AssignmentField } from "../shared/assignmentEligibility";
+import { ASSIGNMENT_FIELDS, LEGAL_TEAM_ASSIGNMENT_ROLES, type AssignmentField } from "../shared/assignmentEligibility";
+import {
+  LEAD_LAWYER_ELIGIBLE_ROLES,
+  leadLawyerOverlayApplies,
+  clientEditLimitedToExistingClients,
+  scopeFor,
+  can,
+  type Scope,
+} from "../shared/permissions";
+import {
+  clientScopeCondition,
+  matterScopeCondition,
+  financialViewCondition,
+  mayViewAnyFinancial,
+  taskScopeCondition,
+  clientInUserPracticeCondition,
+  matterInUserPracticeCondition,
+  matterTeamCondition,
+  isMatterAssignedToUser,
+  isLeadLawyerOfMatter,
+  effectiveMatterType,
+  practiceKey,
+  changedScopeDefiningFields,
+  MATTER_SCOPE_DEFINING_FIELDS,
+  CLIENT_SCOPE_DEFINING_FIELDS,
+  type AuthUser,
+} from "./authorization";
 
 /**
  * Validate the two-level communication channel.
@@ -533,10 +559,12 @@ export async function getLeadById(id: number) {
   return result[0] ?? null;
 }
 
-// Roles that may be assigned as a lead lawyer on an enquiry.
-const LEAD_LAWYER_ROLES = ["partner", "lawyer"] as const;
+// Roles that may be assigned as a lead lawyer on an enquiry: the central
+// Lead-Lawyer-eligible set (Trainee excluded per the documented spec conflict;
+// legacy partner/lawyer retained for un-migrated accounts).
+const LEAD_LAWYER_ROLES = LEAD_LAWYER_ELIGIBLE_ROLES;
 
-/** Active Partners/Lawyers for the "Suggested Lead Lawyer" dropdown. */
+/** Active Lead-Lawyer-eligible users for the "Suggested Lead Lawyer" dropdown. */
 export async function getLeadLawyers() {
   const db = getDb();
   return db
@@ -557,7 +585,7 @@ export async function assertLeadLawyer(userId: number) {
   if (!u) throw new TRPCError({ code: "BAD_REQUEST", message: "Selected lead lawyer does not exist." });
   if (u.status !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "Selected lead lawyer is not active." });
   if (!(LEAD_LAWYER_ROLES as readonly string[]).includes(u.role)) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "Lead lawyer must be a Partner or Lawyer." });
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Lead lawyer must be a Lead-Lawyer-eligible lawyer grade." });
   }
   return u;
 }
@@ -814,41 +842,67 @@ export async function getLeadStatusSummary() {
 
 export async function getLeadKpiMetrics(viewer?: TaskViewer) {
   const db = getDb();
-  const canonicalConversion = await getClientConversionMetrics("all");
-  const canonicalMonth = await getClientConversionMetrics("month");
 
-  const [totalRow] = await db.select({ count: count() }).from(leads);
-  const total = Number(totalRow?.count ?? 0);
+  // Dashboard KPIs are scoped like the underlying modules (V (Asgn)/(Reg) in
+  // the matrix): intake/conversion KPIs require firm-wide or registry client
+  // visibility; the revenue KPI requires firm-wide financial visibility;
+  // active matters and pending tasks are computed over the viewer's scope.
+  const clientScope = viewer ? scopeFor(viewer.role, "clients.view") : "ALL";
+  const intakeVisible = clientScope === "ALL" || clientScope === "REGISTRY";
+  const revenueVisible = !viewer || scopeFor(viewer.role, "financial.view") === "ALL";
 
-  const [convertedRow] = await db
-    .select({ count: count() })
-    .from(leads)
-    .where(eq(leads.currentStatus, "Converted"));
-  const converted = Number(convertedRow?.count ?? 0);
+  const canonicalConversion = intakeVisible
+    ? await getClientConversionMetrics("all")
+    : { totalLeads: 0, convertedLeads: 0, conversionRate: 0 };
+  const canonicalMonth = intakeVisible
+    ? await getClientConversionMetrics("month")
+    : { totalLeads: 0 };
 
-  // "This month" is computed from the stored UTC enquiry timestamp using the DB
-  // clock (date_trunc on now()), so it is timezone-consistent rather than relying
-  // on a string-compared date built from the app server's local time.
-  const [thisMonthRow] = await db
-    .select({ count: count() })
-    .from(leads)
-    .where(gte(leads.enquiryAt, sql`date_trunc('month', now())`));
-  const thisMonth = Number(thisMonthRow?.count ?? 0);
+  let total = 0;
+  let converted = 0;
+  let thisMonth = 0;
+  if (intakeVisible) {
+    const [totalRow] = await db.select({ count: count() }).from(leads);
+    total = Number(totalRow?.count ?? 0);
 
-  const [revenueRow] = await db
-    .select({ total: sql<string>`COALESCE(SUM(${leads.proposalValue}), 0)` })
-    .from(leads)
-    .where(eq(leads.currentStatus, "Converted"));
-  const revenue = Number(revenueRow?.total ?? 0);
+    const [convertedRow] = await db
+      .select({ count: count() })
+      .from(leads)
+      .where(eq(leads.currentStatus, "Converted"));
+    converted = Number(convertedRow?.count ?? 0);
+
+    // "This month" is computed from the stored UTC enquiry timestamp using the DB
+    // clock (date_trunc on now()), so it is timezone-consistent rather than relying
+    // on a string-compared date built from the app server's local time.
+    const [thisMonthRow] = await db
+      .select({ count: count() })
+      .from(leads)
+      .where(gte(leads.enquiryAt, sql`date_trunc('month', now())`));
+    thisMonth = Number(thisMonthRow?.count ?? 0);
+  }
+
+  let revenue: number | null = null;
+  if (revenueVisible) {
+    const [revenueRow] = await db
+      .select({ total: sql<string>`COALESCE(SUM(${leads.proposalValue}), 0)` })
+      .from(leads)
+      .where(eq(leads.currentStatus, "Converted"));
+    revenue = Number(revenueRow?.total ?? 0);
+  }
 
   // "Active Matters" counts client matters whose status is exactly "Active"
   // (case/whitespace-insensitive, since client_matters.matter_status is free-text).
   // This is the same table/data shown on the /matters list, so the KPI value and
-  // the click-through filtered list always agree.
+  // the click-through filtered list always agree (both viewer-scoped).
+  const activeMatterConds = [isActiveMatterStatus()];
+  if (viewer) {
+    const matterCond = matterScopeCondition(viewer, scopeFor(viewer.role, "matters.view"));
+    if (matterCond) activeMatterConds.push(matterCond);
+  }
   const [activeMatterRow] = await db
     .select({ count: count() })
     .from(clientMatters)
-    .where(isActiveMatterStatus());
+    .where(and(...activeMatterConds));
   const activeMatters = Number(activeMatterRow?.count ?? 0);
 
   // Pending-tasks KPI respects the same role-based visibility as the task list.
@@ -878,11 +932,23 @@ export async function getLeadKpiMetrics(viewer?: TaskViewer) {
   };
 }
 
-export async function getRecentActivity(limit = 20) {
+export async function getRecentActivity(limit = 20, viewer?: TaskViewer) {
   const db = getDb();
+  // Firm-wide activity feed is reserved for roles with firm-wide/registry
+  // client visibility; ASSIGNED-scope viewers see only their own actions
+  // (activity rows reference entities across the whole firm).
+  const conditions = [];
+  if (viewer) {
+    const clientScope = scopeFor(viewer.role, "clients.view");
+    if (clientScope === "NONE") return [];
+    if (clientScope !== "ALL" && clientScope !== "REGISTRY") {
+      conditions.push(eq(activityLogs.performedBy, viewer.id));
+    }
+  }
   return db
     .select()
     .from(activityLogs)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
     .orderBy(desc(activityLogs.createdAt))
     .limit(limit);
 }
@@ -900,15 +966,49 @@ export async function generateMatterCode(): Promise<string> {
   return `MAT-${year}-${String(next).padStart(3, "0")}`;
 }
 
-export async function getAllMatters() {
-  const db = getDb();
-  return db.select().from(matters).orderBy(desc(matters.createdAt));
+/**
+ * Legacy matters module (the standalone `matters` table, single assigned_to
+ * FK). ASSIGNED scope = matters assigned to or created by the viewer. Legacy
+ * matters carry no city/matter-type pair, so they resolve to NO practice:
+ * OWN_PRACTICE editors (Head of Practice) get view-all but no edit/create on
+ * this legacy module (least privilege, documented).
+ */
+function legacyMatterScopeCondition(viewer: TaskViewer) {
+  const scope = scopeFor(viewer.role, "matters.view");
+  if (scope === "ALL" || scope === "REGISTRY") return undefined;
+  if (scope === "NONE") return sql`FALSE`;
+  return or(eq(matters.assignedTo, viewer.id), eq(matters.createdBy, viewer.id));
 }
 
-export async function getMatterById(id: number) {
+export async function getAllMatters(viewer?: TaskViewer) {
   const db = getDb();
-  const result = await db.select().from(matters).where(eq(matters.id, id)).limit(1);
+  const cond = viewer ? legacyMatterScopeCondition(viewer) : undefined;
+  return db.select().from(matters).where(cond).orderBy(desc(matters.createdAt));
+}
+
+export async function getMatterById(id: number, viewer?: TaskViewer) {
+  const db = getDb();
+  const scopeCond = viewer ? legacyMatterScopeCondition(viewer) : undefined;
+  const where = scopeCond ? and(eq(matters.id, id), scopeCond) : eq(matters.id, id);
+  const result = await db.select().from(matters).where(where).limit(1);
   return result[0] ?? null;
+}
+
+/** Edit/delete guard for legacy matters (no practice resolution possible). */
+export async function assertCanEditLegacyMatter(viewer: TaskViewer, id: number) {
+  const matter = await getMatterById(id, viewer);
+  if (!matter) throw new TRPCError({ code: "NOT_FOUND", message: "Matter not found." });
+  const scope = scopeFor(viewer.role, "matters.edit");
+  const allowed =
+    scope === "ALL" ||
+    (scope === "ASSIGNED" && (matter.assignedTo === viewer.id || matter.createdBy === viewer.id));
+  if (!allowed) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "You do not have permission to edit this matter.",
+    });
+  }
+  return matter;
 }
 
 export async function createMatter(data: Record<string, unknown>, userId: number) {
@@ -965,32 +1065,37 @@ export async function getReportingUserIds(partnerId: number): Promise<number[]> 
 }
 
 /**
- * SQL WHERE condition restricting tasks to those the viewer may see:
- *   - admin / manager → null (no restriction; see all)
- *   - partner → own (assignee/creator) OR assigned to a lawyer reporting to them
- *   - everyone else (lawyer, staff, …) → own only (assignee or creator)
- * Returns null only for admin/manager.
+ * SQL WHERE condition restricting tasks to those the viewer may see
+ * (AGP spec matrix, tasks.view):
+ *   - ALL scope (admin, manager read-only, head_of_practice, coordinator,
+ *     legacy partner/staff aliases) → null (no restriction)
+ *   - OWN scope (all lawyer grades, paralegal, finance, legacy lawyer) → own
+ *     tasks (assignee or creator) PLUS — via the Lead Lawyer overlay — every
+ *     task of matters the viewer leads (client_matter_id link)
+ *   - NONE (legacy viewer) → matches nothing
  */
 export async function taskVisibilityCondition(viewer: TaskViewer) {
-  if (viewer.role === "admin" || viewer.role === "manager") return null;
-  const own = or(eq(tasks.assignedTo, viewer.id), eq(tasks.createdBy, viewer.id));
-  if (viewer.role === "partner") {
-    const ids = await getReportingUserIds(viewer.id);
-    if (ids.length > 0) return or(own, inArray(tasks.assignedTo, ids));
-  }
-  return own;
+  return taskScopeCondition(viewer) ?? null;
 }
 
 /** Whether a single task row is visible to the viewer (same rules as the SQL filter). */
 export async function isTaskVisibleTo(
-  task: { assignedTo: number | null; createdBy: number | null },
+  task: { assignedTo: number | null; createdBy: number | null; clientMatterId?: number | null },
   viewer: TaskViewer,
 ): Promise<boolean> {
-  if (viewer.role === "admin" || viewer.role === "manager") return true;
+  const scope = scopeFor(viewer.role, "tasks.view");
+  if (scope === "ALL") return true;
+  if (scope === "NONE") return false;
   if (task.assignedTo === viewer.id || task.createdBy === viewer.id) return true;
-  if (viewer.role === "partner" && task.assignedTo != null) {
-    const ids = await getReportingUserIds(viewer.id);
-    if (ids.includes(task.assignedTo)) return true;
+  // Lead Lawyer overlay: all tasks of matters the viewer leads.
+  if (task.clientMatterId != null && leadLawyerOverlayApplies(viewer.role)) {
+    const db = getDb();
+    const [m] = await db
+      .select({ id: clientMatters.id })
+      .from(clientMatters)
+      .where(and(eq(clientMatters.id, task.clientMatterId), eq(clientMatters.leadLawyerId, viewer.id)))
+      .limit(1);
+    if (m) return true;
   }
   return false;
 }
@@ -1000,6 +1105,82 @@ export async function assertTaskVisible(id: number, viewer: TaskViewer) {
   const task = await getTaskById(id, viewer);
   if (!task) throw new TRPCError({ code: "NOT_FOUND", message: "Task not found." });
   return task;
+}
+
+/** Lead Lawyer overlay: does the viewer lead this client matter? */
+export async function hasLeadLawyerAuthority(viewer: TaskViewer, clientMatterId: number) {
+  if (!leadLawyerOverlayApplies(viewer.role)) return false;
+  const db = getDb();
+  const [m] = await db
+    .select({ id: clientMatters.id })
+    .from(clientMatters)
+    .where(and(eq(clientMatters.id, clientMatterId), eq(clientMatters.leadLawyerId, viewer.id)))
+    .limit(1);
+  return Boolean(m);
+}
+
+/** Whether the viewer is the designated Lead Lawyer on ANY matter (overlay). */
+export async function userLeadsAnyMatter(viewer: TaskViewer) {
+  if (!leadLawyerOverlayApplies(viewer.role)) return false;
+  const db = getDb();
+  const [m] = await db
+    .select({ id: clientMatters.id })
+    .from(clientMatters)
+    .where(eq(clientMatters.leadLawyerId, viewer.id))
+    .limit(1);
+  return Boolean(m);
+}
+
+/** Directory of active users for task-assignment pickers (id/name/role only). */
+export async function getActiveAssignableUsers() {
+  const db = getDb();
+  return db
+    .select({ id: users.id, name: users.name, email: users.email, role: users.role })
+    .from(users)
+    .where(eq(users.status, "active"))
+    .orderBy(users.name);
+}
+
+/** Validate an id references an existing ACTIVE user (task assignee, etc.). */
+export async function assertActiveUser(userId: number, label = "user") {
+  const db = getDb();
+  const [u] = await db
+    .select({ id: users.id, status: users.status, name: users.name })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!u) throw new TRPCError({ code: "BAD_REQUEST", message: `Selected ${label} does not exist.` });
+  if (u.status !== "active") {
+    throw new TRPCError({ code: "BAD_REQUEST", message: `Selected ${label} is not active.` });
+  }
+  return u;
+}
+
+/**
+ * Task-assignment authority (BR-10). Assigning a task to ANOTHER user requires
+ * tasks.assign (admin, head_of_practice, senior/executive associate,
+ * coordinator) OR the Lead Lawyer overlay for the matter the task belongs to.
+ * Self-assignment and unassigned tasks are always permitted. The assignee is
+ * validated as an existing active user (never trusted raw from the client).
+ */
+export async function assertTaskAssignmentAllowed(
+  viewer: TaskViewer,
+  params: { assignedTo: number | null | undefined; clientMatterId?: number | null },
+) {
+  const target = params.assignedTo;
+  if (target == null || target === viewer.id) {
+    if (target != null) await assertActiveUser(target, "assignee");
+    return;
+  }
+  await assertActiveUser(target, "assignee");
+  if (can(viewer.role, "tasks.assign")) return;
+  if (params.clientMatterId != null && (await hasLeadLawyerAuthority(viewer, params.clientMatterId))) {
+    return;
+  }
+  throw new TRPCError({
+    code: "FORBIDDEN",
+    message: "Your role cannot assign tasks to other users.",
+  });
 }
 
 export async function getAllTasks(
@@ -1116,12 +1297,17 @@ export async function deleteTask(id: number) {
 
 // ─── Notes ────────────────────────────────────────────────────────────────────
 
-export async function getNotesByEntity(entityType: string, entityId: number) {
+export async function getNotesByEntity(entityType: string, entityId: number, viewer?: TaskViewer) {
   const db = getDb();
+  const conditions = [eq(notes.entityType, entityType), eq(notes.entityId, entityId)];
+  // Private notes are visible only to their author (admins excepted).
+  if (viewer && viewer.role !== "admin") {
+    conditions.push(or(eq(notes.isPrivate, false), eq(notes.createdBy, viewer.id))!);
+  }
   return db
     .select()
     .from(notes)
-    .where(and(eq(notes.entityType, entityType), eq(notes.entityId, entityId)))
+    .where(and(...conditions))
     .orderBy(desc(notes.createdAt));
 }
 
@@ -1131,8 +1317,23 @@ export async function createNote(data: InsertNote) {
   return note;
 }
 
-export async function deleteNote(id: number) {
+export async function getNoteById(id: number) {
   const db = getDb();
+  const [note] = await db.select().from(notes).where(eq(notes.id, id)).limit(1);
+  return note ?? null;
+}
+
+/** Notes are deletable by their author or an admin only. */
+export async function deleteNote(id: number, viewer: TaskViewer) {
+  const db = getDb();
+  const note = await getNoteById(id);
+  if (!note) throw new TRPCError({ code: "NOT_FOUND", message: "Note not found." });
+  if (viewer.role !== "admin" && note.createdBy !== viewer.id) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Only the author or an admin can delete a note.",
+    });
+  }
   await db.delete(notes).where(eq(notes.id, id));
 }
 
@@ -1246,6 +1447,61 @@ export async function getAuditLogsByEntity(entityType: string, entityId: number)
     .orderBy(desc(auditLogs.createdAt));
 }
 
+/**
+ * Viewer-scoped audit access: the change history of a record is as sensitive
+ * as the record itself. Access requires the corresponding view authority on
+ * the underlying entity; unknown entity types are admin-only. Records the
+ * viewer cannot see yield an empty result (no existence probe).
+ */
+export async function getAuditLogsByEntityScoped(
+  entityType: string,
+  entityId: number,
+  viewer: TaskViewer,
+) {
+  if (viewer.role !== "admin") {
+    switch (entityType) {
+      case "lead":
+        if (!can(viewer.role, "enquiries.view") && !can(viewer.role, "enquiries.manage")) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No access to enquiry history." });
+        }
+        break;
+      case "client": {
+        const c = await getClientByIdScoped(entityId, viewer);
+        if (!c) return [];
+        break;
+      }
+      case "client_matter": {
+        const m = await getClientMatterByIdScoped(entityId, viewer);
+        if (!m) return [];
+        break;
+      }
+      case "matter": {
+        const m = await getMatterById(entityId, viewer);
+        if (!m) return [];
+        break;
+      }
+      case "financial_record": {
+        if (!mayViewAnyFinancial(viewer)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No access to financial history." });
+        }
+        const r = await getFinancialRecordByIdScoped(entityId, viewer);
+        if (!r) return [];
+        break;
+      }
+      case "matter_lawyer_rate":
+        // Rate history is financial information.
+        if (scopeFor(viewer.role, "financial.view") === "NONE") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "No access to rate history." });
+        }
+        break;
+      case "user":
+      default:
+        throw new TRPCError({ code: "FORBIDDEN", message: "No access to this audit history." });
+    }
+  }
+  return getAuditLogsByEntity(entityType, entityId);
+}
+
 // Returns all audit log entries for a specific financial record, joined with
 // the user's name so the UI can show who made each change.
 export async function getFinancialAuditLogs(financialRecordId: number) {
@@ -1306,6 +1562,454 @@ export async function getUserActivityStats(userId: number) {
   return { leadsCreated: Number(leadCount?.count ?? 0) };
 }
 
+// ─── Authorization contexts & record-level checks ────────────────────────────
+// Record-level enforcement for the capability × scope policy
+// (shared/permissions.ts + server/authorization.ts). Pattern:
+//   • *Scoped accessors apply the viewer's row filter IN the SQL query
+//     (list endpoints never over-fetch and filter in the client).
+//   • assertCan* helpers re-fetch the authoritative record and verify access
+//     before any mutation (anti-IDOR). Records the viewer cannot even VIEW
+//     yield NOT_FOUND (no existence leak); visible-but-not-editable yields
+//     FORBIDDEN.
+
+/** Practices (city|matterType keys) this user heads, from practice_heads. */
+export async function getUserPracticeKeys(userId: number): Promise<Set<string>> {
+  const db = getDb();
+  const rows = await db
+    .select({ city: practiceHeads.city, matterType: practiceHeads.matterType })
+    .from(practiceHeads)
+    .where(eq(practiceHeads.headOfPracticeId, userId));
+  return new Set(rows.map(r => `${r.city}|${r.matterType}`));
+}
+
+type EditContext = { scope: Scope; practiceKeys: Set<string> | null };
+
+async function editContextFor(viewer: TaskViewer, capability: "clients.edit" | "matters.edit" | "financial.edit" | "financial.create" | "clients.create" | "matters.create" | "matters.assignTeam"): Promise<EditContext> {
+  const scope = scopeFor(viewer.role, capability);
+  const practiceKeys = scope === "OWN_PRACTICE" ? await getUserPracticeKeys(viewer.id) : null;
+  return { scope, practiceKeys };
+}
+
+/** JS-side per-row edit check for an already-fetched client. */
+export function canEditClientRow(
+  viewer: TaskViewer,
+  editCtx: EditContext,
+  client: Pick<Client, "clientStatus" | "city" | "matterType">,
+): boolean {
+  switch (editCtx.scope) {
+    case "ALL":
+      // Least-privilege spec reading: Paralegal edits Existing Client records
+      // only (no general edit rights over Leads or Rejected).
+      if (clientEditLimitedToExistingClients(viewer.role)) {
+        return client.clientStatus === "Existing Client";
+      }
+      return true;
+    case "OWN_PRACTICE": {
+      const key = practiceKey(client.city, client.matterType);
+      return key != null && (editCtx.practiceKeys?.has(key) ?? false);
+    }
+    case "REGISTRY":
+      // Coordinator: leads & existing clients. Rejected records remain locked
+      // by the global Rejected write-lock (only the approved reactivation
+      // workflow passes through it).
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** Client visible to the viewer? (scoped fetch — NULL when out of scope). */
+export async function getClientByIdScoped(id: number, viewer: TaskViewer) {
+  const db = getDb();
+  const cond = clientScopeCondition(viewer, scopeFor(viewer.role, "clients.view"));
+  const where = cond ? and(eq(clients.id, id), cond) : eq(clients.id, id);
+  const [client] = await db.select().from(clients).where(where).limit(1);
+  if (!client) return null;
+  const editCtx = await editContextFor(viewer, "clients.edit");
+  return { ...client, viewerCanEdit: canEditClientRow(viewer, editCtx, client) };
+}
+
+/** Creating a client: Head of Practice may only create within own practice. */
+export async function assertCanCreateClient(
+  viewer: TaskViewer,
+  data: { city?: string | null; matterType?: string | null },
+) {
+  const { scope, practiceKeys } = await editContextFor(viewer, "clients.create");
+  if (scope === "NONE") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Your role cannot create clients." });
+  }
+  if (scope === "OWN_PRACTICE") {
+    const key = practiceKey(data.city ?? null, data.matterType ?? null);
+    if (!key || !practiceKeys!.has(key)) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "You can only create clients within your own practice (city + matter type).",
+      });
+    }
+  }
+}
+
+/**
+ * Editing a client: verifies visibility (NOT_FOUND when out of view scope),
+ * edit authority on the CURRENT record, and — for OWN_PRACTICE editors — that
+ * authorization-defining fields (city, matter type) are not moved outside the
+ * practice (records can be neither pulled in nor pushed out).
+ */
+export async function assertCanEditClient(
+  viewer: TaskViewer,
+  clientId: number,
+  input?: Record<string, unknown>,
+) {
+  const client = await getClientByIdScoped(clientId, viewer);
+  if (!client) throw new TRPCError({ code: "NOT_FOUND", message: "Client not found." });
+  const editCtx = await editContextFor(viewer, "clients.edit");
+  if (!canEditClientRow(viewer, editCtx, client)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "You do not have permission to edit this client.",
+    });
+  }
+  if (input && editCtx.scope === "OWN_PRACTICE") {
+    const changed = changedScopeDefiningFields(client, input, CLIENT_SCOPE_DEFINING_FIELDS);
+    if (changed.length > 0) {
+      const newKey = practiceKey(
+        (input.city as string | null | undefined) ?? client.city,
+        (input.matterType as string | null | undefined) ?? client.matterType,
+      );
+      if (!newKey || !editCtx.practiceKeys!.has(newKey)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "You cannot move a client outside your own practice (city / matter type).",
+        });
+      }
+    }
+  }
+  return client;
+}
+
+/** Matter visible to the viewer? (scoped fetch — NULL when out of scope). */
+export async function getClientMatterByIdScoped(id: number, viewer: TaskViewer) {
+  const db = getDb();
+  const cond = matterScopeCondition(viewer, scopeFor(viewer.role, "matters.view"));
+  const where = cond ? and(eq(clientMatters.id, id), cond) : eq(clientMatters.id, id);
+  const [matter] = await db.select().from(clientMatters).where(where).limit(1);
+  return matter ?? null;
+}
+
+/** JS-side per-row edit check for an already-fetched client matter. */
+export function canEditMatterRow(
+  viewer: TaskViewer,
+  editCtx: EditContext,
+  matter: ClientMatter,
+  client: Pick<Client, "city" | "matterType"> | null,
+): boolean {
+  switch (editCtx.scope) {
+    case "ALL":
+      return true;
+    case "ASSIGNED":
+      return isMatterAssignedToUser(matter, viewer.id);
+    case "OWN_PRACTICE": {
+      if (!client) return false;
+      const eff = effectiveMatterType(matter.matterType, client.matterType);
+      const key = practiceKey(client.city, eff);
+      return key != null && (editCtx.practiceKeys?.has(key) ?? false);
+    }
+    default:
+      return false;
+  }
+}
+
+/** Creating a matter: HoP only within own practice (client city + matter type). */
+export async function assertCanCreateClientMatter(
+  viewer: TaskViewer,
+  data: { clientId: number; matterType?: string | null },
+) {
+  const { scope, practiceKeys } = await editContextFor(viewer, "matters.create");
+  if (scope === "NONE") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Your role cannot create matters." });
+  }
+  if (scope === "OWN_PRACTICE") {
+    const client = await getClientById(data.clientId);
+    if (!client) throw new TRPCError({ code: "NOT_FOUND", message: "Client not found." });
+    const eff = effectiveMatterType(data.matterType ?? null, client.matterType);
+    const key = practiceKey(client.city, eff);
+    if (!key || !practiceKeys!.has(key)) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "You can only create matters within your own practice (city + matter type).",
+      });
+    }
+  }
+}
+
+/**
+ * Editing a matter: verifies visibility, edit authority on the CURRENT record,
+ * and field-level authorization — "edit matter details" NEVER includes the
+ * authorization-defining fields (lead lawyer, team FKs, client link, matter
+ * type). Changing those requires matters.assignTeam: admin firm-wide, or Head
+ * of Practice when both the current AND resulting state stay in own practice.
+ */
+export async function assertCanEditClientMatter(
+  viewer: TaskViewer,
+  matterId: number,
+  input?: Record<string, unknown>,
+) {
+  const matter = await getClientMatterByIdScoped(matterId, viewer);
+  if (!matter) throw new TRPCError({ code: "NOT_FOUND", message: "Matter not found." });
+
+  const editCtx = await editContextFor(viewer, "matters.edit");
+  const client = await getClientById(matter.clientId);
+  if (!canEditMatterRow(viewer, editCtx, matter, client)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "You do not have permission to edit this matter.",
+    });
+  }
+
+  if (input) {
+    const changed = changedScopeDefiningFields(matter, input, MATTER_SCOPE_DEFINING_FIELDS);
+    if (changed.length > 0) {
+      const assignCtx = await editContextFor(viewer, "matters.assignTeam");
+      if (assignCtx.scope === "NONE") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: `Changing ${changed.join(", ")} requires team-assignment authority (Admin or the responsible Head of Practice).`,
+        });
+      }
+      if (assignCtx.scope === "OWN_PRACTICE") {
+        // Resulting state must also remain within the practice: no moving
+        // matters (or their team authority) in or out via client/matter-type.
+        const newClientId = (input.clientId as number | undefined) ?? matter.clientId;
+        const newClient = newClientId === matter.clientId ? client : await getClientById(newClientId);
+        if (!newClient) throw new TRPCError({ code: "NOT_FOUND", message: "Client not found." });
+        const newEff = effectiveMatterType(
+          (input.matterType as string | null | undefined) ?? matter.matterType,
+          newClient.matterType,
+        );
+        const newKey = practiceKey(newClient.city, newEff);
+        if (!newKey || !assignCtx.practiceKeys!.has(newKey)) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "You cannot move a matter outside your own practice (client / matter type).",
+          });
+        }
+      }
+    }
+  }
+  return matter;
+}
+
+/** Financial record visible to the viewer? (scoped fetch; overlay-aware). */
+export async function getFinancialRecordByIdScoped(id: number, viewer: TaskViewer) {
+  const db = getDb();
+  const cond = financialViewCondition(viewer);
+  const where = cond ? and(eq(financialRecords.id, id), cond) : eq(financialRecords.id, id);
+  const [record] = await db.select().from(financialRecords).where(where).limit(1);
+  return record ?? null;
+}
+
+/** Is this client/matter pair within one of the viewer's practices? */
+async function financialTargetInPractice(
+  practiceKeys: Set<string>,
+  clientId: number,
+  clientMatterId: number | null | undefined,
+) {
+  const client = await getClientById(clientId);
+  if (!client) throw new TRPCError({ code: "NOT_FOUND", message: "Client not found." });
+  let eff: string | null = client.matterType;
+  if (clientMatterId != null) {
+    const matter = await getClientMatterById(clientMatterId);
+    if (matter) eff = effectiveMatterType(matter.matterType, client.matterType);
+  }
+  const key = practiceKey(client.city, eff);
+  return key != null && practiceKeys.has(key);
+}
+
+/** Creating a financial record (BR-06): admin/finance firm-wide, HoP own practice. */
+export async function assertCanCreateFinancialRecord(
+  viewer: TaskViewer,
+  data: { clientId: number; clientMatterId?: number | null },
+) {
+  const { scope, practiceKeys } = await editContextFor(viewer, "financial.create");
+  if (scope === "NONE") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Your role cannot create financial records.",
+    });
+  }
+  if (scope === "OWN_PRACTICE") {
+    // Fail closed before any record lookup: a Head of Practice with no
+    // configured practice can create nothing (and learns nothing).
+    if (practiceKeys!.size === 0) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "No practice is configured for your account.",
+      });
+    }
+    if (!(await financialTargetInPractice(practiceKeys!, data.clientId, data.clientMatterId))) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "You can only create financial records within your own practice.",
+      });
+    }
+  }
+}
+
+/**
+ * Editing/deleting a financial record. Verifies read visibility first
+ * (NOT_FOUND when invisible), then mutation authority. For OWN_PRACTICE
+ * editors both the current record AND any re-linked client/matter target must
+ * stay within the practice.
+ */
+export async function assertCanMutateFinancialRecord(
+  viewer: TaskViewer,
+  recordId: number,
+  action: "edit" | "delete",
+  input?: Record<string, unknown>,
+) {
+  const capability = action === "delete" ? "financial.delete" : "financial.edit";
+  const scope = scopeFor(viewer.role, capability);
+  if (scope === "NONE") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message:
+        action === "delete"
+          ? "Your role cannot delete financial records."
+          : "Your role cannot edit financial records.",
+    });
+  }
+  // Fail closed before any record lookup: OWN_PRACTICE with no configured
+  // practice can mutate nothing (and must not probe record existence).
+  const ownPracticeKeys = scope === "OWN_PRACTICE" ? await getUserPracticeKeys(viewer.id) : null;
+  if (ownPracticeKeys && ownPracticeKeys.size === 0) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "No practice is configured for your account.",
+    });
+  }
+
+  const record = await getFinancialRecordByIdScoped(recordId, viewer);
+  if (!record) throw new TRPCError({ code: "NOT_FOUND", message: "Financial record not found." });
+
+  if (ownPracticeKeys) {
+    const practiceKeys = ownPracticeKeys;
+    if (!(await financialTargetInPractice(practiceKeys, record.clientId, record.clientMatterId))) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "You can only modify financial records within your own practice.",
+      });
+    }
+    if (input) {
+      const changed = changedScopeDefiningFields(record, input, ["clientId", "clientMatterId"]);
+      if (changed.length > 0) {
+        const newClientId = (input.clientId as number | undefined) ?? record.clientId;
+        const newMatterId =
+          input.clientMatterId === undefined
+            ? record.clientMatterId
+            : (input.clientMatterId as number | null);
+        if (!(await financialTargetInPractice(practiceKeys, newClientId, newMatterId))) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "You cannot re-link a financial record outside your own practice.",
+          });
+        }
+      }
+    }
+  }
+  return record;
+}
+
+/**
+ * Logging/updating a client action: allowed for users who may edit the client
+ * OR who are on the team of one of the client's matters (operational logging
+ * by assigned lawyers). Read-only roles (e.g. Manager) are rejected.
+ */
+export async function assertCanLogClientAction(viewer: TaskViewer, clientId: number) {
+  const client = await getClientByIdScoped(clientId, viewer);
+  if (!client) throw new TRPCError({ code: "NOT_FOUND", message: "Client not found." });
+  const editCtx = await editContextFor(viewer, "clients.edit");
+  if (canEditClientRow(viewer, editCtx, client)) return client;
+  if (scopeFor(viewer.role, "matters.edit") !== "NONE") {
+    const db = getDb();
+    const [m] = await db
+      .select({ id: clientMatters.id })
+      .from(clientMatters)
+      .where(and(eq(clientMatters.clientId, clientId), matterTeamCondition(viewer.id)))
+      .limit(1);
+    if (m) return client;
+  }
+  throw new TRPCError({
+    code: "FORBIDDEN",
+    message: "You do not have permission to log actions for this client.",
+  });
+}
+
+// ─── Practice Heads (BR-01 ownership map) ─────────────────────────────────────
+
+export async function getPracticeHeads() {
+  const db = getDb();
+  return db
+    .select({
+      id: practiceHeads.id,
+      city: practiceHeads.city,
+      matterType: practiceHeads.matterType,
+      headOfPracticeId: practiceHeads.headOfPracticeId,
+      headOfPracticeName: users.name,
+      headOfPracticeEmail: users.email,
+      updatedAt: practiceHeads.updatedAt,
+    })
+    .from(practiceHeads)
+    .leftJoin(users, eq(users.id, practiceHeads.headOfPracticeId))
+    .orderBy(practiceHeads.city, practiceHeads.matterType);
+}
+
+/** Upsert the responsible Head of Practice for a (city, matter type) practice. */
+export async function setPracticeHead(
+  data: { city: string; matterType: string; headOfPracticeId: number },
+  actorId: number,
+) {
+  const db = getDb();
+  const [u] = await db
+    .select({ id: users.id, role: users.role, status: users.status })
+    .from(users)
+    .where(eq(users.id, data.headOfPracticeId))
+    .limit(1);
+  if (!u) throw new TRPCError({ code: "BAD_REQUEST", message: "Selected user does not exist." });
+  if (u.status !== "active") {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Selected user is not active." });
+  }
+  // The responsible head must actually hold the Head of Practice role
+  // (legacy 'partner' behaves as head_of_practice until remapped).
+  if (u.role !== "head_of_practice" && u.role !== "partner" && u.role !== "admin") {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "The responsible head must have the Head of Practice role.",
+    });
+  }
+  const [row] = await db
+    .insert(practiceHeads)
+    .values({
+      city: data.city as PracticeHeadCity,
+      matterType: data.matterType as PracticeHeadMatterType,
+      headOfPracticeId: data.headOfPracticeId,
+      createdBy: actorId,
+    })
+    .onConflictDoUpdate({
+      target: [practiceHeads.city, practiceHeads.matterType],
+      set: { headOfPracticeId: data.headOfPracticeId, updatedAt: new Date() },
+    })
+    .returning();
+  return row;
+}
+
+export async function removePracticeHead(id: number) {
+  const db = getDb();
+  await db.delete(practiceHeads).where(eq(practiceHeads.id, id));
+}
+
+type PracticeHeadCity = (typeof practiceHeads.$inferInsert)["city"];
+type PracticeHeadMatterType = (typeof practiceHeads.$inferInsert)["matterType"];
+
 // ─── Clients ──────────────────────────────────────────────────────────────────
 
 export async function getAllClients(filters?: {
@@ -1320,9 +2024,15 @@ export async function getAllClients(filters?: {
   createdTo?: string;          // YYYY-MM-DD (inclusive)
   channelType?: string;        // communication channel type (client_lead_details)
   channelMedium?: string;      // communication channel medium
-}) {
+}, viewer?: TaskViewer) {
   const db = getDb();
   const conditions = [];
+
+  // Row-level scope (clients.view): filtered in the SQL query, never in React.
+  if (viewer) {
+    const scopeCond = clientScopeCondition(viewer, scopeFor(viewer.role, "clients.view"));
+    if (scopeCond) conditions.push(scopeCond);
+  }
 
   if (filters?.clientStatus) {
     conditions.push(eq(clients.clientStatus, filters.clientStatus as any));
@@ -1379,10 +2089,14 @@ export async function getAllClients(filters?: {
     .leftJoin(users, eq(users.id, clientLeadDetails.assignedLawyerId))
     .orderBy(desc(clients.createdAt));
 
-  if (conditions.length > 0) {
-    return base.where(and(...conditions));
-  }
-  return base;
+  const rows = conditions.length > 0 ? await base.where(and(...conditions)) : await base;
+
+  // Server-computed per-row edit flag so the UI can show edit affordances only
+  // where a mutation would succeed (e.g. HoP sees all rows but edits only
+  // own-practice ones) without duplicating the policy client-side.
+  if (!viewer) return rows;
+  const editCtx = await editContextFor(viewer, "clients.edit");
+  return rows.map(r => ({ ...r, viewerCanEdit: canEditClientRow(viewer, editCtx, r) }));
 }
 
 /**
@@ -1394,17 +2108,20 @@ export async function getAllClients(filters?: {
  * = now()). The comparison therefore never depends on the app server's or the
  * browser's timezone.
  */
-export async function getRecentLeads(days = 30, limit = 5) {
+export async function getRecentLeads(days = 30, limit = 5, viewer?: TaskViewer) {
   const db = getDb();
+  const conditions = [
+    eq(clients.clientStatus, "Leads"),
+    gte(clients.createdAt, sql`NOW() - make_interval(days => ${days})`),
+  ];
+  if (viewer) {
+    const scopeCond = clientScopeCondition(viewer, scopeFor(viewer.role, "clients.view"));
+    if (scopeCond) conditions.push(scopeCond);
+  }
   return db
     .select()
     .from(clients)
-    .where(
-      and(
-        eq(clients.clientStatus, "Leads"),
-        gte(clients.createdAt, sql`NOW() - make_interval(days => ${days})`),
-      ),
-    )
+    .where(and(...conditions))
     .orderBy(desc(clients.createdAt))
     .limit(limit);
 }
@@ -1720,11 +2437,17 @@ export async function deleteClient(id: number) {
   await db.delete(clients).where(eq(clients.id, id));
 }
 
-export async function getClientStatusCounts() {
+export async function getClientStatusCounts(viewer?: TaskViewer) {
   const db = getDb();
+  // Counts are computed over the viewer's client scope so aggregates never
+  // reveal rows the viewer could not list.
+  const scopeCond = viewer
+    ? clientScopeCondition(viewer, scopeFor(viewer.role, "clients.view"))
+    : undefined;
   const rows = await db
     .select({ status: clients.clientStatus, count: count() })
     .from(clients)
+    .where(scopeCond)
     .groupBy(clients.clientStatus);
   const result = { existing: 0, leads: 0, rejected: 0, total: 0, nonActive: 0 };
   for (const row of rows) {
@@ -1905,13 +2628,26 @@ export async function getClientConversionMetrics(
 
 // ─── Client Matters ───────────────────────────────────────────────────────────
 
-export async function getClientMatters(clientId: number) {
+export async function getClientMatters(clientId: number, viewer?: TaskViewer) {
   const db = getDb();
-  return db
+  const conditions = [eq(clientMatters.clientId, clientId)];
+  if (viewer) {
+    const scopeCond = matterScopeCondition(viewer, scopeFor(viewer.role, "matters.view"));
+    if (scopeCond) conditions.push(scopeCond);
+  }
+  const rows = await db
     .select()
     .from(clientMatters)
-    .where(eq(clientMatters.clientId, clientId))
+    .where(and(...conditions))
     .orderBy(desc(clientMatters.createdAt));
+  if (!viewer) return rows;
+  const editCtx = await editContextFor(viewer, "matters.edit");
+  const client = editCtx.scope === "OWN_PRACTICE" ? await getClientById(clientId) : null;
+  return rows.map(m => ({
+    ...m,
+    viewerCanEdit: canEditMatterRow(viewer, editCtx, m, client),
+    viewerIsLeadLawyer: isLeadLawyerOfMatter(m, viewer),
+  }));
 }
 
 // Case/whitespace-insensitive predicate for a client matter's status. Because
@@ -1929,9 +2665,15 @@ function isActiveMatterStatus() {
 // Aggregated view across all clients with client name joined in. Used by the
 // global /matters list page. An optional status filter is applied at the DB
 // layer (not in the frontend) so the list always matches the dashboard KPI.
-export async function getAllClientMatters(filters: { status?: string } = {}) {
+export async function getAllClientMatters(filters: { status?: string } = {}, viewer?: TaskViewer) {
   const db = getDb();
   const status = filters.status?.trim();
+  const conditions = [];
+  if (status) conditions.push(matterStatusEquals(status));
+  if (viewer) {
+    const scopeCond = matterScopeCondition(viewer, scopeFor(viewer.role, "matters.view"));
+    if (scopeCond) conditions.push(scopeCond);
+  }
   return db
     .select({
       id: clientMatters.id,
@@ -1953,7 +2695,7 @@ export async function getAllClientMatters(filters: { status?: string } = {}) {
     })
     .from(clientMatters)
     .leftJoin(clients, eq(clientMatters.clientId, clients.id))
-    .where(status ? matterStatusEquals(status) : undefined)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
     .orderBy(desc(clientMatters.createdAt));
 }
 
@@ -2316,8 +3058,12 @@ async function applyMatterAssignments(
 
 // ─── Matter Lawyer Rates ──────────────────────────────────────────────────────
 
-// Roles that may be assigned as a matter's lead/co-lawyer.
-export const ASSIGNABLE_LAWYER_ROLES = ["admin", "manager", "partner", "lawyer"] as const;
+// Roles that may be NEWLY assigned as a matter's lead/co-lawyer: the central
+// legal-team tier (all lawyer grades incl. trainee; legacy partner/lawyer kept
+// for un-migrated accounts). admin/manager were removed from new assignments —
+// they are not lawyer positions; historical assignments survive via
+// change-only validation.
+export const ASSIGNABLE_LAWYER_ROLES = LEGAL_TEAM_ASSIGNMENT_ROLES;
 
 /** Active users who may be assigned to a matter as lead/co-lawyers. */
 export async function getAssignableLawyers() {
@@ -2343,6 +3089,45 @@ async function resolveAssignedUser(userId: number) {
     throw new TRPCError({ code: "BAD_REQUEST", message: `Users with role "${u.role}" cannot be assigned as a lawyer.` });
   }
   return u;
+}
+
+/** Single rate row (for authorization checks before mutating). */
+export async function getMatterLawyerRateById(id: number) {
+  const db = getDb();
+  const [rate] = await db
+    .select()
+    .from(matterLawyerRates)
+    .where(eq(matterLawyerRates.id, id))
+    .limit(1);
+  return rate ?? null;
+}
+
+/**
+ * Hourly rates are financial mutations: admin/finance firm-wide; Head of
+ * Practice only for matters within own practice (resolved via the matter's
+ * client city + effective matter type).
+ */
+export async function assertCanMutateMatterRates(
+  viewer: TaskViewer,
+  clientMatterId: number,
+  action: "create" | "edit",
+) {
+  const capability = action === "create" ? "financial.create" : "financial.edit";
+  const scope = scopeFor(viewer.role, capability);
+  if (scope === "NONE") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Your role cannot modify hourly rates." });
+  }
+  if (scope === "OWN_PRACTICE") {
+    const matter = await getClientMatterById(clientMatterId);
+    if (!matter) throw new TRPCError({ code: "NOT_FOUND", message: "Matter not found." });
+    const practiceKeys = await getUserPracticeKeys(viewer.id);
+    if (!(await financialTargetInPractice(practiceKeys, matter.clientId, clientMatterId))) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "You can only modify rates for matters within your own practice.",
+      });
+    }
+  }
 }
 
 export async function getMatterLawyerRates(clientMatterId: number) {
@@ -2482,7 +3267,9 @@ export async function deleteMatterLawyerRate(id: number) {
  */
 export async function reassignLeadLawyer(clientMatterId: number, newUserId: number, actorId: number) {
   const db = getDb();
-  const lawyer = await resolveAssignedUser(newUserId);
+  // Lead Lawyer designation uses the leadership eligibility tier (Trainee is
+  // NOT eligible — documented spec conflict, least privilege applied).
+  const lawyer = await resolveEligibleAssignee("leadPartner", newUserId);
   const [existing] = await db.select().from(clientMatters).where(eq(clientMatters.id, clientMatterId)).limit(1);
   if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Matter not found." });
 
@@ -2736,10 +3523,15 @@ export async function getFinancialRecords(filters?: {
   clientId?: number;
   clientMatterId?: number;
   collectionStatus?: string;
-}) {
+}, viewer?: TaskViewer) {
   const db          = getDb();
   const overdueDays = await getOverdueDays();
   const conditions  = [];
+  // Row-level scope (financial.view + Lead Lawyer overlay), applied in SQL.
+  if (viewer) {
+    const scopeCond = financialViewCondition(viewer);
+    if (scopeCond) conditions.push(scopeCond);
+  }
   if (filters?.clientId) conditions.push(eq(financialRecords.clientId, filters.clientId));
   if (filters?.clientMatterId) {
     conditions.push(eq(financialRecords.clientMatterId, filters.clientMatterId));
@@ -2918,9 +3710,12 @@ export async function deleteFinancialRecord(id: number) {
   await db.delete(financialRecords).where(eq(financialRecords.id, id));
 }
 
-export async function getFinancialSummary() {
+export async function getFinancialSummary(viewer?: TaskViewer) {
   const db          = getDb();
   const overdueDays = await getOverdueDays();
+  // Aggregates are computed over the viewer's financial scope so totals never
+  // include rows the viewer could not list (BR-04/BR-05).
+  const scopeCond = viewer ? financialViewCondition(viewer) : undefined;
   // Use sql.raw for the numeric literal — it is validated as a positive integer
   // by getOverdueDays(), so injection is not possible.
   const overdaysSql = sql.raw(String(overdueDays));
@@ -2939,7 +3734,8 @@ export async function getFinancialSummary() {
       // with no discount applied netFees == agreedFees, so the result is unchanged.
       totalToBeBilled:  sql<string>`COALESCE(SUM(GREATEST(0, COALESCE(${financialRecords.netFees}, ${financialRecords.agreedFees}, 0)::numeric - COALESCE(${financialRecords.revenue}, 0)::numeric)), 0)`,
     })
-    .from(financialRecords);
+    .from(financialRecords)
+    .where(scopeCond);
   return {
     totalRevenue:    Number(row?.totalRevenue    ?? 0),
     totalOutstanding:Number(row?.totalOutstanding?? 0),
@@ -2951,8 +3747,11 @@ export async function getFinancialSummary() {
 
 // ─── To Be Billed Breakdown ───────────────────────────────────────────────────
 
-export async function getToBeBilledBreakdown() {
+export async function getToBeBilledBreakdown(viewer?: TaskViewer) {
   const db = getDb();
+
+  // Scope every aggregate row to the viewer's financial visibility.
+  const scopeCond = viewer ? financialViewCondition(viewer) : undefined;
 
   // Reusable SQL expression: MAX(0, netFees - revenue) per row, then SUM.
   // Net Fees (after discount) is the basis; falls back to agreedFees when netFees
@@ -2969,6 +3768,7 @@ export async function getToBeBilledBreakdown() {
     })
     .from(financialRecords)
     .innerJoin(clients, eq(financialRecords.clientId, clients.id))
+    .where(scopeCond)
     .groupBy(financialRecords.clientId, clients.clientName);
 
   // ── By Matter (only records linked to a matter) ────────────────────────────
@@ -2985,6 +3785,7 @@ export async function getToBeBilledBreakdown() {
     .from(financialRecords)
     .innerJoin(clients, eq(financialRecords.clientId, clients.id))
     .innerJoin(clientMatters, eq(financialRecords.clientMatterId, clientMatters.id))
+    .where(scopeCond)
     .groupBy(
       financialRecords.clientId,
       clients.clientName,
@@ -3020,11 +3821,45 @@ export async function getToBeBilledBreakdown() {
 
 // ─── Client Action Logs ───────────────────────────────────────────────────────
 
-export async function getClientActionLogs(clientId?: number) {
+export async function getClientActionLogs(clientId?: number, viewer?: TaskViewer) {
   const db = getDb();
-  const query = db.select().from(clientActionLogs).orderBy(desc(clientActionLogs.createdAt));
-  if (clientId) return query.where(eq(clientActionLogs.clientId, clientId));
-  return query;
+  const conditions = [];
+  if (clientId) conditions.push(eq(clientActionLogs.clientId, clientId));
+  // Action logs follow client visibility: viewers with ASSIGNED client scope
+  // only see actions for clients of their matters.
+  if (viewer) {
+    const clientScope = scopeFor(viewer.role, "clients.view");
+    if (clientScope === "NONE") return [];
+    if (clientScope === "ASSIGNED") {
+      conditions.push(sql`EXISTS (
+        SELECT 1 FROM clients c_al
+        WHERE c_al.id = ${clientActionLogs.clientId}
+          AND EXISTS (
+            SELECT 1 FROM client_matters cm_al
+            WHERE cm_al.client_id = c_al.id
+              AND (cm_al.lead_lawyer_id = ${viewer.id} OR cm_al.support_lead_id = ${viewer.id}
+                OR cm_al.attorney_head_id = ${viewer.id} OR cm_al.attorney_1_id = ${viewer.id}
+                OR cm_al.attorney_2_id = ${viewer.id} OR cm_al.attorney_3_id = ${viewer.id}
+                OR cm_al.attorney_4_id = ${viewer.id})
+          )
+      )`);
+    }
+  }
+  return db
+    .select()
+    .from(clientActionLogs)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .orderBy(desc(clientActionLogs.createdAt));
+}
+
+export async function getClientActionLogById(id: number) {
+  const db = getDb();
+  const [row] = await db
+    .select()
+    .from(clientActionLogs)
+    .where(eq(clientActionLogs.id, id))
+    .limit(1);
+  return row ?? null;
 }
 
 export async function createClientActionLog(data: InsertClientActionLog, userId: number) {
@@ -3246,13 +4081,21 @@ export async function importClients(rows: ImportRow[], userId: number) {
 
 // ─── Enhanced Dashboard Stats ─────────────────────────────────────────────────
 
-export async function getClientDashboardStats() {
+export async function getClientDashboardStats(viewer?: TaskViewer) {
   const [clientCounts, financialSummary, actionsThisWeek] = await Promise.all([
-    getClientStatusCounts(),
-    getFinancialSummary(),
+    getClientStatusCounts(viewer),
+    getFinancialSummary(viewer),
     getActionsThisWeek(),
   ]);
-  return { ...clientCounts, ...financialSummary, actionsThisWeek };
+  // Financial aggregates are omitted entirely for roles without financial
+  // visibility (the scoped summary would be all-zeros; omit to avoid implying
+  // real values of 0).
+  const financialAllowed = !viewer || mayViewAnyFinancial(viewer);
+  return {
+    ...clientCounts,
+    ...(financialAllowed ? financialSummary : {}),
+    actionsThisWeek,
+  };
 }
 
 

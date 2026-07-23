@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
 import type { UserRole } from "../shared/const";
+import { LEAD_LAWYER_ELIGIBLE_ROLES } from "../shared/permissions";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
 
@@ -38,11 +39,14 @@ describe("Lawyer assignments — eligible users, validation, historical preserva
     const admin = appRouter.createCaller(ctxFor("admin").ctx);
     const stamp = `${Date.now()}${seedSeq++}`;
 
-    const partner = await admin.users.create({ name: `AA Partner ${stamp}`, email: `pt${stamp}@x.com`, password: PW, role: "partner" });
-    const lawyer  = await admin.users.create({ name: `BB Lawyer ${stamp}`,  email: `lw${stamp}@x.com`, password: PW, role: "lawyer" });
-    const viewer  = await admin.users.create({ name: `CC Viewer ${stamp}`,  email: `vw${stamp}@x.com`, password: PW, role: "viewer" });
+    // Canonical account roles (AGP spec v1.1): head_of_practice replaces the
+    // legacy partner grade, senior_associate a lawyer grade; manager is the
+    // non-legal role that must never appear in lawyer dropdowns.
+    const partner = await admin.users.create({ name: `AA Partner ${stamp}`, email: `pt${stamp}@x.com`, password: PW, role: "head_of_practice" });
+    const lawyer  = await admin.users.create({ name: `BB Lawyer ${stamp}`,  email: `lw${stamp}@x.com`, password: PW, role: "senior_associate" });
+    const viewer  = await admin.users.create({ name: `CC Viewer ${stamp}`,  email: `vw${stamp}@x.com`, password: PW, role: "manager" });
     const inactiveLawyer = await admin.users.create({
-      name: `DD Inactive ${stamp}`, email: `in${stamp}@x.com`, password: PW, role: "lawyer", status: "inactive",
+      name: `DD Inactive ${stamp}`, email: `in${stamp}@x.com`, password: PW, role: "senior_associate", status: "inactive",
     });
 
     const client = await admin.clients.create({ clientName: `Assign Client ${stamp}`, clientStatus: "Existing Client" });
@@ -67,7 +71,7 @@ describe("Lawyer assignments — eligible users, validation, historical preserva
       expect(ids).toContain(partner.id);
       expect(ids).toContain(lawyer.id);
       const row = list.find(u => u.id === partner.id)!;
-      expect(row).toMatchObject({ fullName: partner.name, email: partner.email, role: "partner", status: "active" });
+      expect(row).toMatchObject({ fullName: partner.name, email: partner.email, role: "head_of_practice", status: "active" });
       expect(row).not.toHaveProperty("passwordHash");
       const names = list.map(u => u.fullName ?? "");
       expect([...names].sort((a, b) => a.localeCompare(b))).toEqual(names);
@@ -89,11 +93,15 @@ describe("Lawyer assignments — eligible users, validation, historical preserva
     }
   });
 
-  it("leadership fields (Lead Partner) only offer partner/lawyer roles", async () => {
+  it("leadership fields (Lead Partner) only offer Lead-Lawyer-eligible grades", async () => {
     const { admin, cleanup } = await seed();
     try {
       const list = await admin.users.eligibleLawyers({ field: "leadPartner" });
-      expect(list.every(u => u.role === "partner" || u.role === "lawyer")).toBe(true);
+      expect(
+        list.every(u => (LEAD_LAWYER_ELIGIBLE_ROLES as readonly string[]).includes(u.role)),
+      ).toBe(true);
+      // Trainee is NOT eligible (documented spec conflict, least privilege).
+      expect(list.every(u => u.role !== "trainee")).toBe(true);
     } finally {
       await cleanup();
     }
@@ -187,7 +195,7 @@ describe("Lawyer assignments — eligible users, validation, historical preserva
       created.matterIds.push(matter.id);
 
       // Deactivate the assigned lawyer.
-      await admin.users.update({ userId: lawyer.id, name: lawyer.name!, email: lawyer.email, role: "lawyer", status: "inactive" });
+      await admin.users.update({ userId: lawyer.id, name: lawyer.name!, email: lawyer.email, role: "senior_associate", status: "inactive" });
 
       // Editing an unrelated field while resubmitting the SAME attorney1Id keeps
       // the historical assignment (readable) and does not fail validation.
@@ -234,7 +242,7 @@ describe("Lawyer assignments — eligible users, validation, historical preserva
       ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
       // Deactivate the assigned lawyer → unchanged resubmission is preserved.
-      await admin.users.update({ userId: lawyer.id, name: lawyer.name!, email: lawyer.email, role: "lawyer", status: "inactive" });
+      await admin.users.update({ userId: lawyer.id, name: lawyer.name!, email: lawyer.email, role: "senior_associate", status: "inactive" });
       const kept = await admin.financial.update({ id: record.id, responsibleLawyerId: lawyer.id, invoiceNumber: "INV-1" });
       expect(kept.responsibleLawyerId).toBe(lawyer.id);
       expect(kept.responsibleLawyer).toBe(lawyer.name);

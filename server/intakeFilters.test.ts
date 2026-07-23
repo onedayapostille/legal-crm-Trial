@@ -57,7 +57,7 @@ describe("Unified intake filters", () => {
     const caller = adminCaller();
     const stamp = Date.now();
     const lawyer = await caller.users.create({
-      name: `Intake Lawyer ${stamp}`, email: `il${stamp}@x.com`, password: "Passw0rd123", role: "lawyer",
+      name: `Intake Lawyer ${stamp}`, email: `il${stamp}@x.com`, password: "Passw0rd123", role: "associate",
     });
     const client = await caller.clients.create({ clientName: `Assigned Lead ${stamp}`, clientStatus: "Leads" });
     try {

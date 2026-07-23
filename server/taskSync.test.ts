@@ -178,15 +178,15 @@ describe("Tasks — single source of truth + client/main-page synchronization", 
   it("unauthorized users cannot see another user's client task in either view", async () => {
     const a = admin();
     const stamp = Date.now();
-    const lawyer = await a.users.create({ name: `NoSee ${stamp}`, email: `nosee${stamp}@x.com`, password: PW, role: "lawyer" });
-    const other = await a.users.create({ name: `Owner ${stamp}`, email: `owner${stamp}@x.com`, password: PW, role: "lawyer" });
+    const lawyer = await a.users.create({ name: `NoSee ${stamp}`, email: `nosee${stamp}@x.com`, password: PW, role: "associate" });
+    const other = await a.users.create({ name: `Owner ${stamp}`, email: `owner${stamp}@x.com`, password: PW, role: "associate" });
     const client = await a.clients.create({ clientName: `Restricted ${stamp}`, clientStatus: "Existing Client" });
     let taskId: number | undefined;
     try {
       const t = await a.tasks.create({ title: `Restricted ${stamp}`, clientId: client.id, assignedTo: other.id });
       taskId = t.id;
 
-      const asLawyer = callerFor("lawyer", lawyer.id);
+      const asLawyer = callerFor("associate", lawyer.id);
       // Not in the main list, not in the client tab, and details return null.
       expect((await asLawyer.tasks.list({})).some(x => x.id === t.id)).toBe(false);
       expect((await asLawyer.tasks.list({ clientId: client.id })).some(x => x.id === t.id)).toBe(false);

@@ -12,6 +12,7 @@ import {
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import type { NvidiaChatMessage } from "./_core/nvidia";
+import { scopeFor } from "../shared/permissions";
 
 /**
  * Read-only CRM analytics for the AI Assistant.
@@ -256,11 +257,15 @@ export type AiGathered = {
 };
 
 /**
- * Build the structured JSON the AI may use, scoped to the caller's role:
- *   - admin / manager → all operational + financial summaries
- *   - finance         → financial summaries ONLY
- *   - partner/lawyer/staff → operational summaries (no financial); tasks +
- *                            workload restricted to what the viewer may see
+ * Build the structured JSON the AI may use, scoped by the central capability
+ * policy (shared/permissions.ts):
+ *   - finance → financial summaries ONLY (unchanged)
+ *   - roles with firm-wide financial visibility (admin, manager,
+ *     head_of_practice) → operational + financial summaries
+ *   - everyone else with ai.use (lawyer grades) → operational summaries only,
+ *     tasks + workload restricted to what the viewer may see
+ * These are FIRM-WIDE aggregates, so ASSIGNED-scope financial visibility
+ * (e.g. Senior Associate) deliberately does NOT unlock the financial sections.
  */
 export async function gatherCrmData(
   viewer: { id: number; role: string },
@@ -271,7 +276,8 @@ export async function gatherCrmData(
   const sections: string[] = [];
   const add = (name: string, value: unknown) => { data[name] = value; sections.push(name); };
 
-  const isAdminLike = role === "admin" || role === "manager";
+  const firmWideFinancial = scopeFor(role, "financial.view") === "ALL";
+  const firmWideTasks = scopeFor(role, "tasks.view") === "ALL";
   const isFinance = role === "finance";
 
   if (isFinance) {
@@ -286,15 +292,13 @@ export async function gatherCrmData(
   add("conversionRate", await getConversionRate(period));
   add("mattersSummary", await getMattersSummary(period));
 
-  // Partner/lawyer/staff are restricted to tasks/workload they may see.
-  const restrictToOwn = !isAdminLike;
-  const taskViewer = restrictToOwn ? { id: viewer.id, role } : undefined;
+  // Roles without firm-wide task visibility are restricted to their own view.
+  const taskViewer = firmWideTasks ? undefined : { id: viewer.id, role };
   add("tasksSummary", await getTasksSummary(period, taskViewer));
   add("lawyerWorkload", await getLawyerWorkload(period, taskViewer));
   add("recentActivity", await getRecentActivitySummary(period));
 
-  // Admin/manager additionally see financials.
-  if (isAdminLike) {
+  if (firmWideFinancial) {
     add("financialSummary", await getFinancialSummaryForAi(period));
     add("outstandingAmounts", await getOutstandingAmounts(period));
   }

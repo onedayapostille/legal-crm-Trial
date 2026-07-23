@@ -125,7 +125,7 @@ describe("Add New Attorney — permissions, eligibility, assignment safety", () 
     const caller = admin();
     const s = stamp();
     const user = await caller.users.create({
-      name: `New Attorney ${s}`, email: `na${s}@x.com`, password: PW, role: "lawyer", status: "active",
+      name: `New Attorney ${s}`, email: `na${s}@x.com`, password: PW, role: "associate", status: "active",
     });
     try {
       expect(user.status).toBe("active");
@@ -145,7 +145,7 @@ describe("Add New Attorney — permissions, eligibility, assignment safety", () 
     for (const role of ["partner", "lawyer", "manager", "finance", "staff"] as const) {
       const caller = appRouter.createCaller(ctxFor(role, 999_000 + seq++));
       await expect(
-        caller.users.create({ name: "X", email: `x${stamp()}@x.com`, password: PW, role: "lawyer" }),
+        caller.users.create({ name: "X", email: `x${stamp()}@x.com`, password: PW, role: "associate" }),
       ).rejects.toMatchObject({ code: "FORBIDDEN" });
     }
   });
@@ -154,10 +154,10 @@ describe("Add New Attorney — permissions, eligibility, assignment safety", () 
     const caller = admin();
     const s = stamp();
     const email = `dup${s}@x.com`;
-    const user = await caller.users.create({ name: `Dup ${s}`, email, password: PW, role: "lawyer" });
+    const user = await caller.users.create({ name: `Dup ${s}`, email, password: PW, role: "associate" });
     try {
       await expect(
-        caller.users.create({ name: `Dup2 ${s}`, email, password: PW, role: "lawyer" }),
+        caller.users.create({ name: `Dup2 ${s}`, email, password: PW, role: "associate" }),
       ).rejects.toMatchObject({ code: "CONFLICT" });
     } finally {
       await caller.users.delete({ userId: user.id });
@@ -168,7 +168,7 @@ describe("Add New Attorney — permissions, eligibility, assignment safety", () 
     const caller = admin();
     const s = stamp();
     const inactive = await caller.users.create({
-      name: `Inactive ${s}`, email: `in${s}@x.com`, password: PW, role: "lawyer", status: "inactive",
+      name: `Inactive ${s}`, email: `in${s}@x.com`, password: PW, role: "associate", status: "inactive",
     });
     const client = await seedClient(caller, s);
     try {
@@ -190,8 +190,8 @@ describe("Add New Attorney — permissions, eligibility, assignment safety", () 
   it("the same user cannot fill two Attorney 1–4 slots (create and update)", async () => {
     const caller = admin();
     const s = stamp();
-    const lawyer = await caller.users.create({ name: `DupSlot ${s}`, email: `ds${s}@x.com`, password: PW, role: "lawyer" });
-    const lawyer2 = await caller.users.create({ name: `DupSlot2 ${s}`, email: `ds2${s}@x.com`, password: PW, role: "lawyer" });
+    const lawyer = await caller.users.create({ name: `DupSlot ${s}`, email: `ds${s}@x.com`, password: PW, role: "associate" });
+    const lawyer2 = await caller.users.create({ name: `DupSlot2 ${s}`, email: `ds2${s}@x.com`, password: PW, role: "associate" });
     const client = await seedClient(caller, s);
     try {
       // Create: same user in two slots → rejected.
@@ -220,7 +220,7 @@ describe("Add New Attorney — permissions, eligibility, assignment safety", () 
   it("Add Matter and Edit Matter both save correctly with dropdown types and a newly created attorney", async () => {
     const caller = admin();
     const s = stamp();
-    const attorney = await caller.users.create({ name: `Flow Attorney ${s}`, email: `fa${s}@x.com`, password: PW, role: "lawyer" });
+    const attorney = await caller.users.create({ name: `Flow Attorney ${s}`, email: `fa${s}@x.com`, password: PW, role: "associate" });
     const client = await seedClient(caller, s);
     try {
       // Add Matter: Litigation + newly created attorney as Attorney 1.

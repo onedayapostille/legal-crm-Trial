@@ -40,7 +40,8 @@ import { useQueryParam } from "@/hooks/useQueryParam";
 import { ClientTasksSection, RelatedTasks } from "@/components/ClientTasks";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { hasPermission, CHANNEL_TYPES, DIGITAL_MEDIUMS, channelMediumLabel, MATTER_TYPES, isSupportedMatterType } from "@shared/const";
+import { CHANNEL_TYPES, DIGITAL_MEDIUMS, channelMediumLabel, MATTER_TYPES, isSupportedMatterType } from "@shared/const";
+import { can, scopeFor, isLeadLawyerEligible } from "@shared/permissions";
 
 const STATUS_COLORS: Record<string, string> = {
   "Existing Client": "bg-green-100 text-green-800 border-green-200",
@@ -52,9 +53,12 @@ export default function ClientDetail({ id }: { id: number }) {
   const [, navigate] = useLocation();
   const goBack = useGoBack("/clients");
   const { user } = useAuth();
-  const canManage = hasPermission(user?.role, "clients:manage");
-  const canViewFinancial = hasPermission(user?.role, "financial:view");
-  const canViewTasks = hasPermission(user?.role, "tasks:manage");
+  // Role-level financial visibility; Lead-Lawyer-eligible lawyers may also see
+  // matter-linked records via the per-matter overlay — the server returns only
+  // the rows they are entitled to, so the query itself is the source of truth.
+  const canViewFinancialBase = can(user?.role, "financial.view");
+  const mayQueryFinancial = canViewFinancialBase || isLeadLawyerEligible(user?.role);
+  const canViewTasks = can(user?.role, "tasks.view");
   const utils = trpc.useUtils();
 
   // Deep-link support: /clients/:id?tab=tasks&taskId=NN opens the Tasks tab and
@@ -66,6 +70,9 @@ export default function ClientDetail({ id }: { id: number }) {
   const { data: client, isLoading } = trpc.clients.get.useQuery({ id });
   const { data: matters = [] } = trpc.clientMatters.list.useQuery({ clientId: id });
   const { data: actions = [] } = trpc.clientActions.list.useQuery({ clientId: id });
+  // Per-record edit authority computed server-side (e.g. Head of Practice can
+  // edit only own-practice clients). Falls back to false while loading.
+  const canManage = (client as any)?.viewerCanEdit ?? false;
   const { data: leadDetail } = trpc.clients.getLeadDetail.useQuery(
     { clientId: id },
     { enabled: client?.clientStatus === "Leads" }
@@ -76,8 +83,11 @@ export default function ClientDetail({ id }: { id: number }) {
   );
   const { data: financialRecords = [] } = trpc.financial.list.useQuery(
     { clientId: id },
-    { enabled: canViewFinancial }
+    { enabled: mayQueryFinancial }
   );
+  // Show the Financial tab when the role has base visibility OR the overlay
+  // actually yields rows for this client's matters.
+  const canViewFinancial = canViewFinancialBase || financialRecords.length > 0;
   const { data: clientTasks = [] } = trpc.tasks.list.useQuery(
     { clientId: id },
     { enabled: canViewTasks }
@@ -346,7 +356,13 @@ export default function ClientDetail({ id }: { id: number }) {
           {/* Financial */}
           {canViewFinancial && (
             <TabsContent value="financial" className="mt-4">
-              <FinancialSection clientId={id} records={financialRecords} matters={matters} locked={isRejected} />
+              <FinancialSection
+                clientId={id}
+                records={financialRecords}
+                matters={matters}
+                locked={isRejected}
+                clientEditable={canManage}
+              />
             </TabsContent>
           )}
         </Tabs>
@@ -1476,11 +1492,14 @@ function FinancialSection({
   records,
   matters,
   locked = false,
+  clientEditable = false,
 }: {
   clientId: number;
   records: any[];
   matters: any[];
   locked?: boolean;
+  /** Server-computed: the viewer may edit THIS client (own-practice for HoP). */
+  clientEditable?: boolean;
 }) {
   const utils = trpc.useUtils();
   const { user } = useAuth();                                        // BUG-4: hook at top level
@@ -1489,7 +1508,12 @@ function FinancialSection({
   const [auditRecord, setAuditRecord] = useState<any | null>(null);
   const [matterFilter, setMatterFilter] = useState("all");
   // Rejected clients lock create/edit/delete; viewing + audit stay available.
-  const canManage = hasPermission(user?.role, "financial:manage") && !locked;
+  // financial.edit is OWN_PRACTICE-scoped for Head of Practice: mirror the
+  // server by only showing mutation buttons when this client is editable too.
+  const canManage =
+    can(user?.role, "financial.edit") &&
+    !locked &&
+    (scopeFor(user?.role, "financial.edit") !== "OWN_PRACTICE" || clientEditable);
 
   const deleteRecord = trpc.financial.delete.useMutation({
     onSuccess: () => {

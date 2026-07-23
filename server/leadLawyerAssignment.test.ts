@@ -34,13 +34,13 @@ const baseEnquiry = (stamp: number) => ({
 });
 
 describe("Suggested Lead Lawyer assignment", () => {
-  it("leadLawyers returns only active Partners/Lawyers (no inactive, no staff)", async () => {
+  it("leadLawyers returns only active Lead-Lawyer-eligible grades (no inactive, no coordinator)", async () => {
     const caller = admin();
     const stamp = Date.now();
-    const lawyer = await caller.users.create({ name: `Law ${stamp}`, email: `law${stamp}@x.com`, password: PW, role: "lawyer" });
-    const partner = await caller.users.create({ name: `Par ${stamp}`, email: `par${stamp}@x.com`, password: PW, role: "partner" });
-    const staff = await caller.users.create({ name: `Stf ${stamp}`, email: `stf${stamp}@x.com`, password: PW, role: "staff" });
-    const inactive = await caller.users.create({ name: `Ina ${stamp}`, email: `ina${stamp}@x.com`, password: PW, role: "lawyer", status: "inactive" });
+    const lawyer = await caller.users.create({ name: `Law ${stamp}`, email: `law${stamp}@x.com`, password: PW, role: "associate" });
+    const partner = await caller.users.create({ name: `Par ${stamp}`, email: `par${stamp}@x.com`, password: PW, role: "head_of_practice" });
+    const staff = await caller.users.create({ name: `Stf ${stamp}`, email: `stf${stamp}@x.com`, password: PW, role: "coordinator" });
+    const inactive = await caller.users.create({ name: `Ina ${stamp}`, email: `ina${stamp}@x.com`, password: PW, role: "associate", status: "inactive" });
     try {
       const list = await caller.users.leadLawyers();
       const ids = list.map(l => l.id);
@@ -48,7 +48,7 @@ describe("Suggested Lead Lawyer assignment", () => {
       expect(ids).toContain(partner.id);
       expect(ids).not.toContain(staff.id);     // wrong role
       expect(ids).not.toContain(inactive.id);  // inactive excluded
-      expect(list.every(l => l.role === "lawyer" || l.role === "partner")).toBe(true);
+      expect(list.every(l => (LEAD_LAWYER_ELIGIBLE_ROLES as readonly string[]).includes(l.role))).toBe(true);
     } finally {
       for (const u of [lawyer, partner, staff, inactive]) await caller.users.delete({ userId:u.id });
     }
@@ -57,8 +57,8 @@ describe("Suggested Lead Lawyer assignment", () => {
   it("saves the user ID, denormalizes the name, and notifies the lawyer", async () => {
     const caller = admin();
     const stamp = Date.now();
-    const lawyer = await caller.users.create({ name: `Assignee ${stamp}`, email: `as${stamp}@x.com`, password: PW, role: "lawyer" });
-    const lawyerCaller = callerFor("lawyer", lawyer.id);
+    const lawyer = await caller.users.create({ name: `Assignee ${stamp}`, email: `as${stamp}@x.com`, password: PW, role: "associate" });
+    const lawyerCaller = callerFor("associate", lawyer.id);
     let leadId: number | undefined;
     try {
       const lead = await caller.leads.create({ ...baseEnquiry(stamp), assignedTo: lawyer.id });
@@ -86,7 +86,7 @@ describe("Suggested Lead Lawyer assignment", () => {
   it("rejects an invalid / non-lawyer assignee", async () => {
     const caller = admin();
     const stamp = Date.now();
-    const staff = await caller.users.create({ name: `BadAssignee ${stamp}`, email: `ba${stamp}@x.com`, password: PW, role: "staff" });
+    const staff = await caller.users.create({ name: `BadAssignee ${stamp}`, email: `ba${stamp}@x.com`, password: PW, role: "coordinator" });
     try {
       // Non-existent id
       await expect(
@@ -104,8 +104,8 @@ describe("Suggested Lead Lawyer assignment", () => {
   it("filters the enquiries list by assignee", async () => {
     const caller = admin();
     const stamp = Date.now();
-    const l1 = await caller.users.create({ name: `F1 ${stamp}`, email: `f1${stamp}@x.com`, password: PW, role: "lawyer" });
-    const l2 = await caller.users.create({ name: `F2 ${stamp}`, email: `f2${stamp}@x.com`, password: PW, role: "partner" });
+    const l1 = await caller.users.create({ name: `F1 ${stamp}`, email: `f1${stamp}@x.com`, password: PW, role: "associate" });
+    const l2 = await caller.users.create({ name: `F2 ${stamp}`, email: `f2${stamp}@x.com`, password: PW, role: "head_of_practice" });
     const leadA = await caller.leads.create({ ...baseEnquiry(stamp), assignedTo: l1.id });
     const leadB = await caller.leads.create({ ...baseEnquiry(stamp), assignedTo: l2.id });
     try {

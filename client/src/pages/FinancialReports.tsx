@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/table";
 import DashboardLayout from "@/components/DashboardLayout";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { hasPermission } from "@shared/const";
+import { can } from "@shared/permissions";
 import { useQueryParam } from "@/hooks/useQueryParam";
 
 // ─── Formatting (display only — totals are computed server-side in SQL) ───────
@@ -76,7 +76,7 @@ const TAB_EXPORT: Record<TabKey, string | null> = {
 
 export default function FinancialReports() {
   const { user } = useAuth();
-  const canViewClients = hasPermission(user?.role, "clients:view");
+  const canViewClients = can(user?.role, "clients.view");
 
   // ── URL-backed filter state ────────────────────────────────────────────────
   const [tabRaw, setTab]            = useQueryParam("tab", "overview");
@@ -555,13 +555,31 @@ export default function FinancialReports() {
 
             {tab === "hop" && (
               <QueryState q={byHopQ}>
-                <div className="text-center py-10 space-y-2">
-                  <AlertTriangle className="h-8 w-8 mx-auto text-amber-500" />
-                  <p className="font-semibold">Data relationship not configured</p>
-                  <p className="text-sm text-muted-foreground max-w-2xl mx-auto">
-                    {byHopQ.data?.reason ?? "Head of Practice is not represented in the data model."}
-                  </p>
-                </div>
+                {byHopQ.data?.rows.length === 0 ? <Empty /> : byHopQ.data && (
+                  <Table>
+                    <TableHeader><TableRow>
+                      <TableHead>Head of Practice</TableHead>
+                      <TableHead className="text-right">Clients</TableHead>
+                      <TableHead className="text-right">Matters</TableHead>
+                      <TableHead className="text-right">Records</TableHead>
+                      {groupMoneyHeaders}
+                      <TableHead className="text-right">Collection %</TableHead>
+                    </TableRow></TableHeader>
+                    <TableBody>
+                      {byHopQ.data.rows.map((r: any, i: number) => (
+                        <TableRow key={i}>
+                          <TableCell>{r.headOfPracticeName}</TableCell>
+                          <TableCell className="text-right">{r.clientCount}</TableCell>
+                          <TableCell className="text-right">{r.matterCount}</TableCell>
+                          <TableCell className="text-right">{r.recordCount}</TableCell>
+                          {groupMoneyCells(r)}
+                          <TableCell className="text-right">{pct(r.collectionRate)}</TableCell>
+                        </TableRow>
+                      ))}
+                      {groupTotalsRow(byHopQ.data.rows, 4)}
+                    </TableBody>
+                  </Table>
+                )}
               </QueryState>
             )}
 

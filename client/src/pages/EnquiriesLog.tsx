@@ -14,6 +14,8 @@ import {
 import DashboardLayout from "@/components/DashboardLayout";
 import { useQueryParam } from "@/hooks/useQueryParam";
 import { CHANNEL_TYPES } from "@shared/const";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { can } from "@shared/permissions";
 
 const LEAD_STATUSES = ["New", "Contacted", "Meeting Scheduled", "Proposal Sent", "Converted", "Lost", "On Hold"];
 
@@ -23,6 +25,9 @@ const LEAD_STATUSES = ["New", "Contacted", "Meeting Scheduled", "Proposal Sent",
  */
 export default function EnquiriesLog() {
   const [, navigate] = useLocation();
+  const { user } = useAuth();
+  // BR-15: Coordinator (and Admin) manage enquiries; Manager/HoP view only.
+  const canManageEnquiries = can(user?.role, "enquiries.manage");
   const [search, setSearch] = useQueryParam("search", "");
   const [channelType, setChannelType] = useQueryParam("channelType", "all");
   const [channelMedium, setChannelMedium] = useQueryParam("channelMedium", "all");
@@ -49,9 +54,11 @@ export default function EnquiriesLog() {
               Intake enquiries by communication channel — for marketing-source reporting.
             </p>
           </div>
-          <Button size="sm" onClick={() => navigate("/enquiries/new")}>
-            <Plus className="h-4 w-4 mr-1" /> New Enquiry
-          </Button>
+          {canManageEnquiries && (
+            <Button size="sm" onClick={() => navigate("/enquiries/new")}>
+              <Plus className="h-4 w-4 mr-1" /> New Enquiry
+            </Button>
+          )}
         </div>
 
         {/* Filters */}

@@ -51,14 +51,25 @@ describe("AI Assistant — RBAC access", () => {
     expect(res.dataScope).not.toContain("tasksSummary");
   });
 
-  it("partner/lawyer receive permitted operational data but NOT financial data", async () => {
-    for (const role of ["partner", "lawyer"]) {
+  it("lawyer grades receive permitted operational data but NOT financial data", async () => {
+    // Lawyer grades (and the legacy 'lawyer' baseline) have no firm-wide
+    // financial visibility, so the AI never sees financial sections for them.
+    for (const role of ["senior_associate", "executive_associate", "associate", "lawyer"]) {
       const caller = callerFor(role, 7);
       const res = await caller.ai.ask({ question: "My tasks?", period: "month" });
       expect(res.dataScope).toContain("tasksSummary");
       expect(res.dataScope).toContain("mattersSummary");
       expect(res.dataScope).not.toContain("financialSummary");
       expect(res.dataScope).not.toContain("outstandingAmounts");
+    }
+  });
+
+  it("Head of Practice (incl. legacy partner alias) receives operational + financial data", async () => {
+    for (const role of ["head_of_practice", "partner"]) {
+      const caller = callerFor(role, 7);
+      const res = await caller.ai.ask({ question: "Firm performance?", period: "month" });
+      expect(res.dataScope).toContain("financialSummary");
+      expect(res.dataScope).toContain("outstandingAmounts");
     }
   });
 });

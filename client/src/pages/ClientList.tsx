@@ -8,7 +8,8 @@ import * as XLSX from "xlsx";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { hasPermission, CHANNEL_TYPES } from "@shared/const";
+import { CHANNEL_TYPES } from "@shared/const";
+import { can } from "@shared/permissions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -33,7 +34,10 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
   const { user } = useAuth();
-  const canManage = hasPermission(user?.role, "clients:manage");
+  // Role holds any client create/edit rights (page-level affordances like the
+  // Add Client button); per-ROW edit uses the server-computed viewerCanEdit.
+  const canCreate = can(user?.role, "clients.create");
+  const canManage = can(user?.role, "clients.edit");
 
   // Filters live in the URL so they survive List → Detail → Back navigation.
   const [search, setSearch] = useQueryParam("search", "");
@@ -130,14 +134,18 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
               <Download className="h-4 w-4 mr-1" />
               Export
             </Button>
-            <Button variant="outline" size="sm" onClick={() => setConflictCheckOpen(true)}>
-              <ShieldCheck className="h-4 w-4 mr-1" />
-              Conflict Check
-            </Button>
-            <Button size="sm" onClick={() => navigate("/clients/new")}>
-              <Plus className="h-4 w-4 mr-1" />
-              Add Client
-            </Button>
+            {(canCreate || can(user?.role, "matters.create")) && (
+              <Button variant="outline" size="sm" onClick={() => setConflictCheckOpen(true)}>
+                <ShieldCheck className="h-4 w-4 mr-1" />
+                Conflict Check
+              </Button>
+            )}
+            {canCreate && (
+              <Button size="sm" onClick={() => navigate("/clients/new")}>
+                <Plus className="h-4 w-4 mr-1" />
+                Add Client
+              </Button>
+            )}
           </div>
         </div>
 
@@ -343,7 +351,7 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
                       <TableCell className="font-semibold">{client.clientName}</TableCell>
                       {/* Status with inline action/update (stop row navigation) */}
                       <TableCell onClick={e => e.stopPropagation()}>
-                        {canManage ? (
+                        {canManage && ((client as any).viewerCanEdit ?? true) ? (
                           <Select
                             value={client.clientStatus}
                             onValueChange={v => updateStatus.mutate({ id: client.id, clientStatus: v as any })}
