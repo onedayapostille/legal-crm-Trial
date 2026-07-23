@@ -10,7 +10,8 @@ import { useForm } from "react-hook-form";
 import { Loader2, Save, ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 import { useEffect } from "react";
-import { CHANNEL_TYPES, DIGITAL_MEDIUMS, channelMediumRequired } from "@shared/const";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { CHANNEL_TYPES, DIGITAL_MEDIUMS, channelMediumRequired, hasPermission } from "@shared/const";
 
 interface EnquiryFormProps {
   id?: number;
@@ -70,7 +71,10 @@ interface FormData {
 export default function EnquiryForm({ id }: EnquiryFormProps) {
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
-  
+  const { user } = useAuth();
+  // leads:view (e.g. Manager) may open an enquiry read-only; saving needs leads:manage.
+  const canManageLeads = hasPermission(user?.role, "leads:manage");
+
   const { data: enquiry, isLoading: loadingEnquiry } = trpc.leads.get.useQuery(
     { id: id! },
     { enabled: !!id }
@@ -576,13 +580,15 @@ export default function EnquiryForm({ id }: EnquiryFormProps) {
           <Button type="button" variant="outline" onClick={() => navigate("/enquiries")}>
             Cancel
           </Button>
-          <Button type="submit" disabled={createMutation.isPending || updateMutation.isPending}>
-            {(createMutation.isPending || updateMutation.isPending) && (
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-            )}
-            <Save className="h-4 w-4 mr-2" />
-            {id ? "Update Enquiry" : "Create Enquiry"}
-          </Button>
+          {canManageLeads && (
+            <Button type="submit" disabled={createMutation.isPending || updateMutation.isPending}>
+              {(createMutation.isPending || updateMutation.isPending) && (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              )}
+              <Save className="h-4 w-4 mr-2" />
+              {id ? "Update Enquiry" : "Create Enquiry"}
+            </Button>
+          )}
         </div>
       </form>
     </div>

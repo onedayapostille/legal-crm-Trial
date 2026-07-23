@@ -9,7 +9,7 @@ import { testNvidiaConnection, callNvidiaChat, NVIDIA_UNAVAILABLE_MESSAGE } from
 import {
   gatherCrmData, buildAiMessages, checkAiRateLimit, AI_MODEL_NAME,
 } from "./aiAnalytics";
-import { USER_ROLES, USER_STATUSES, MATTER_TYPES, type UserRole, type UserStatus } from "../shared/const";
+import { USER_ROLES, USER_STATUSES, MATTER_TYPES, hasPermission, NOT_ADMIN_ERR_MSG, type UserRole, type UserStatus } from "../shared/const";
 import { ASSIGNMENT_FIELD_NAMES, type AssignmentField } from "../shared/assignmentEligibility";
 import * as financialReports from "./financialReports";
 import { reportFilterSchema, EXPORT_REPORT_TYPES } from "./financialReports";
@@ -135,10 +135,18 @@ export const appRouter = router({
 
   dashboard: router({
     stats: permissionProcedure("dashboard:view").query(async ({ ctx }) => {
-      return db.getDashboardStats(ctx.user!);
+      const stats = await db.getDashboardStats(ctx.user!);
+      // Firm-wide revenue is financial data. Callers without financial viewing
+      // authority get 0, which also keeps the revenue KPI card hidden in the UI.
+      if (!hasPermission(ctx.user!.role, "financial:view")) {
+        return { ...stats, totalRevenue: 0 };
+      }
+      return stats;
     }),
 
-    recentActivity: permissionProcedure("dashboard:view")
+    // The activity feed is an unscoped firm-wide audit trail, not dashboard
+    // decoration — restricted to roles with audit visibility.
+    recentActivity: permissionProcedure("audit:view")
       .input(z.object({ limit: z.number().optional() }))
       .query(async ({ input }) => {
         return db.getRecentActivity(input.limit ?? 20);
@@ -148,7 +156,7 @@ export const appRouter = router({
   // ─── Leads ────────────────────────────────────────────────────────────────
 
   leads: router({
-    list: permissionProcedure("leads:manage")
+    list: permissionProcedure("leads:view")
       .input(z.object({
         channelType: z.string().optional(),
         channelMedium: z.string().optional(),
@@ -159,9 +167,9 @@ export const appRouter = router({
       .query(async ({ input }) => db.getAllLeads(input ?? {})),
 
     // Distinct channel values for filter dropdowns.
-    channelOptions: permissionProcedure("leads:manage").query(async () => db.getLeadChannelOptions()),
+    channelOptions: permissionProcedure("leads:view").query(async () => db.getLeadChannelOptions()),
 
-    get: permissionProcedure("leads:manage")
+    get: permissionProcedure("leads:view")
       .input(z.object({ id: z.number() }))
       .query(async ({ input }) => db.getLeadById(input.id)),
 
@@ -274,9 +282,9 @@ export const appRouter = router({
   // ─── Matters ──────────────────────────────────────────────────────────────
 
   matters: router({
-    list: permissionProcedure("matters:manage").query(async () => db.getAllMatters()),
+    list: permissionProcedure("matters:view").query(async () => db.getAllMatters()),
 
-    get: permissionProcedure("matters:manage")
+    get: permissionProcedure("matters:view")
       .input(z.object({ id: z.number() }))
       .query(async ({ input }) => db.getMatterById(input.id)),
 
@@ -337,7 +345,7 @@ export const appRouter = router({
   // ─── Tasks ────────────────────────────────────────────────────────────────
 
   tasks: router({
-    list: permissionProcedure("tasks:manage")
+    list: permissionProcedure("tasks:view")
       .input(z.object({
         matterId: z.number().optional(),
         assignedTo: z.number().optional(),
@@ -348,7 +356,7 @@ export const appRouter = router({
       // Visibility is enforced server-side from the session user (role + id).
       .query(async ({ input, ctx }) => db.getAllTasks(input ?? {}, ctx.user!)),
 
-    get: permissionProcedure("tasks:manage")
+    get: permissionProcedure("tasks:view")
       .input(z.object({ id: z.number() }))
       .query(async ({ input, ctx }) => db.getTaskById(input.id, ctx.user!)),
 
@@ -410,11 +418,11 @@ export const appRouter = router({
   // ─── Notes ────────────────────────────────────────────────────────────────
 
   notes: router({
-    byEntity: protectedProcedure
+    byEntity: permissionProcedure("notes:view")
       .input(z.object({ entityType: z.string(), entityId: z.number() }))
       .query(async ({ input }) => db.getNotesByEntity(input.entityType, input.entityId)),
 
-    create: protectedProcedure
+    create: permissionProcedure("notes:manage")
       .input(z.object({
         content: z.string().min(1),
         entityType: z.string(),
@@ -424,10 +432,10 @@ export const appRouter = router({
         isPrivate: z.boolean().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        return db.createNote({ ...input, createdBy: ctx.user.id });
+        return db.createNote({ ...input, createdBy: ctx.user!.id });
       }),
 
-    delete: protectedProcedure
+    delete: permissionProcedure("notes:manage")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await db.deleteNote(input.id);
@@ -444,7 +452,9 @@ export const appRouter = router({
       .input(z.object({ leadId: z.number() }))
       .query(async ({ input }) => db.getPaymentByLeadId(input.leadId)),
 
-    create: permissionProcedure("payments:view")
+    // Recording or editing money is a mutation authority (payments:manage) —
+    // payments:view alone must never authorize a write.
+    create: permissionProcedure("payments:manage")
       .input(z.object({
         leadId: z.number(),
         matterCode: z.string(),
@@ -463,7 +473,7 @@ export const appRouter = router({
       }))
       .mutation(async ({ input }) => db.createPayment(input)),
 
-    update: permissionProcedure("payments:view")
+    update: permissionProcedure("payments:manage")
       .input(z.object({
         id: z.number(),
         paymentTerms: z.string().optional(),
@@ -490,7 +500,9 @@ export const appRouter = router({
   companies: router({
     list: protectedProcedure.query(async () => db.getAllCompanies()),
 
-    create: protectedProcedure
+    // Companies are client/lead intake records — mutating them requires the same
+    // authority as managing clients (read stays broad for form dropdowns).
+    create: permissionProcedure("clients:manage")
       .input(z.object({
         name: z.string().min(1),
         industry: z.string().optional(),
@@ -501,10 +513,10 @@ export const appRouter = router({
         notes: z.string().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        return db.createCompany({ ...input, createdBy: ctx.user.id });
+        return db.createCompany({ ...input, createdBy: ctx.user!.id });
       }),
 
-    update: protectedProcedure
+    update: permissionProcedure("clients:manage")
       .input(z.object({
         id: z.number(),
         name: z.string().optional(),
@@ -535,8 +547,9 @@ export const appRouter = router({
     assignableLawyers: permissionProcedure("clients:view")
       .query(async () => db.getAssignableLawyers()),
 
-    // Active Partners/Lawyers for the "Suggested Lead Lawyer" dropdown.
-    leadLawyers: permissionProcedure("leads:manage")
+    // Active Partners/Lawyers for the "Suggested Lead Lawyer" dropdown and the
+    // Enquiries Log assignee filter (names/ids only — leads:view is sufficient).
+    leadLawyers: permissionProcedure("leads:view")
       .query(async () => db.getLeadLawyers()),
 
     // Users eligible for a NEW assignment to a specific lawyer field (Matter
@@ -756,7 +769,8 @@ export const appRouter = router({
         return { success: true };
       }),
 
-    activityStats: protectedProcedure
+    // Per-user activity metrics are oversight data — not open to every session.
+    activityStats: permissionProcedure("audit:view")
       .input(z.object({ userId: z.number() }))
       .query(async ({ input }) => db.getUserActivityStats(input.userId)),
   }),
@@ -764,7 +778,7 @@ export const appRouter = router({
   // ─── Audit Logs ───────────────────────────────────────────────────────────
 
   auditLogs: router({
-    byEntity: protectedProcedure
+    byEntity: permissionProcedure("audit:view")
       .input(z.object({ entityType: z.string(), entityId: z.number() }))
       .query(async ({ input }) => {
         return db.getAuditLogsByEntity(input.entityType, input.entityId);
@@ -847,7 +861,16 @@ export const appRouter = router({
 
     statusCounts: permissionProcedure("dashboard:view").query(async () => db.getClientStatusCounts()),
 
-    dashboardStats: permissionProcedure("dashboard:view").query(async () => db.getClientDashboardStats()),
+    dashboardStats: permissionProcedure("dashboard:view").query(async ({ ctx }) => {
+      const stats = await db.getClientDashboardStats();
+      // The financial aggregates (from getFinancialSummary) are only for callers
+      // with financial viewing authority; everyone else gets zeroed values while
+      // keeping the client counts and payload shape.
+      if (!hasPermission(ctx.user!.role, "financial:view")) {
+        return { ...stats, totalRevenue: 0, totalOutstanding: 0, overdueCount: 0, totalToBeBilled: 0 };
+      }
+      return stats;
+    }),
 
     conversionMetrics: permissionProcedure("dashboard:view")
       .input(z.object({ range: z.enum(["month", "quarter", "all"]).default("all") }).optional())
@@ -918,7 +941,8 @@ export const appRouter = router({
 
     // Lead + co-lawyers billable on a matter, each with their effective hourly
     // rate. The source of truth for the Hourly Rate section and billing logic.
-    billableLawyers: permissionProcedure("clients:view")
+    // Exposes hourly rates, so it is financial data — not tied to clients:view.
+    billableLawyers: permissionProcedure("financial:view")
       .input(z.object({ clientMatterId: z.number() }))
       .query(async ({ input }) => db.getMatterBillableLawyers(input.clientMatterId)),
 
@@ -1069,6 +1093,21 @@ export const appRouter = router({
         const { id, ...data } = input;
         // Rejected clients are locked: existing matters are read-only.
         await db.assertMatterClientNotRejected(id);
+        // Lead Lawyer assignment is a separately privileged action
+        // (matters:assign_lawyer, same authority as reassignLeadLawyer). The
+        // generic update may re-submit the UNCHANGED value (forms send every
+        // field), but a change — including unlinking via null — is rejected
+        // unless the actor holds the assignment capability.
+        if (data.leadLawyerId !== undefined) {
+          const existing = await db.getClientMatterById(id);
+          if (!existing) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "Matter not found." });
+          }
+          const changed = (data.leadLawyerId ?? null) !== (existing.leadLawyerId ?? null);
+          if (changed && !hasPermission(ctx.user!.role, "matters:assign_lawyer")) {
+            throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
+          }
+        }
         return db.updateClientMatter(id, data as any, ctx.user!.id);
       }),
 
@@ -1083,12 +1122,16 @@ export const appRouter = router({
 
   // ─── Matter Lawyer Rates ───────────────────────────────────────────────────
 
+  // Hourly rates are financial data: reading them requires financial viewing
+  // authority and writing them the financial mutation authority — independent of
+  // clients:view/manage (the narrowest existing financial capability pair until
+  // the approved permission matrix lands).
   matterLawyerRates: router({
-    list: permissionProcedure("clients:view")
+    list: permissionProcedure("financial:view")
       .input(z.object({ clientMatterId: z.number() }))
       .query(async ({ input }) => db.getMatterLawyerRates(input.clientMatterId)),
 
-    create: permissionProcedure("clients:manage")
+    create: permissionProcedure("financial:manage")
       .input(z.object({
         clientMatterId: z.number(),
         // A rate must reference an assigned user. lawyerName is NOT accepted from
@@ -1109,7 +1152,7 @@ export const appRouter = router({
         return db.createMatterLawyerRate(input as any, ctx.user!.id);
       }),
 
-    update: permissionProcedure("clients:manage")
+    update: permissionProcedure("financial:manage")
       .input(z.object({
         id: z.number(),
         // lawyerName is intentionally absent — only the linked user (userId) can
@@ -1131,7 +1174,7 @@ export const appRouter = router({
         return db.updateMatterLawyerRate(id, data as any, ctx.user!.id);
       }),
 
-    delete: permissionProcedure("clients:manage")
+    delete: permissionProcedure("financial:manage")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await db.assertRateClientNotRejected(input.id);
@@ -1332,7 +1375,7 @@ export const appRouter = router({
   // ─── Client Action Logs ────────────────────────────────────────────────────
 
   clientActions: router({
-    list: permissionProcedure("actions:manage")
+    list: permissionProcedure("actions:view")
       .input(z.object({ clientId: z.number().optional() }).optional())
       .query(async ({ input }) => db.getClientActionLogs(input?.clientId)),
 
@@ -1395,8 +1438,10 @@ export const appRouter = router({
 
   // ─── Contact / Chat Submissions ───────────────────────────────────────────
 
+  // Chat submissions are inbound enquiries: reading follows lead visibility and
+  // working them (status changes) follows lead management.
   chat: router({
-    list: protectedProcedure.query(async () => db.getAllChatSubmissions()),
+    list: permissionProcedure("leads:view").query(async () => db.getAllChatSubmissions()),
 
     submit: publicProcedure
       .input(z.object({
@@ -1410,7 +1455,7 @@ export const appRouter = router({
         return db.createChatSubmission(input);
       }),
 
-    updateStatus: protectedProcedure
+    updateStatus: permissionProcedure("leads:manage")
       .input(z.object({
         id: z.number(),
         status: z.enum(["new", "read", "replied", "converted"]),

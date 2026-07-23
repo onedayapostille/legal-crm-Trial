@@ -20,18 +20,25 @@ export const ROLE_LABELS: Record<UserRole, string> = {
   viewer: "Viewer",
 };
 
+// Capability model: ":view" grants read-only access; ":manage" grants mutation
+// AND implies the matching ":view" (see hasPermission). Read gates on routes use
+// ":view" strings so a role can be granted visibility without write access.
+// Manager is firm-wide READ-ONLY: every string it holds is a ":view" grant —
+// the server rejects all Manager mutations with FORBIDDEN.
 export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
   admin: ["*"],
   manager: [
     "dashboard:view",
-    "clients:view", "clients:manage",
-    "leads:manage",
-    "matters:view", "matters:manage",
-    "tasks:manage",
+    "clients:view",
+    "leads:view",
+    "matters:view",
+    "tasks:view",
+    "actions:view",
+    "notes:view",
     "analytics:view",
     "payments:view",
     "financial:view",
-    "actions:manage",
+    "audit:view",
     "ai:assistant",
   ],
   partner: [
@@ -41,9 +48,11 @@ export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "matters:manage",
     "matters:assign_lawyer",
     "tasks:manage",
+    "notes:manage",
     "analytics:view",
     "payments:view",
     "financial:view",
+    "audit:view",
     "actions:manage",
     "ai:assistant",
   ],
@@ -53,6 +62,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "leads:manage",
     "matters:manage",
     "tasks:manage",
+    "notes:manage",
     "analytics:view",
     "actions:manage",
     "ai:assistant",
@@ -61,8 +71,10 @@ export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "dashboard:view",
     "clients:view",
     "matters:view",
+    "notes:view",
     "financial:manage",
     "payments:view",
+    "payments:manage",
     "analytics:view",
     "ai:assistant",
   ],
@@ -71,6 +83,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "clients:manage",
     "leads:manage",
     "tasks:manage",
+    "notes:manage",
     "analytics:view",
     "actions:manage",
   ],

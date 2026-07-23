@@ -50,13 +50,18 @@ function StatCard({
 export default function Dashboard() {
   const { data: stats, isLoading } = trpc.dashboard.stats.useQuery();
   const { data: me } = trpc.auth.me.useQuery();
-  const { data: recentActivity } = trpc.dashboard.recentActivity.useQuery({ limit: 8 });
   const { data: tasks } = trpc.tasks.list.useQuery({});
   const { user } = useAuth();
 
   // AlGhazzawi client stats
   const canViewClients = hasPermission(user?.role, "clients:view");
   const canViewFinancial = hasPermission(user?.role, "financial:view");
+  // The firm-wide activity feed is audit data (audit:view server-side).
+  const canViewActivity = hasPermission(user?.role, "audit:view");
+  const { data: recentActivity } = trpc.dashboard.recentActivity.useQuery(
+    { limit: 8 },
+    { enabled: canViewActivity },
+  );
   const { data: clientStats } = trpc.clients.dashboardStats.useQuery(undefined, { enabled: canViewClients });
   // Recent Leads = Lead-status clients created in the last 30 days (newest first,
   // capped server-side). Date window uses the DB clock for timezone consistency.
@@ -116,18 +121,20 @@ export default function Dashboard() {
             <Button size="sm" variant="outline" onClick={() => setConflictOpen(true)}>
               <ShieldCheck className="h-4 w-4 mr-1" /> Run Conflict Check
             </Button>
-            {canViewClients && (
+            {hasPermission(user?.role, "clients:manage") && (
               <Link href="/clients/new">
                 <Button size="sm">
                   <Plus className="h-4 w-4 mr-1" /> New Client
                 </Button>
               </Link>
             )}
-            <Link href="/leads/new">
-              <Button size="sm" variant="outline">
-                <Plus className="h-4 w-4 mr-1" /> New Lead
-              </Button>
-            </Link>
+            {hasPermission(user?.role, "leads:manage") && (
+              <Link href="/leads/new">
+                <Button size="sm" variant="outline">
+                  <Plus className="h-4 w-4 mr-1" /> New Lead
+                </Button>
+              </Link>
+            )}
             <Link href="/tasks/new">
               <Button size="sm" variant="outline">
                 <Plus className="h-4 w-4 mr-1" /> New Task
