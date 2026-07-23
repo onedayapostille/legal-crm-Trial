@@ -8,6 +8,7 @@ import {
   serial,
   text,
   timestamp,
+  uniqueIndex,
   varchar,
   date,
 } from "drizzle-orm/pg-core";
@@ -500,6 +501,32 @@ export const clients = pgTable("clients", {
 
 export type Client = typeof clients.$inferSelect;
 export type InsertClient = typeof clients.$inferInsert;
+
+// ─── Practices (Head-of-Practice responsibility model — Phase 5) ───────────────
+// The authoritative, normalized relationship: a "practice" is a (location,
+// matter_type) pair with ONE responsible Head of Practice (BR-01/BR-02). A
+// record's practice is derived from its (city, matter_type) natural key — clients
+// directly, matters via their parent client's city. Created empty and populated
+// by a later CONTROLLED classification step: no automatic backfill (§H). A record
+// whose (location, matter_type) is null or maps to no practice is UNCLASSIFIED —
+// readable under ALL but not writable under OWN_PRACTICE until classified.
+export const practices = pgTable("practices", {
+  id: serial("id").primaryKey(),
+  location: cityEnum("location").notNull(),
+  matterType: clientMatterTypeEnum("matter_type").notNull(),
+  // The responsible Head of Practice (a real user FK — never a name).
+  headOfPracticeId: integer("head_of_practice_id").references(() => users.id),
+  createdBy: integer("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, table => ({
+  // One responsible head per (location, matter_type).
+  uniqLocationMatterType: uniqueIndex("practices_location_matter_type_uniq")
+    .on(table.location, table.matterType),
+}));
+
+export type Practice = typeof practices.$inferSelect;
+export type InsertPractice = typeof practices.$inferInsert;
 
 // ─── Client Matters (rich matter records linked to clients) ───────────────────
 

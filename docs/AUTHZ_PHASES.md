@@ -117,6 +117,45 @@ are **no-ops for current users**; they activate for target roles.
   gate, so no leak): `recentLeads`, `getLeadDetail`, `getRejectedDetail`, and the
   non-financial dashboard aggregate counts — tracked below.
 
+## Phase 5 — Head of Practice identity & OWN_PRACTICE enforcement (this change)
+
+Implements the practice responsibility model and OWN_PRACTICE writes.
+
+- **`practices` table** (`drizzle/schema.ts`, migration `0024_practices.sql`,
+  additive, **not executed**): `(location, matter_type, head_of_practice_id →
+  users.id)`, unique on `(location, matter_type)` — one responsible head per
+  practice. Created empty; heads appointed by a later controlled step (no
+  backfill, §H). A record's practice is derived from its `(city, matter_type)`
+  natural key (matters inherit location from their client).
+- **`server/practices.ts`**: `getPracticeHead()`, `assertOwnPracticeWrite()`
+  (the write validator), and `getClientPracticeClassification()` (read-only
+  legacy report). Write rules: ALL → unrestricted; OWN_PRACTICE → proposed (and,
+  for edits, current) `(location, matter_type)` must resolve to a practice the
+  actor heads; anything else / null / unmapped → **fail closed**. Validating both
+  current and proposed values blocks self-claiming and cross-practice moves.
+- **`server/routers.ts`**: `clients.create/update/delete` migrated to
+  `capabilityProcedure("clients:create|edit|delete")` and call
+  `assertOwnPracticeWrite`. HoP **reads stay ALL** (Phase-4 scoping already
+  returns unrestricted for ALL). New admin `practices.classification` report.
+- **`server/financialReports.ts`**: `getRevenueByHeadOfPractice` now groups by
+  the authoritative `practices` head via `(client.city, matter type)` — one head
+  per practice, so each record counts once (no double count). Degrades to
+  `configured:false` when the table is absent or no head is appointed.
+
+### Bug fixed from Phase 4
+
+`client_matters` routes are gated by `clients:view`, but Phase 4 scoped them by
+`matters:view` — legacy `staff`/`viewer` (which hold `clients:view` but not
+`matters:view`) were wrongly denied. Added `clientMatterScopeWhere`, which falls
+back to client visibility when the actor has no `matters:view`.
+
+### Fail-closed / legacy classification
+
+Existing rows are unclassified until a controlled step appoints heads → readable
+under ALL, **not writable** under OWN_PRACTICE. `practices.classification`
+reports, per `(city, matter_type)`, how many client rows are writable vs.
+unclassified — read-only, no backfill.
+
 ## Deferred to later phases
 
 - **Route migration**: move each `permissionProcedure("x:manage")` to

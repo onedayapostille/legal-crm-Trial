@@ -95,6 +95,24 @@ export function matterScopeWhere(actor: Actor): SQL | undefined {
 }
 
 /**
+ * Scope for the `client_matters` table specifically. These routes are gated by
+ * `clients:view` (legacy `staff`/`viewer` reach client-matters through CLIENT
+ * access, not a matters capability). So when the actor holds no `matters:view`,
+ * fall back to their client visibility instead of failing closed — otherwise a
+ * legacy `clients:view` holder without `matters:view` would be wrongly denied.
+ */
+export function clientMatterScopeWhere(actor: Actor): SQL | undefined {
+  const m = scopeOf(actor, "matters:view");
+  if (m === "ALL") return undefined;
+  if (m === "ASSIGNED") return actorAssignedToMatter(actor);
+  // No matters:view — defer to client visibility (the route's gating capability).
+  const c = scopeOf(actor, "clients:view");
+  if (c === "ALL" || c === "REGISTRY") return undefined;
+  if (c === "ASSIGNED") return actorAssignedToMatter(actor);
+  return DENY;
+}
+
+/**
  * Standalone `matters` table scope (distinct from client_matters). It carries a
  * single `assigned_to` FK, so ASSIGNED filters on that.
  */
