@@ -20,6 +20,10 @@ import {
 } from "../drizzle/schema";
 import { hashPassword } from "./_core/auth";
 import { channelMediumRequired, MATTER_TYPES, isSupportedMatterType } from "../shared/const";
+import {
+  type Actor, clientScopeWhere, matterScopeWhere, standaloneMatterScopeWhere,
+  leadScopeWhere, hasAllScope,
+} from "./scoping";
 import { notifyLawyerAssignment } from "./emailNotifications";
 import type { UserRole, UserStatus } from "../shared/const";
 import { ASSIGNMENT_FIELDS, type AssignmentField } from "../shared/assignmentEligibility";
@@ -492,9 +496,13 @@ export async function getAllLeads(filters?: {
   status?: string;
   search?: string;
   assignedTo?: number;
-}) {
+}, actor?: Actor) {
   const db = getDb();
   const conditions = [];
+  if (actor) {
+    const scope = leadScopeWhere(actor);
+    if (scope) conditions.push(scope);
+  }
   if (filters?.channelType) conditions.push(eq(leads.channelType, filters.channelType));
   if (filters?.channelMedium) conditions.push(ilike(leads.channelMedium, `%${filters.channelMedium}%`));
   if (filters?.status) conditions.push(eq(leads.currentStatus, filters.status as any));
@@ -527,9 +535,14 @@ export async function getLeadChannelOptions() {
   return { types: Array.from(types).sort(), mediums: Array.from(mediums).sort() };
 }
 
-export async function getLeadById(id: number) {
+export async function getLeadById(id: number, actor?: Actor) {
   const db = getDb();
-  const result = await db.select().from(leads).where(eq(leads.id, id)).limit(1);
+  const scope = actor ? leadScopeWhere(actor) : undefined;
+  const result = await db
+    .select()
+    .from(leads)
+    .where(scope ? and(eq(leads.id, id), scope) : eq(leads.id, id))
+    .limit(1);
   return result[0] ?? null;
 }
 
@@ -878,8 +891,13 @@ export async function getLeadKpiMetrics(viewer?: TaskViewer) {
   };
 }
 
-export async function getRecentActivity(limit = 20) {
+export async function getRecentActivity(limit = 20, actor?: Actor) {
   const db = getDb();
+  // The activity feed is a firm-wide, cross-entity audit stream. Row-level
+  // scoping to accessible entities (join every entity type by entityType/
+  // entityId) is deferred within this phase — so a non-ALL audit reader FAILS
+  // CLOSED (empty) rather than seeing unscoped rows. ALL readers see everything.
+  if (actor && !hasAllScope(actor, "audit:view")) return [];
   return db
     .select()
     .from(activityLogs)
@@ -900,14 +918,21 @@ export async function generateMatterCode(): Promise<string> {
   return `MAT-${year}-${String(next).padStart(3, "0")}`;
 }
 
-export async function getAllMatters() {
+export async function getAllMatters(actor?: Actor) {
   const db = getDb();
-  return db.select().from(matters).orderBy(desc(matters.createdAt));
+  const scope = actor ? standaloneMatterScopeWhere(actor) : undefined;
+  const q = db.select().from(matters).orderBy(desc(matters.createdAt));
+  return scope ? q.where(scope) : q;
 }
 
-export async function getMatterById(id: number) {
+export async function getMatterById(id: number, actor?: Actor) {
   const db = getDb();
-  const result = await db.select().from(matters).where(eq(matters.id, id)).limit(1);
+  const scope = actor ? standaloneMatterScopeWhere(actor) : undefined;
+  const result = await db
+    .select()
+    .from(matters)
+    .where(scope ? and(eq(matters.id, id), scope) : eq(matters.id, id))
+    .limit(1);
   return result[0] ?? null;
 }
 
@@ -1320,9 +1345,15 @@ export async function getAllClients(filters?: {
   createdTo?: string;          // YYYY-MM-DD (inclusive)
   channelType?: string;        // communication channel type (client_lead_details)
   channelMedium?: string;      // communication channel medium
-}) {
+}, actor?: Actor) {
   const db = getDb();
   const conditions = [];
+  // Actor-aware scope (Phase 4). Undefined actor = internal/unscoped caller;
+  // router paths always pass ctx.user so end-user access is scoped.
+  if (actor) {
+    const scope = clientScopeWhere(actor);
+    if (scope) conditions.push(scope);
+  }
 
   if (filters?.clientStatus) {
     conditions.push(eq(clients.clientStatus, filters.clientStatus as any));
@@ -1409,9 +1440,16 @@ export async function getRecentLeads(days = 30, limit = 5) {
     .limit(limit);
 }
 
-export async function getClientById(id: number) {
+export async function getClientById(id: number, actor?: Actor) {
   const db = getDb();
-  const result = await db.select().from(clients).where(eq(clients.id, id)).limit(1);
+  // Get-by-ID enforces the SAME scope predicate as the list, so an out-of-scope
+  // id returns null (→ NOT_FOUND at the router; no record-existence leak).
+  const scope = actor ? clientScopeWhere(actor) : undefined;
+  const result = await db
+    .select()
+    .from(clients)
+    .where(scope ? and(eq(clients.id, id), scope) : eq(clients.id, id))
+    .limit(1);
   return result[0] ?? null;
 }
 
@@ -1463,10 +1501,16 @@ export function normalizeForConflict(input: string): string {
     .trim();
 }
 
-export async function searchConflicts(rawQuery: string): Promise<ConflictMatch[]> {
+export async function searchConflicts(rawQuery: string, actor?: Actor): Promise<ConflictMatch[]> {
   const db = getDb();
   const needle = normalizeForConflict(rawQuery);
   if (!needle) return [];
+
+  // Scope conflict results so a caller cannot enumerate clients/matters outside
+  // their scope via search. Clients use the client scope; matters use the matter
+  // scope (both no-ops for ALL / firm-wide readers).
+  const clientScope = actor ? clientScopeWhere(actor) : undefined;
+  const matterScope = actor ? matterScopeWhere(actor) : undefined;
 
   // Precise, conservative decision: the normalized query must appear as a
   // substring of the normalized candidate value. Tolerates case/spacing/
@@ -1484,10 +1528,11 @@ export async function searchConflicts(rawQuery: string): Promise<ConflictMatch[]
     or(...cols.flatMap(col => searchTokens.map(tok => ilike(col, `%${tok}%`))));
 
   // 1) Clients — name / client # / file #
+  const clientLike = likeFor([clients.clientName, clients.clientNumber, clients.fileNumber]);
   const matchedClients = await db
     .select()
     .from(clients)
-    .where(likeFor([clients.clientName, clients.clientNumber, clients.fileNumber]))
+    .where(clientScope ? and(clientLike, clientScope) : clientLike)
     .orderBy(desc(clients.createdAt));
 
   // 2) + 3) Matters — name/reference/type, and opposing party — joined to the
@@ -1506,12 +1551,15 @@ export async function searchConflicts(rawQuery: string): Promise<ConflictMatch[]
     .from(clientMatters)
     .leftJoin(clients, eq(clientMatters.clientId, clients.id))
     .where(
-      likeFor([
-        clientMatters.matterReference,
-        clientMatters.matterType,
-        clientMatters.matterDescription,
-        clientMatters.opposingParty,
-      ]),
+      (() => {
+        const like = likeFor([
+          clientMatters.matterReference,
+          clientMatters.matterType,
+          clientMatters.matterDescription,
+          clientMatters.opposingParty,
+        ]);
+        return matterScope ? and(like, matterScope) : like;
+      })(),
     )
     .orderBy(desc(clientMatters.createdAt));
 
@@ -1575,14 +1623,14 @@ export async function checkMatterConflicts(opts: {
   matterName?: string | null;
   opposingParty?: string | null;
   clientId?: number | null;
-}): Promise<ConflictMatch[]> {
+}, actor?: Actor): Promise<ConflictMatch[]> {
   const terms = [opts.matterName, opts.opposingParty]
     .map(t => (t ?? "").trim())
     .filter(t => t.length > 0);
   if (terms.length === 0) return [];
 
   const all: ConflictMatch[] = [];
-  for (const t of terms) all.push(...(await searchConflicts(t)));
+  for (const t of terms) all.push(...(await searchConflicts(t, actor)));
 
   const seen = new Set<string>();
   return all.filter(m => {
@@ -1905,12 +1953,14 @@ export async function getClientConversionMetrics(
 
 // ─── Client Matters ───────────────────────────────────────────────────────────
 
-export async function getClientMatters(clientId: number) {
+export async function getClientMatters(clientId: number, actor?: Actor) {
   const db = getDb();
+  const scope = actor ? matterScopeWhere(actor) : undefined;
+  const base = eq(clientMatters.clientId, clientId);
   return db
     .select()
     .from(clientMatters)
-    .where(eq(clientMatters.clientId, clientId))
+    .where(scope ? and(base, scope) : base)
     .orderBy(desc(clientMatters.createdAt));
 }
 
@@ -1929,9 +1979,12 @@ function isActiveMatterStatus() {
 // Aggregated view across all clients with client name joined in. Used by the
 // global /matters list page. An optional status filter is applied at the DB
 // layer (not in the frontend) so the list always matches the dashboard KPI.
-export async function getAllClientMatters(filters: { status?: string } = {}) {
+export async function getAllClientMatters(filters: { status?: string } = {}, actor?: Actor) {
   const db = getDb();
   const status = filters.status?.trim();
+  const scope = actor ? matterScopeWhere(actor) : undefined;
+  const statusCond = status ? matterStatusEquals(status) : undefined;
+  const where = statusCond && scope ? and(statusCond, scope) : (statusCond ?? scope);
   return db
     .select({
       id: clientMatters.id,
@@ -1953,13 +2006,18 @@ export async function getAllClientMatters(filters: { status?: string } = {}) {
     })
     .from(clientMatters)
     .leftJoin(clients, eq(clientMatters.clientId, clients.id))
-    .where(status ? matterStatusEquals(status) : undefined)
+    .where(where)
     .orderBy(desc(clientMatters.createdAt));
 }
 
-export async function getClientMatterById(id: number) {
+export async function getClientMatterById(id: number, actor?: Actor) {
   const db = getDb();
-  const result = await db.select().from(clientMatters).where(eq(clientMatters.id, id)).limit(1);
+  const scope = actor ? matterScopeWhere(actor) : undefined;
+  const result = await db
+    .select()
+    .from(clientMatters)
+    .where(scope ? and(eq(clientMatters.id, id), scope) : eq(clientMatters.id, id))
+    .limit(1);
   return result[0] ?? null;
 }
 

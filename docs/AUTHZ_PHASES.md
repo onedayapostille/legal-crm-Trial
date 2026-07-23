@@ -79,6 +79,44 @@ the DB enum does **not** let the API assign an unenforced target role early
 (least privilege). The switch to a target-role schema happens with the re-grade,
 not here. Unknown roles fail closed at both `authorize` and `mapLegacyRole`.
 
+## Phase 4 — actor-aware DB scoping & IDOR prevention (this change)
+
+Threads the authenticated actor into the data layer for the operational
+resources and enforces the caller's scope in SQL (never in the router or after
+load). Because every LIVE account is a legacy role (scope ALL), the predicates
+are **no-ops for current users**; they activate for target roles.
+
+- **`server/scoping.ts`**: derives each resource's scope from
+  `authorize(actor, <resource-capability>)` and returns a SQL predicate:
+  `undefined` (ALL / REGISTRY = firm-wide), an ASSIGNED filter, or `sql\`false\``
+  (fail closed). ASSIGNED for clients = owns an assigned matter or is the
+  lead-assigned lawyer (`client_lead_details`); for matters = actor ∈ the seven
+  assignment FKs; standalone `matters` = `assigned_to`.
+- **`server/db.ts`**: `getAllClients`, `getClientById`, `getClientMatters`,
+  `getAllClientMatters`, `getClientMatterById`, `getAllMatters`, `getMatterById`,
+  `getAllLeads`, `getLeadById`, `searchConflicts`, `checkMatterConflicts`,
+  `getRecentActivity` take an optional `actor` and apply the predicate. Get-by-ID
+  uses the SAME predicate as its list (out-of-scope → `null` → NOT_FOUND).
+- **`server/routers.ts`**: covered READ routes migrated `permissionProcedure →
+  capabilityProcedure` (legacy-equivalent; lets scoped target roles reach the
+  resolver — the legacy gate denies all target roles). Mutations
+  (`clients.update/delete`, `clientMatters.update/delete`) re-fetch the target
+  under scope and 404 if inaccessible.
+
+### Scope enforcement, deferrals, and fail-closed
+
+- **REGISTRY** (Coordinator) → full client list (registry is firm-wide); matter
+  detail is a separate, separately-scoped endpoint.
+- **OWN_PRACTICE** (HoP create/edit) → **fail closed** here; Phase 5 derives the
+  practice (location + matter type). So HoP cannot yet mutate — safe, not widened.
+- **Lead Lawyer overlay** → Phase 6. **Financial** records/reports → Phase 7.
+  **Tasks** final policy → Phase 8.
+- **Activity feed** entity-level scoping → fail closed for non-ALL audit readers
+  (empty) rather than leaking; ALL readers unaffected.
+- **Not yet scoped within this phase** (target roles fail closed at their legacy
+  gate, so no leak): `recentLeads`, `getLeadDetail`, `getRejectedDetail`, and the
+  non-financial dashboard aggregate counts — tracked below.
+
 ## Deferred to later phases
 
 - **Route migration**: move each `permissionProcedure("x:manage")` to

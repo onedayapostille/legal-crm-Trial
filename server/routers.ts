@@ -1,5 +1,5 @@
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, router, protectedProcedure, adminProcedure, permissionProcedure } from "./_core/trpc";
+import { publicProcedure, router, protectedProcedure, adminProcedure, permissionProcedure, capabilityProcedure } from "./_core/trpc";
 import { AUTH_COOKIE, createSessionToken, verifyPassword, hashPassword, isSecureRequest } from "./_core/auth";
 import { TRPCError } from "@trpc/server";
 import type { Request } from "express";
@@ -146,17 +146,17 @@ export const appRouter = router({
 
     // The activity feed is an unscoped firm-wide audit trail, not dashboard
     // decoration — restricted to roles with audit visibility.
-    recentActivity: permissionProcedure("audit:view")
+    recentActivity: capabilityProcedure("audit:view")
       .input(z.object({ limit: z.number().optional() }))
-      .query(async ({ input }) => {
-        return db.getRecentActivity(input.limit ?? 20);
+      .query(async ({ input, ctx }) => {
+        return db.getRecentActivity(input.limit ?? 20, ctx.user!);
       }),
   }),
 
   // ─── Leads ────────────────────────────────────────────────────────────────
 
   leads: router({
-    list: permissionProcedure("leads:view")
+    list: capabilityProcedure("leads:view")
       .input(z.object({
         channelType: z.string().optional(),
         channelMedium: z.string().optional(),
@@ -164,14 +164,14 @@ export const appRouter = router({
         search: z.string().optional(),
         assignedTo: z.number().optional(),
       }).optional())
-      .query(async ({ input }) => db.getAllLeads(input ?? {})),
+      .query(async ({ input, ctx }) => db.getAllLeads(input ?? {}, ctx.user!)),
 
     // Distinct channel values for filter dropdowns.
-    channelOptions: permissionProcedure("leads:view").query(async () => db.getLeadChannelOptions()),
+    channelOptions: capabilityProcedure("leads:view").query(async () => db.getLeadChannelOptions()),
 
-    get: permissionProcedure("leads:view")
+    get: capabilityProcedure("leads:view")
       .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => db.getLeadById(input.id)),
+      .query(async ({ input, ctx }) => db.getLeadById(input.id, ctx.user!)),
 
     create: permissionProcedure("leads:manage")
       .input(z.object({
@@ -282,11 +282,11 @@ export const appRouter = router({
   // ─── Matters ──────────────────────────────────────────────────────────────
 
   matters: router({
-    list: permissionProcedure("matters:view").query(async () => db.getAllMatters()),
+    list: capabilityProcedure("matters:view").query(async ({ ctx }) => db.getAllMatters(ctx.user!)),
 
-    get: permissionProcedure("matters:view")
+    get: capabilityProcedure("matters:view")
       .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => db.getMatterById(input.id)),
+      .query(async ({ input, ctx }) => db.getMatterById(input.id, ctx.user!)),
 
     create: permissionProcedure("matters:manage")
       .input(z.object({
@@ -806,7 +806,7 @@ export const appRouter = router({
   // ─── Clients ──────────────────────────────────────────────────────────────
 
   clients: router({
-    list: permissionProcedure("clients:view").input(z.object({
+    list: capabilityProcedure("clients:view").input(z.object({
       clientStatus: z.string().optional(),
       city: z.string().optional(),
       matterType: z.string().optional(),
@@ -818,11 +818,11 @@ export const appRouter = router({
       createdTo: z.string().optional(),
       channelType: z.string().optional(),
       channelMedium: z.string().optional(),
-    }).optional()).query(async ({ input }) => db.getAllClients(input ?? {})),
+    }).optional()).query(async ({ input, ctx }) => db.getAllClients(input ?? {}, ctx.user!)),
 
-    get: permissionProcedure("clients:view")
+    get: capabilityProcedure("clients:view")
       .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => db.getClientById(input.id)),
+      .query(async ({ input, ctx }) => db.getClientById(input.id, ctx.user!)),
 
     create: permissionProcedure("clients:manage")
       .input(z.object({
@@ -849,12 +849,20 @@ export const appRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
+        // Scope guard (IDOR): you can only edit a client you can see. Re-fetch
+        // under the caller's scope; out-of-scope → NOT_FOUND (non-enumerating).
+        if (!(await db.getClientById(id, ctx.user!))) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Client not found" });
+        }
         return db.updateClient(id, data as any, ctx.user!.id);
       }),
 
     delete: permissionProcedure("clients:manage")
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
+        if (!(await db.getClientById(input.id, ctx.user!))) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Client not found" });
+        }
         await db.deleteClient(input.id);
         return { success: true };
       }),
@@ -927,17 +935,17 @@ export const appRouter = router({
         return db.upsertRejectedClient(clientId, data as any);
       }),
 
-    conflictCheck: permissionProcedure("clients:view")
+    conflictCheck: capabilityProcedure("clients:view")
       .input(z.object({ query: z.string().min(1).max(255) }))
-      .query(async ({ input }) => db.searchConflicts(input.query)),
+      .query(async ({ input, ctx }) => db.searchConflicts(input.query, ctx.user!)),
   }),
 
   // ─── Client Matters ────────────────────────────────────────────────────────
 
   clientMatters: router({
-    list: permissionProcedure("clients:view")
+    list: capabilityProcedure("clients:view")
       .input(z.object({ clientId: z.number() }))
-      .query(async ({ input }) => db.getClientMatters(input.clientId)),
+      .query(async ({ input, ctx }) => db.getClientMatters(input.clientId, ctx.user!)),
 
     // Lead + co-lawyers billable on a matter, each with their effective hourly
     // rate. The source of truth for the Hourly Rate section and billing logic.
@@ -957,7 +965,7 @@ export const appRouter = router({
 
     // Conflict check for a (prospective) matter — by matter name and/or opposing
     // party. Used by the Create Matter form before submitting.
-    checkConflicts: permissionProcedure("clients:view")
+    checkConflicts: capabilityProcedure("clients:view")
       .input(z.object({
         matterName: z.string().optional(),
         opposingParty: z.string().optional(),
@@ -965,21 +973,21 @@ export const appRouter = router({
         // Matter Reference matches (different clients may reuse a reference).
         clientId: z.number().optional(),
       }))
-      .query(async ({ input }) =>
+      .query(async ({ input, ctx }) =>
         db.checkMatterConflicts({
           matterName: input.matterName,
           opposingParty: input.opposingParty,
           clientId: input.clientId,
-        }),
+        }, ctx.user!),
       ),
 
-    listAll: permissionProcedure("clients:view")
+    listAll: capabilityProcedure("clients:view")
       .input(z.object({ status: z.string().optional() }).optional())
-      .query(async ({ input }) => db.getAllClientMatters(input ?? {})),
+      .query(async ({ input, ctx }) => db.getAllClientMatters(input ?? {}, ctx.user!)),
 
-    get: permissionProcedure("clients:view")
+    get: capabilityProcedure("clients:view")
       .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => db.getClientMatterById(input.id)),
+      .query(async ({ input, ctx }) => db.getClientMatterById(input.id, ctx.user!)),
 
     create: permissionProcedure("clients:manage")
       .input(z.object({
@@ -1038,7 +1046,7 @@ export const appRouter = router({
           matterName: matterInput.matterReference,
           opposingParty: matterInput.opposingParty,
           clientId: matterInput.clientId,
-        });
+        }, ctx.user!);
         if (conflicts.length > 0 && !acknowledgeConflicts) {
           throw new TRPCError({
             code: "CONFLICT",
@@ -1093,16 +1101,18 @@ export const appRouter = router({
         const { id, ...data } = input;
         // Rejected clients are locked: existing matters are read-only.
         await db.assertMatterClientNotRejected(id);
+        // Scope guard (IDOR): re-fetch the matter under the caller's scope. An
+        // out-of-scope (or missing) matter → NOT_FOUND, non-enumerating. This
+        // `existing` also drives the lead-lawyer change check below.
+        const existing = await db.getClientMatterById(id, ctx.user!);
+        if (!existing) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Matter not found." });
+        }
         // Lead Lawyer assignment is a separately privileged action
-        // (matters:assign_lawyer, same authority as reassignLeadLawyer). The
-        // generic update may re-submit the UNCHANGED value (forms send every
-        // field), but a change — including unlinking via null — is rejected
-        // unless the actor holds the assignment capability.
+        // (matters:assign_lawyer). The generic update may re-submit the UNCHANGED
+        // value (forms send every field), but a change — including unlinking via
+        // null — is rejected unless the actor holds the assignment capability.
         if (data.leadLawyerId !== undefined) {
-          const existing = await db.getClientMatterById(id);
-          if (!existing) {
-            throw new TRPCError({ code: "NOT_FOUND", message: "Matter not found." });
-          }
           const changed = (data.leadLawyerId ?? null) !== (existing.leadLawyerId ?? null);
           if (changed && !hasPermission(ctx.user!.role, "matters:assign_lawyer")) {
             throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
@@ -1113,8 +1123,11 @@ export const appRouter = router({
 
     delete: permissionProcedure("clients:manage")
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         await db.assertMatterClientNotRejected(input.id);
+        if (!(await db.getClientMatterById(input.id, ctx.user!))) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Matter not found." });
+        }
         await db.deleteClientMatter(input.id);
         return { success: true };
       }),
