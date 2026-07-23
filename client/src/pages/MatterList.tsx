@@ -4,6 +4,8 @@ import { trpc } from "@/lib/trpc";
 import DashboardLayout from "@/components/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { hasPermission } from "@shared/const";
 
 const PRIORITY_COLORS: Record<string, string> = {
   low:    "bg-gray-100 text-gray-600",
@@ -18,6 +20,9 @@ export default function MatterList() {
   // query — there is no client-side filtering of the result set.
   const search = useSearch();
   const statusFilter = new URLSearchParams(search).get("status")?.trim() || undefined;
+  const { user } = useAuth();
+  // Matter creation is clients:manage (same gate as the /matters/new route).
+  const canCreateMatter = hasPermission(user?.role, "clients:manage");
 
   const { data: matters = [], isLoading } = trpc.clientMatters.listAll.useQuery(
     statusFilter ? { status: statusFilter } : undefined,
@@ -47,9 +52,11 @@ export default function MatterList() {
               )}
             </p>
           </div>
-          <Link href="/matters/new">
-            <Button size="sm"><Plus className="h-4 w-4 mr-1" /> New Matter</Button>
-          </Link>
+          {canCreateMatter && (
+            <Link href="/matters/new">
+              <Button size="sm"><Plus className="h-4 w-4 mr-1" /> New Matter</Button>
+            </Link>
+          )}
         </div>
 
         {isLoading ? (
@@ -61,8 +68,13 @@ export default function MatterList() {
         ) : matters.length === 0 ? (
           <Card>
             <CardContent className="py-12 text-center text-muted-foreground">
-              No matters yet.{" "}
-              <Link href="/matters/new" className="text-blue-600 hover:underline">Open the first matter</Link>
+              No matters yet.
+              {canCreateMatter && (
+                <>
+                  {" "}
+                  <Link href="/matters/new" className="text-blue-600 hover:underline">Open the first matter</Link>
+                </>
+              )}
             </CardContent>
           </Card>
         ) : (

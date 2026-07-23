@@ -11,8 +11,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useState } from "react";
 import { toast } from "sonner";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { hasPermission } from "@shared/const";
 
 export default function PaymentTracker() {
+  const { user } = useAuth();
+  // payments:view is read-only (e.g. Manager); recording/editing needs payments:manage.
+  const canManagePayments = hasPermission(user?.role, "payments:manage");
   const [selectedEnquiry, setSelectedEnquiry] = useState<number | null>(null);
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [paymentData, setPaymentData] = useState({
@@ -261,13 +266,15 @@ export default function PaymentTracker() {
                           )}
                         </TableCell>
                         <TableCell className="text-right">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleCreatePayment(enquiry.id, enquiry.matterCode!)}
-                          >
-                            {payment ? "Edit" : "Set Up"}
-                          </Button>
+                          {canManagePayments && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleCreatePayment(enquiry.id, enquiry.matterCode!)}
+                            >
+                              {payment ? "Edit" : "Set Up"}
+                            </Button>
+                          )}
                         </TableCell>
                       </TableRow>
                     );

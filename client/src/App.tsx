@@ -84,7 +84,7 @@ function Router() {
       </Route>
       {/* Filterable enquiries list for channel/marketing-source reporting */}
       <Route path="/enquiries/log">
-        <ProtectedRoute permission="leads:manage"><EnquiriesLog /></ProtectedRoute>
+        <ProtectedRoute permission="leads:view"><EnquiriesLog /></ProtectedRoute>
       </Route>
       <Route path="/enquiries/new">
         <ProtectedRoute>
@@ -190,7 +190,7 @@ function Router() {
         </ProtectedRoute>
       </Route>
       <Route path="/client-actions">
-        <ProtectedRoute permission="actions:manage">
+        <ProtectedRoute permission="actions:view">
           <ClientActionLog />
         </ProtectedRoute>
       </Route>

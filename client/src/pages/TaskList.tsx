@@ -11,6 +11,8 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { TaskDetailDialog } from "@/components/TaskDetailDialog";
 import { toast } from "sonner";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { hasPermission } from "@shared/const";
 
 const STATUS_OPTIONS = ["all", "todo", "in_progress", "done", "cancelled"];
 const PRIORITY_LABELS: Record<string, { label: string; color: string }> = {
@@ -48,6 +50,9 @@ export default function TaskList() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [detailTaskId, setDetailTaskId] = useState<number | null>(null);
   const utils = trpc.useUtils();
+  const { user } = useAuth();
+  // tasks:view grants read-only visibility (e.g. Manager); mutations need tasks:manage.
+  const canManageTasks = hasPermission(user?.role, "tasks:manage");
 
   const { data: tasks = [], isLoading } = trpc.tasks.list.useQuery(
     statusFilter !== "all" ? { status: statusFilter } : {}
@@ -78,9 +83,11 @@ export default function TaskList() {
               {overdue.length > 0 && <span className="text-orange-500 ml-2">· {overdue.length} overdue</span>}
             </p>
           </div>
-          <Link href="/tasks/new">
-            <Button size="sm"><Plus className="h-4 w-4 mr-1" /> New Task</Button>
-          </Link>
+          {canManageTasks && (
+            <Link href="/tasks/new">
+              <Button size="sm"><Plus className="h-4 w-4 mr-1" /> New Task</Button>
+            </Link>
+          )}
         </div>
 
         <div className="flex gap-3 items-center">
@@ -105,8 +112,13 @@ export default function TaskList() {
         ) : tasks.length === 0 ? (
           <Card>
             <CardContent className="py-12 text-center text-muted-foreground">
-              No tasks found.{" "}
-              <Link href="/tasks/new" className="text-blue-600 hover:underline">Create one</Link>
+              No tasks found.
+              {canManageTasks && (
+                <>
+                  {" "}
+                  <Link href="/tasks/new" className="text-blue-600 hover:underline">Create one</Link>
+                </>
+              )}
             </CardContent>
           </Card>
         ) : (
@@ -119,9 +131,9 @@ export default function TaskList() {
                   <CardContent className="py-3 px-4">
                     <div className="flex items-start gap-3">
                       <button
-                        onClick={() => task.status !== "done" && markDone(task.id)}
+                        onClick={() => canManageTasks && task.status !== "done" && markDone(task.id)}
                         className="mt-0.5 flex-shrink-0"
-                        disabled={task.status === "done"}
+                        disabled={!canManageTasks || task.status === "done"}
                       >
                         <StatusIcon status={task.status ?? "todo"} />
                       </button>
@@ -180,13 +192,15 @@ export default function TaskList() {
                         </div>
                       </button>
 
-                      <button
-                        onClick={() => deleteTask.mutate({ id: task.id })}
-                        className="text-xs text-muted-foreground hover:text-red-500 flex-shrink-0"
-                        title="Delete task"
-                      >
-                        ✕
-                      </button>
+                      {canManageTasks && (
+                        <button
+                          onClick={() => deleteTask.mutate({ id: task.id })}
+                          className="text-xs text-muted-foreground hover:text-red-500 flex-shrink-0"
+                          title="Delete task"
+                        >
+                          ✕
+                        </button>
+                      )}
                     </div>
                   </CardContent>
                 </Card>

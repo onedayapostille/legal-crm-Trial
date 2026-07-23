@@ -54,7 +54,7 @@ export default function ClientDetail({ id }: { id: number }) {
   const { user } = useAuth();
   const canManage = hasPermission(user?.role, "clients:manage");
   const canViewFinancial = hasPermission(user?.role, "financial:view");
-  const canViewTasks = hasPermission(user?.role, "tasks:manage");
+  const canViewTasks = hasPermission(user?.role, "tasks:view");
   const utils = trpc.useUtils();
 
   // Deep-link support: /clients/:id?tab=tasks&taskId=NN opens the Tasks tab and
@@ -685,8 +685,14 @@ function RejectedDetailCard({ clientId, detail, canManage }: { clientId: number;
 }
 
 function AuditTrailCard({ entityType, entityId }: { entityType: string; entityId: number }) {
+  const { user } = useAuth();
+  const canViewAudit = hasPermission(user?.role, "audit:view");
   const [show, setShow] = useState(false);
-  const { data: logs = [] } = trpc.auditLogs.byEntity.useQuery({ entityType, entityId }, { enabled: show });
+  const { data: logs = [] } = trpc.auditLogs.byEntity.useQuery(
+    { entityType, entityId },
+    { enabled: show && canViewAudit },
+  );
+  if (!canViewAudit) return null;
   return (
     <Card>
       <CardHeader className="pb-3 cursor-pointer" onClick={() => setShow(s => !s)}>
@@ -719,6 +725,9 @@ function AuditTrailCard({ entityType, entityId }: { entityType: string; entityId
 
 function MattersTable({ matters, clientId, canManage, inheritedSerial }: { matters: any[]; clientId: number; canManage: boolean; inheritedSerial: string }) {
   const utils = trpc.useUtils();
+  const { user } = useAuth();
+  // Hourly rates are financial data (financial:view server-side).
+  const canViewRates = hasPermission(user?.role, "financial:view");
   const [editingMatter, setEditingMatter] = useState<any | null>(null);
   const [ratesMatter, setRatesMatter] = useState<any | null>(null);
 
@@ -786,7 +795,7 @@ function MattersTable({ matters, clientId, canManage, inheritedSerial }: { matte
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-1">
-                      {m.billingType === "Billable Hours" && (
+                      {m.billingType === "Billable Hours" && canViewRates && (
                         <Button
                           variant="ghost"
                           size="sm"
