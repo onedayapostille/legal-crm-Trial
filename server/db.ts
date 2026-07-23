@@ -22,7 +22,7 @@ import { hashPassword } from "./_core/auth";
 import { channelMediumRequired, MATTER_TYPES, isSupportedMatterType } from "../shared/const";
 import {
   type Actor, clientScopeWhere, clientMatterScopeWhere, standaloneMatterScopeWhere,
-  leadScopeWhere, hasAllScope,
+  leadScopeWhere, hasAllScope, financialScopeWhere,
 } from "./scoping";
 import { notifyLawyerAssignment } from "./emailNotifications";
 import type { UserRole, UserStatus } from "../shared/const";
@@ -989,6 +989,31 @@ export async function getReportingUserIds(partnerId: number): Promise<number[]> 
   return rows.map(r => r.id);
 }
 
+// ─── Lead Lawyer overlay (Phase 6) ────────────────────────────────────────────
+// Authority derived ONLY from authoritative client_matters.lead_lawyer_id vs the
+// authenticated user id. Additive and matter-specific.
+
+/** client_matter ids the actor is the designated Lead Lawyer of. */
+export async function ledMatterIds(actorId: number): Promise<number[]> {
+  const db = getDb();
+  const rows = await db
+    .select({ id: clientMatters.id })
+    .from(clientMatters)
+    .where(eq(clientMatters.leadLawyerId, actorId));
+  return rows.map(r => r.id);
+}
+
+/** True iff the actor is the designated Lead Lawyer of this specific matter. */
+export async function isLeadLawyerOfMatter(actorId: number, clientMatterId: number): Promise<boolean> {
+  const db = getDb();
+  const [row] = await db
+    .select({ id: clientMatters.id })
+    .from(clientMatters)
+    .where(and(eq(clientMatters.id, clientMatterId), eq(clientMatters.leadLawyerId, actorId)))
+    .limit(1);
+  return !!row;
+}
+
 /**
  * SQL WHERE condition restricting tasks to those the viewer may see:
  *   - admin / manager → null (no restriction; see all)
@@ -999,16 +1024,21 @@ export async function getReportingUserIds(partnerId: number): Promise<number[]> 
 export async function taskVisibilityCondition(viewer: TaskViewer) {
   if (viewer.role === "admin" || viewer.role === "manager") return null;
   const own = or(eq(tasks.assignedTo, viewer.id), eq(tasks.createdBy, viewer.id));
+  const conds = [own];
   if (viewer.role === "partner") {
     const ids = await getReportingUserIds(viewer.id);
-    if (ids.length > 0) return or(own, inArray(tasks.assignedTo, ids));
+    if (ids.length > 0) conds.push(inArray(tasks.assignedTo, ids));
   }
-  return own;
+  // Lead Lawyer overlay (Phase 6): additive access to tasks OF matters the viewer
+  // leads — regardless of base role, but only those matters' tasks.
+  const led = await ledMatterIds(viewer.id);
+  if (led.length > 0) conds.push(inArray(tasks.clientMatterId, led));
+  return conds.length === 1 ? own : or(...conds);
 }
 
 /** Whether a single task row is visible to the viewer (same rules as the SQL filter). */
 export async function isTaskVisibleTo(
-  task: { assignedTo: number | null; createdBy: number | null },
+  task: { assignedTo: number | null; createdBy: number | null; clientMatterId?: number | null },
   viewer: TaskViewer,
 ): Promise<boolean> {
   if (viewer.role === "admin" || viewer.role === "manager") return true;
@@ -1016,6 +1046,10 @@ export async function isTaskVisibleTo(
   if (viewer.role === "partner" && task.assignedTo != null) {
     const ids = await getReportingUserIds(viewer.id);
     if (ids.includes(task.assignedTo)) return true;
+  }
+  // Lead Lawyer overlay: the task belongs to a matter the viewer leads.
+  if (task.clientMatterId != null && (await isLeadLawyerOfMatter(viewer.id, task.clientMatterId))) {
+    return true;
   }
   return false;
 }
@@ -2794,10 +2828,16 @@ export async function getFinancialRecords(filters?: {
   clientId?: number;
   clientMatterId?: number;
   collectionStatus?: string;
-}) {
+}, actor?: Actor) {
   const db          = getDb();
   const overdueDays = await getOverdueDays();
   const conditions  = [];
+  // Actor-aware financial scope (Phase 7): ALL → none; ASSIGNED → assigned-matter
+  // rows only (null-matter records excluded); else fail closed.
+  if (actor) {
+    const scope = financialScopeWhere(actor);
+    if (scope) conditions.push(scope);
+  }
   if (filters?.clientId) conditions.push(eq(financialRecords.clientId, filters.clientId));
   if (filters?.clientMatterId) {
     conditions.push(eq(financialRecords.clientMatterId, filters.clientMatterId));
@@ -2811,9 +2851,14 @@ export async function getFinancialRecords(filters?: {
   return rows.map(r => ({ ...r, isComputedOverdue: computeIsOverdue(r, overdueDays) }));
 }
 
-export async function getFinancialRecordById(id: number) {
+export async function getFinancialRecordById(id: number, actor?: Actor) {
   const db = getDb();
-  const result = await db.select().from(financialRecords).where(eq(financialRecords.id, id)).limit(1);
+  const scope = actor ? financialScopeWhere(actor) : undefined;
+  const result = await db
+    .select()
+    .from(financialRecords)
+    .where(scope ? and(eq(financialRecords.id, id), scope) : eq(financialRecords.id, id))
+    .limit(1);
   return result[0] ?? null;
 }
 
@@ -2976,12 +3021,15 @@ export async function deleteFinancialRecord(id: number) {
   await db.delete(financialRecords).where(eq(financialRecords.id, id));
 }
 
-export async function getFinancialSummary() {
+export async function getFinancialSummary(actor?: Actor) {
   const db          = getDb();
   const overdueDays = await getOverdueDays();
   // Use sql.raw for the numeric literal — it is validated as a positive integer
   // by getOverdueDays(), so injection is not possible.
   const overdaysSql = sql.raw(String(overdueDays));
+  // Same financial scope as the detail list, so the summary aggregates reconcile
+  // exactly with the rows the actor can see.
+  const scope = actor ? financialScopeWhere(actor) : undefined;
   const [row] = await db
     .select({
       totalRevenue:     sql<string>`COALESCE(SUM(${financialRecords.revenue}), 0)`,
@@ -2997,7 +3045,8 @@ export async function getFinancialSummary() {
       // with no discount applied netFees == agreedFees, so the result is unchanged.
       totalToBeBilled:  sql<string>`COALESCE(SUM(GREATEST(0, COALESCE(${financialRecords.netFees}, ${financialRecords.agreedFees}, 0)::numeric - COALESCE(${financialRecords.revenue}, 0)::numeric)), 0)`,
     })
-    .from(financialRecords);
+    .from(financialRecords)
+    .where(scope);
   return {
     totalRevenue:    Number(row?.totalRevenue    ?? 0),
     totalOutstanding:Number(row?.totalOutstanding?? 0),
