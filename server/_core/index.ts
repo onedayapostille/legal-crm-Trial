@@ -39,7 +39,7 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
-import { ensureAdminExists, getRawClient, runMigrations } from "../db";
+import { ensureAdminExists, getRawClient } from "../db";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -184,8 +184,9 @@ async function startServer() {
     console.log(`[Server] Running on http://0.0.0.0:${port}`);
   });
 
-  runMigrations()
-    .then(() => ensureAdminExists())
+  // Schema migrations are an explicit, separately approved operation. They must
+  // never be coupled to application startup or an automated code deployment.
+  ensureAdminExists()
     .catch(err => console.warn("[Server] DB setup warning:", (err as Error).message));
 }
 

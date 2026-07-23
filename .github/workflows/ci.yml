@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CI: "true"
+
+jobs:
+  quality:
+    name: TypeScript, unit tests, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@v4
+
+      - name: Configure Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Configure pnpm from packageManager
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@10.4.1 --activate
+          test "$(pnpm --version)" = "10.4.1"
+
+      - name: Install without lifecycle scripts
+        id: install
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Review ignored lifecycle scripts
+        id: lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-reports
+          {
+            echo "Lifecycle scripts were not executed."
+            pnpm ignored-builds
+          } > ci-reports/lifecycle-review.txt
+          cat ci-reports/lifecycle-review.txt
+
+      - name: TypeScript check
+        id: typecheck
+        run: pnpm check
+
+      - name: Database-free unit tests
+        id: unit_tests
+        env:
+          DATABASE_URL: ""
+        run: pnpm test:unit
+
+      - name: Production build
+        id: build
+        env:
+          DATABASE_URL: ""
+        run: pnpm build
+
+      - name: Report formatting drift
+        id: prettier
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm exec prettier --check . 2>&1 | tee ci-reports/prettier-report.txt
+
+      - name: Create value-free quality summary
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p ci-reports
+          {
+            echo "install=${{ steps.install.outcome }}"
+            echo "lifecycle_review=${{ steps.lifecycle.outcome }}"
+            echo "typecheck=${{ steps.typecheck.outcome }}"
+            echo "database_free_unit_tests=${{ steps.unit_tests.outcome }}"
+            echo "production_build=${{ steps.build.outcome }}"
+            echo "prettier_advisory=${{ steps.prettier.outcome }}"
+          } > ci-reports/quality-summary.txt
+
+      - name: Upload safe quality reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: safe-quality-reports
+          path: |
+            ci-reports/lifecycle-review.txt
+            ci-reports/prettier-report.txt
+            ci-reports/quality-summary.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  security:
+    name: Secret controls
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reject secret assignments in Dockerfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -qE '^[[:space:]]*(ENV|ARG)[[:space:]]+(DATABASE_URL|JWT_SECRET|AUTH_SECRET|NVIDIA_API_KEY)=' Dockerfile; then
+            echo "::error::Dockerfile contains a forbidden secret assignment."
+            exit 1
+          fi
+
+      - name: Scan repository and history for secret patterns
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_SUMMARY: "false"

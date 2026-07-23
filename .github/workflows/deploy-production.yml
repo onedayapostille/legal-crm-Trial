@@ -1,0 +1,127 @@
+name: Deploy production (disabled pending blockers)
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Exact 40-character commit SHA from main
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: alghazzawi-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Safety lock: remove this literal false only in a reviewed PR after every
+    # blocker in CI_CD_IMPLEMENTATION_PLAN.md is closed.
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Validate exact commit and successful CI
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::commit_sha must be a full lowercase commit SHA."
+            exit 1
+          }
+          git cat-file -e "$REQUESTED_SHA^{commit}"
+          git merge-base --is-ancestor "$REQUESTED_SHA" origin/main
+          conclusion="$(
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${REQUESTED_SHA}&branch=main&status=completed&per_page=20" \
+              --jq '[.workflow_runs[] | select(.event == "push")][0].conclusion'
+          )"
+          test "$conclusion" = "success" || {
+            echo "::error::The exact main commit does not have a successful push-triggered CI run."
+            exit 1
+          }
+          echo "sha=$REQUESTED_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Verify SSH host key and configure client
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.ALGHAZZAWI_SSH_HOST }}
+          SSH_PORT: ${{ secrets.ALGHAZZAWI_SSH_PORT }}
+          SSH_PRIVATE_KEY: ${{ secrets.ALGHAZZAWI_SSH_PRIVATE_KEY }}
+          SSH_HOST_FINGERPRINT: ${{ secrets.ALGHAZZAWI_SSH_HOST_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/actions_deploy"
+          ssh-keyscan -p "$SSH_PORT" "$SSH_HOST" > "$HOME/.ssh/known_hosts.candidate" 2>/dev/null
+          test -s "$HOME/.ssh/known_hosts.candidate"
+          ssh-keygen -lf "$HOME/.ssh/known_hosts.candidate" -E sha256 |
+            awk '{print $2}' |
+            grep -Fxq "$SSH_HOST_FINGERPRINT" || {
+              echo "::error::SSH host fingerprint mismatch."
+              exit 1
+            }
+          mv "$HOME/.ssh/known_hosts.candidate" "$HOME/.ssh/known_hosts"
+
+      - name: Invoke guarded exact-SHA deployment
+        id: deploy
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.ALGHAZZAWI_SSH_HOST }}
+          SSH_PORT: ${{ secrets.ALGHAZZAWI_SSH_PORT }}
+          SSH_USER: ${{ secrets.ALGHAZZAWI_SSH_USER }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ssh \
+            -i "$HOME/.ssh/actions_deploy" \
+            -p "$SSH_PORT" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            "$SSH_USER@$SSH_HOST" \
+            "deploy --branch main --commit $RELEASE_SHA" |
+            tee deployment-result.txt
+          grep -qE '^DEPLOYED_COMMIT=[0-9a-f]{40}$' deployment-result.txt
+          grep -qE '^PREVIOUS_COMMIT=([0-9a-f]{40}|none)$' deployment-result.txt
+
+      - name: Confirm public HTTPS health or roll back
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.ALGHAZZAWI_SSH_HOST }}
+          SSH_PORT: ${{ secrets.ALGHAZZAWI_SSH_PORT }}
+          SSH_USER: ${{ secrets.ALGHAZZAWI_SSH_USER }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if ! curl --fail --silent --show-error \
+            --connect-timeout 10 --max-time 20 \
+            https://www.crm.ghazzawilawfirm.com/health |
+            grep -q '"ok":true'; then
+            ssh \
+              -i "$HOME/.ssh/actions_deploy" \
+              -p "$SSH_PORT" \
+              -o BatchMode=yes \
+              -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes \
+              "$SSH_USER@$SSH_HOST" \
+              "rollback --failed-commit $RELEASE_SHA"
+            exit 1
+          fi
