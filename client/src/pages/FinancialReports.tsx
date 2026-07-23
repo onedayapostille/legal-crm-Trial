@@ -555,13 +555,46 @@ export default function FinancialReports() {
 
             {tab === "hop" && (
               <QueryState q={byHopQ}>
-                <div className="text-center py-10 space-y-2">
-                  <AlertTriangle className="h-8 w-8 mx-auto text-amber-500" />
-                  <p className="font-semibold">Data relationship not configured</p>
-                  <p className="text-sm text-muted-foreground max-w-2xl mx-auto">
-                    {byHopQ.data?.reason ?? "Head of Practice is not represented in the data model."}
-                  </p>
-                </div>
+                {byHopQ.data && (byHopQ.data.configured === false ? (
+                  <div className="text-center py-10 space-y-2">
+                    <AlertTriangle className="h-8 w-8 mx-auto text-amber-500" />
+                    <p className="font-semibold">Data relationship not configured</p>
+                    <p className="text-sm text-muted-foreground max-w-2xl mx-auto">
+                      {byHopQ.data.reason}
+                    </p>
+                  </div>
+                ) : byHopQ.data.rows.length === 0 ? <Empty /> : (
+                  <>
+                    <p className="text-xs text-muted-foreground mb-2 max-w-3xl">
+                      Attributed Revenue — each financial record is attributed to the responsible Head of
+                      Practice of its (location + matter type). Records with no classified practice roll up
+                      under "Unassigned / Unclassified".
+                    </p>
+                    <Table>
+                      <TableHeader><TableRow>
+                        <TableHead>Head of Practice</TableHead>
+                        <TableHead className="text-right">Clients</TableHead>
+                        <TableHead className="text-right">Matters</TableHead>
+                        <TableHead className="text-right">Records</TableHead>
+                        {groupMoneyHeaders}
+                        <TableHead className="text-right">Collection Rate</TableHead>
+                      </TableRow></TableHeader>
+                      <TableBody>
+                        {byHopQ.data.rows.map((r: any, i: number) => (
+                          <TableRow key={i}>
+                            <TableCell>{r.headOfPracticeName}</TableCell>
+                            <TableCell className="text-right">{r.clientCount}</TableCell>
+                            <TableCell className="text-right">{r.matterCount}</TableCell>
+                            <TableCell className="text-right">{r.recordCount}</TableCell>
+                            {groupMoneyCells(r)}
+                            <TableCell className="text-right">{pct(r.collectionRate)}</TableCell>
+                          </TableRow>
+                        ))}
+                        {groupTotalsRow(byHopQ.data.rows, 4)}
+                      </TableBody>
+                    </Table>
+                  </>
+                ))}
               </QueryState>
             )}
 

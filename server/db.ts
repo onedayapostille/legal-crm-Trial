@@ -21,7 +21,7 @@ import {
 import { hashPassword } from "./_core/auth";
 import { channelMediumRequired, MATTER_TYPES, isSupportedMatterType } from "../shared/const";
 import {
-  type Actor, clientScopeWhere, matterScopeWhere, standaloneMatterScopeWhere,
+  type Actor, clientScopeWhere, clientMatterScopeWhere, standaloneMatterScopeWhere,
   leadScopeWhere, hasAllScope,
 } from "./scoping";
 import { notifyLawyerAssignment } from "./emailNotifications";
@@ -1510,7 +1510,7 @@ export async function searchConflicts(rawQuery: string, actor?: Actor): Promise<
   // their scope via search. Clients use the client scope; matters use the matter
   // scope (both no-ops for ALL / firm-wide readers).
   const clientScope = actor ? clientScopeWhere(actor) : undefined;
-  const matterScope = actor ? matterScopeWhere(actor) : undefined;
+  const matterScope = actor ? clientMatterScopeWhere(actor) : undefined;
 
   // Precise, conservative decision: the normalized query must appear as a
   // substring of the normalized candidate value. Tolerates case/spacing/
@@ -1955,7 +1955,7 @@ export async function getClientConversionMetrics(
 
 export async function getClientMatters(clientId: number, actor?: Actor) {
   const db = getDb();
-  const scope = actor ? matterScopeWhere(actor) : undefined;
+  const scope = actor ? clientMatterScopeWhere(actor) : undefined;
   const base = eq(clientMatters.clientId, clientId);
   return db
     .select()
@@ -1982,7 +1982,7 @@ function isActiveMatterStatus() {
 export async function getAllClientMatters(filters: { status?: string } = {}, actor?: Actor) {
   const db = getDb();
   const status = filters.status?.trim();
-  const scope = actor ? matterScopeWhere(actor) : undefined;
+  const scope = actor ? clientMatterScopeWhere(actor) : undefined;
   const statusCond = status ? matterStatusEquals(status) : undefined;
   const where = statusCond && scope ? and(statusCond, scope) : (statusCond ?? scope);
   return db
@@ -2012,7 +2012,7 @@ export async function getAllClientMatters(filters: { status?: string } = {}, act
 
 export async function getClientMatterById(id: number, actor?: Actor) {
   const db = getDb();
-  const scope = actor ? matterScopeWhere(actor) : undefined;
+  const scope = actor ? clientMatterScopeWhere(actor) : undefined;
   const result = await db
     .select()
     .from(clientMatters)

@@ -13,6 +13,7 @@ import { USER_ROLES, USER_STATUSES, MATTER_TYPES, hasPermission, NOT_ADMIN_ERR_M
 import { ASSIGNMENT_FIELD_NAMES, type AssignmentField } from "../shared/assignmentEligibility";
 import * as financialReports from "./financialReports";
 import { reportFilterSchema, EXPORT_REPORT_TYPES } from "./financialReports";
+import { assertOwnPracticeWrite, getClientPracticeClassification } from "./practices";
 
 // Money input validation (Finance / Invoicing). A monetary string must be a
 // finite, NON-NEGATIVE number. Negative fees, revenue, or collected amounts are
@@ -824,7 +825,7 @@ export const appRouter = router({
       .input(z.object({ id: z.number() }))
       .query(async ({ input, ctx }) => db.getClientById(input.id, ctx.user!)),
 
-    create: permissionProcedure("clients:manage")
+    create: capabilityProcedure("clients:create")
       .input(z.object({
         clientName: z.string().min(1),
         clientStatus: z.enum(["Existing Client", "Leads", "Rejected"]).default("Leads"),
@@ -834,9 +835,15 @@ export const appRouter = router({
         city: z.enum(["Riyadh", "Dammam", "Jeddah"]).optional(),
         matterType: z.enum(["Corporate", "Litigation"]).optional(),
       }))
-      .mutation(async ({ input, ctx }) => db.createClient(input as any, ctx.user!.id)),
+      .mutation(async ({ input, ctx }) => {
+        // OWN_PRACTICE (Phase 5): a Head of Practice may create only within their
+        // own practice (city + matter type). ALL-scope writers are unrestricted;
+        // null/unclassified practice fails closed.
+        await assertOwnPracticeWrite(ctx.user!, "clients:create", { location: input.city, matterType: input.matterType });
+        return db.createClient(input as any, ctx.user!.id);
+      }),
 
-    update: permissionProcedure("clients:manage")
+    update: capabilityProcedure("clients:edit")
       .input(z.object({
         id: z.number(),
         clientName: z.string().optional(),
@@ -849,15 +856,25 @@ export const appRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
-        // Scope guard (IDOR): you can only edit a client you can see. Re-fetch
-        // under the caller's scope; out-of-scope → NOT_FOUND (non-enumerating).
-        if (!(await db.getClientById(id, ctx.user!))) {
+        // Scope guard (IDOR): you can only edit a client you can see (HoP reads
+        // are ALL, so this returns the row). Out-of-scope → NOT_FOUND.
+        const existing = await db.getClientById(id, ctx.user!);
+        if (!existing) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Client not found" });
         }
+        // OWN_PRACTICE: validate BOTH the current and the proposed (city, matter
+        // type) — prevents self-claiming a record or moving it into another head's
+        // practice via the scope-defining fields. Unspecified fields keep current.
+        await assertOwnPracticeWrite(
+          ctx.user!,
+          "clients:edit",
+          { location: input.city ?? existing.city, matterType: input.matterType ?? existing.matterType },
+          { location: existing.city, matterType: existing.matterType },
+        );
         return db.updateClient(id, data as any, ctx.user!.id);
       }),
 
-    delete: permissionProcedure("clients:manage")
+    delete: capabilityProcedure("clients:delete")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input, ctx }) => {
         if (!(await db.getClientById(input.id, ctx.user!))) {
@@ -1383,6 +1400,14 @@ export const appRouter = router({
         await db.upsertSystemSetting(input.key, input.value, ctx.user!.id);
         return { success: true };
       }),
+  }),
+
+  // ─── Practices (Head-of-Practice model — Phase 5) ──────────────────────────
+  // Read-only classification report: which client rows map to a practice with an
+  // appointed head (writable under OWN_PRACTICE) vs. unclassified (read-only until
+  // a controlled step appoints a head). Admin-only ops view; no rows are modified.
+  practices: router({
+    classification: adminProcedure.query(async () => getClientPracticeClassification()),
   }),
 
   // ─── Client Action Logs ────────────────────────────────────────────────────

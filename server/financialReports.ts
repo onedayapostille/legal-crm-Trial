@@ -40,7 +40,7 @@
 import { z } from "zod";
 import { and, eq, desc, ilike, or, sql, type SQL } from "drizzle-orm";
 import { alias, type SelectedFields } from "drizzle-orm/pg-core";
-import { financialRecords, clients, clientMatters, users } from "../drizzle/schema";
+import { financialRecords, clients, clientMatters, users, practices } from "../drizzle/schema";
 import { getDb, getOverdueDays } from "./db";
 
 // ─── Central filter schema (shared by every reporting endpoint) ───────────────
@@ -439,20 +439,66 @@ export async function getRevenueByLeadPartner(f: ReportFilters): Promise<LeadPar
 }
 
 /**
- * C. Revenue by Head of Practice — NOT CONFIGURED.
- * No Head-of-Practice relationship exists in the schema. We do not invent one
- * or derive it from attorney_head. To enable this report, add an explicit
- * relationship (e.g. client_matters.head_of_practice_id → users.id, or a
- * practice-group table with a head user) and group on it here.
+ * C. Revenue by Head of Practice — configured via the authoritative `practices`
+ * relationship (Phase 5). A record's practice is (client.city, matter type),
+ * where matter type is the linked matter's type or, for client-level records, the
+ * client's own type. Each (location, matter_type) has ONE responsible head, so a
+ * financial record maps to at most one head and is counted once (no double count;
+ * we join the 1:1 practices row, never the 1:many attorney/rate tables).
+ *
+ * Records whose practice is unmapped or has no appointed head roll up under
+ * "Unassigned / Unclassified" — surfaced, never silently attributed. This uses
+ * `attorney_head` for NOTHING; the head comes only from `practices`.
  */
-export async function getRevenueByHeadOfPractice(_f: ReportFilters) {
-  return {
-    configured: false as const,
-    reason:
-      "Head of Practice is not represented in the data model (no user role, matter field, or practice group). " +
-      "Add an explicit relationship such as client_matters.head_of_practice_id → users.id to enable this report.",
-    rows: [] as never[],
-  };
+const HOP_NOT_CONFIGURED = {
+  configured: false as const,
+  reason:
+    "Head of Practice is not configured: no practice has an appointed head yet. " +
+    "Appoint responsible heads in the practices relationship to enable this report.",
+  rows: [] as never[],
+};
+
+export async function getRevenueByHeadOfPractice(f: ReportFilters) {
+  const db = getDb();
+  const headUser = alias(users, "head_user");
+  // Not configured until at least one practice has an appointed head. Also treat
+  // an absent `practices` table (additive migration not yet applied) as not
+  // configured, so the dimension degrades gracefully rather than erroring.
+  try {
+    const appointed = await db
+      .select({ id: practices.id })
+      .from(practices)
+      .where(sql`${practices.headOfPracticeId} IS NOT NULL`)
+      .limit(1);
+    if (appointed.length === 0) return HOP_NOT_CONFIGURED;
+  } catch {
+    return HOP_NOT_CONFIGURED;
+  }
+  // Practice match: same location (city enum) AND same matter type. Matter type
+  // is compared as text so a matter's varchar type lines up with the client/
+  // practice enum (legacy free-text matter types simply won't match → unclassified).
+  const practiceMatterType = sql`COALESCE(${clientMatters.matterType}::text, ${clients.matterType}::text)`;
+  const rows = await db
+    .select({
+      headOfPracticeId: practices.headOfPracticeId,
+      headOfPracticeName: sql<string>`COALESCE(${headUser.name}, 'Unassigned / Unclassified')`,
+      clientCount: sql<string>`COUNT(DISTINCT ${financialRecords.clientId})`,
+      matterCount: sql<string>`COUNT(DISTINCT ${financialRecords.clientMatterId})`,
+      recordCount: sql<string>`COUNT(*)`,
+      ...groupMoneyColumns,
+      collectionRate,
+    })
+    .from(financialRecords)
+    .leftJoin(clients, eq(financialRecords.clientId, clients.id))
+    .leftJoin(clientMatters, eq(financialRecords.clientMatterId, clientMatters.id))
+    .leftJoin(
+      practices,
+      and(eq(practices.location, clients.city), eq(sql`${practices.matterType}::text`, practiceMatterType)),
+    )
+    .leftJoin(headUser, eq(practices.headOfPracticeId, headUser.id))
+    .where(whereOf(f))
+    .groupBy(practices.headOfPracticeId, sql`COALESCE(${headUser.name}, 'Unassigned / Unclassified')`);
+  return { configured: true as const, rows: sortByRevenueDesc(rows as any[]) };
 }
 
 /** D. Revenue by Client. */
