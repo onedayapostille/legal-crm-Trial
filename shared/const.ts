@@ -25,6 +25,14 @@ export const ROLE_LABELS: Record<UserRole, string> = {
 // ":view" strings so a role can be granted visibility without write access.
 // Manager is firm-wide READ-ONLY: every string it holds is a ":view" grant —
 // the server rejects all Manager mutations with FORBIDDEN.
+//
+// COMPATIBILITY BRIDGE (Phase-1). This string-array map and hasPermission() are
+// the legacy authorization surface. The typed successor is `shared/policy`
+// (closed capability set + DataScope + authorize()); server routes enforce it via
+// `capabilityProcedure`. ROLE_PERMISSIONS / hasPermission are retained ONLY so
+// routes not yet migrated keep working, and are consumed by the policy engine's
+// LEGACY_POLICY to reproduce this exact behavior. Remove once every route uses a
+// typed capability. See docs/AUTHZ_PHASES.md.
 export const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
   admin: ["*"],
   manager: [
@@ -142,6 +150,13 @@ export const DISCOUNT_RATES: Record<DiscountApproval, number> = {
   "Board": 15,
 };
 
+/**
+ * @deprecated Phase-1 boolean permission check — the compatibility bridge for
+ * routes not yet migrated to the typed policy engine. Prefer `authorize` / `can`
+ * from `shared/policy` (capability + DataScope) for new code. Kept because
+ * `permissionProcedure` and the frontend still call it; slated for removal as
+ * routes move to `capabilityProcedure`. See docs/AUTHZ_PHASES.md.
+ */
 export function hasPermission(role: UserRole | string | null | undefined, permission: string) {
   if (!role || !(role in ROLE_PERMISSIONS)) return false;
   const permissions = ROLE_PERMISSIONS[role as UserRole];

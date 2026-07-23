@@ -1,12 +1,21 @@
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
 import type { User } from "../../drizzle/schema";
+import type { PolicyDecision } from "@shared/policy";
 import * as db from "../db";
 import { getSessionFromRequest, verifySessionToken } from "./auth";
 
 export type TrpcContext = {
   req: CreateExpressContextOptions["req"];
   res: CreateExpressContextOptions["res"];
+  /** The authenticated actor (role + id). Never derived from request input. */
   user: User | null;
+  /**
+   * The authorization decision for the current capability, populated by
+   * `capabilityProcedure`. Carries the resolved DataScope for actor-aware
+   * resolvers / future query filtering. Absent on unauthenticated or
+   * bridge-gated (permissionProcedure) routes.
+   */
+  authz?: PolicyDecision;
 };
 
 export async function createContext(
