@@ -67,18 +67,28 @@ jobs:
           SSH_HOST_FINGERPRINT: ${{ secrets.ALGHAZZAWI_SSH_HOST_FINGERPRINT }}
         run: |
           set -euo pipefail
+          [[ "$SSH_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
+          [[ "$SSH_PORT" =~ ^[0-9]{1,5}$ ]]
+          [[ "$SSH_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/=]+$ ]]
           umask 077
           mkdir -p "$HOME/.ssh"
           printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/actions_deploy"
           ssh-keyscan -p "$SSH_PORT" "$SSH_HOST" > "$HOME/.ssh/known_hosts.candidate" 2>/dev/null
           test -s "$HOME/.ssh/known_hosts.candidate"
-          ssh-keygen -lf "$HOME/.ssh/known_hosts.candidate" -E sha256 |
-            awk '{print $2}' |
-            grep -Fxq "$SSH_HOST_FINGERPRINT" || {
-              echo "::error::SSH host fingerprint mismatch."
-              exit 1
-            }
-          mv "$HOME/.ssh/known_hosts.candidate" "$HOME/.ssh/known_hosts"
+          : > "$HOME/.ssh/known_hosts"
+          while IFS= read -r host_key; do
+            printf '%s\n' "$host_key" > "$HOME/.ssh/one_host_key"
+            fingerprint="$(ssh-keygen -lf "$HOME/.ssh/one_host_key" -E sha256 | awk '{print $2}')"
+            if [[ "$fingerprint" == "$SSH_HOST_FINGERPRINT" ]]; then
+              cat "$HOME/.ssh/one_host_key" > "$HOME/.ssh/known_hosts"
+              break
+            fi
+          done < "$HOME/.ssh/known_hosts.candidate"
+          rm "$HOME/.ssh/one_host_key" "$HOME/.ssh/known_hosts.candidate"
+          test -s "$HOME/.ssh/known_hosts" || {
+            echo "::error::SSH host fingerprint mismatch."
+            exit 1
+          }
 
       - name: Invoke guarded exact-SHA deployment
         id: deploy
@@ -90,6 +100,7 @@ jobs:
           RELEASE_SHA: ${{ steps.release.outputs.sha }}
         run: |
           set -euo pipefail
+          [[ "$SSH_USER" == "developer" ]]
           ssh \
             -i "$HOME/.ssh/actions_deploy" \
             -p "$SSH_PORT" \
@@ -111,6 +122,7 @@ jobs:
           RELEASE_SHA: ${{ steps.release.outputs.sha }}
         run: |
           set -euo pipefail
+          [[ "$SSH_USER" == "developer" ]]
           if ! curl --fail --silent --show-error \
             --connect-timeout 10 --max-time 20 \
             https://www.crm.ghazzawilawfirm.com/health |

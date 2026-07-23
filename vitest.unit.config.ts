@@ -1,21 +1,25 @@
-import { defineConfig, mergeConfig } from "vitest/config";
-import baseConfig from "./vitest.config";
+import { defineConfig } from "vitest/config";
+import path from "path";
 
-export default mergeConfig(
-  baseConfig,
-  defineConfig({
-    test: {
-      // These suites create database fixtures or otherwise require DATABASE_URL.
-      // CI runs them only in a separately approved integration environment.
-      exclude: [
-        "server/conversionRate.test.ts",
-        "server/financeInvoiceEditing.test.ts",
-        "server/financialReports.test.ts",
-        "server/financialRevenue.test.ts",
-        "server/matterTypeAndAttorneyCreate.test.ts",
-        "server/matterTypeCoverage.test.ts",
-        "server/recentLeads.test.ts",
-      ],
+const templateRoot = path.resolve(import.meta.dirname);
+
+export default defineConfig({
+  root: templateRoot,
+  resolve: {
+    alias: {
+      "@": path.resolve(templateRoot, "client", "src"),
+      "@shared": path.resolve(templateRoot, "shared"),
+      "@assets": path.resolve(templateRoot, "attached_assets"),
     },
-  }),
-);
+  },
+  test: {
+    environment: "node",
+    // Conservative allowlist: these suites were verified with DATABASE_URL
+    // explicitly empty. Everything else is treated as integration coverage.
+    include: [
+      "server/auth.logout.test.ts",
+      "server/normalizeForConflict.test.ts",
+      "server/nvidia.test.ts",
+    ],
+  },
+});

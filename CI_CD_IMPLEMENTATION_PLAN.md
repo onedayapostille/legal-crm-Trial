@@ -8,18 +8,26 @@
 No deployment, restart, production write, credential rotation, history rewrite,
 symlink change, or GitHub settings change was performed.
 
+> **Concurrent Git event:** while local validation was running, an external
+> process created commit `8de6f48` and updated
+> `origin/chore/safe-cicd-setup`. This audit did not run `git commit` or
+> `git push`. The external commit also captured pre-existing `.gitignore` and
+> `.repowise` worktree changes. The corrected database-free test allowlist and
+> final report refinements remain uncommitted locally; do not deploy from
+> `8de6f48`.
+
 ## Readiness summary
 
-| Area | Status | Evidence / remaining work |
-|---|---|---|
-| CI workflow | Prepared, expected to remain red on secret history | Node 22, exact pnpm 10.4.1, ignored lifecycle scripts, typecheck, database-free tests, build, advisory Prettier, Docker assignment guard, full-history Gitleaks scan, safe reports |
-| Deployment workflow | Prepared but hard-disabled | Manual trigger, production environment, exact SHA and CI checks, verified host key, strict SSH, serialized deployment, HTTPS verification and rollback request |
-| Startup migrations | Fixed on this branch only | `server/_core/index.ts` no longer calls `runMigrations()`; `pnpm db:migrate` remains an explicit command |
-| Current-tip Docker secrets | Removed on this branch only | Runtime injection is required; exposed credentials still require rotation and history remediation |
-| Server scripts | Audited, changes required | See “Server script audit” |
-| Release cutover | Not started | No release/shared directories or symlinks were changed |
-| Production drift | Inventoried, unresolved | See `PRODUCTION_DRIFT_REVIEW.md` |
-| PM2 access | Unresolved | IT action is described in `PM2_ACCESS_REQUIREMENTS.md` |
+| Area                       | Status                                             | Evidence / remaining work                                                                                                                                                          |
+| -------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CI workflow                | Prepared, expected to remain red on secret history | Node 22, exact pnpm 10.4.1, ignored lifecycle scripts, typecheck, database-free tests, build, advisory Prettier, Docker assignment guard, full-history Gitleaks scan, safe reports |
+| Deployment workflow        | Prepared but hard-disabled                         | Manual trigger, production environment, exact SHA and CI checks, verified host key, strict SSH, serialized deployment, HTTPS verification and rollback request                     |
+| Startup migrations         | Fixed on this branch only                          | `server/_core/index.ts` no longer calls `runMigrations()`; `pnpm db:migrate` remains an explicit command                                                                           |
+| Current-tip Docker secrets | Removed on this branch only                        | Runtime injection is required; exposed credentials still require rotation and history remediation                                                                                  |
+| Server scripts             | Audited, changes required                          | See “Server script audit”                                                                                                                                                          |
+| Release cutover            | Not started                                        | No release/shared directories or symlinks were changed                                                                                                                             |
+| Production drift           | Inventoried, unresolved                            | See `PRODUCTION_DRIFT_REVIEW.md`                                                                                                                                                   |
+| PM2 access                 | Unresolved                                         | IT action is described in `PM2_ACCESS_REQUIREMENTS.md`                                                                                                                             |
 
 ## Stop gate
 
@@ -46,25 +54,25 @@ all of the following are evidenced in a reviewed pull request:
 Audit date: 2026-07-23. The five scripts were read over the existing management
 SSH connection. None was executed.
 
-| Control | Result | Notes |
-|---|---|---|
-| No automatic database migrations | Partial | `deploy-crm.sh` blocks a release whose startup contains `runMigrations()`. It does not directly invoke migrations. The branch removes the startup call. |
-| No secret values in scripts | Pass | The scripts contain paths, URLs, names, and configuration references, but no reviewed secret values. `deploy.conf` contents were not copied. |
-| No wildcard deletion | Pass | No deletion command is present. Release cleanup is not automated. |
-| No Git operations in `/var/www/legal-crm` | Pass | Git operations are confined to `/home/developer/legal-crm-source`; releases use `git archive`. |
-| Separate release directory | Pass | Releases target `/var/www/legal-crm-releases/<sha>`. |
-| Previous release retained | Pass | The prior target is recorded and the scripts do not delete it. |
-| Health checks fail safely | Partial | `curl --fail`, timeouts, HTTPS, and `set -e` are present. JSON validation is only a substring match and should use a JSON parser and exact booleans. |
-| Preserve `.env` | Pass after cutover | Release `.env` links to the shared `.env`; mode 600/640 is enforced. |
-| Preserve uploads | Pass if shared directory exists | Releases link `uploads` only when the shared uploads directory exists. Make it mandatory if uploads are application data. |
-| Preserve persistent data and logs | Fail / unspecified | No shared persistent-data paths are declared and logs are not linked into releases. Inventory these before cutover. |
-| Backup current release | Partial | A restrictive code archive is created. Secrets, uploads, logs, SQL, ZIP files, and dependencies are intentionally excluded; separate verified backups are required for persistent data. |
-| Stop on live drift | Fail | `compare-production-to-github.sh` always returns success because its `diff` ends with `|| true`, and `deploy-crm.sh` does not call it. |
-| Exact branch and commit contract | Fail | The script hard-codes `main` and accepts a positional commit, but does not accept and verify the proposed `--branch main --commit <sha>` interface. |
-| CI-safe tests during release | Fail | The deploy script runs the full `pnpm test` after linking production `.env`; database-backed tests could touch production data. Remove all tests from the server deploy or run only build artifacts already verified by CI. |
-| Lifecycle scripts | Pass with operational caveat | Install uses `--ignore-scripts`; currently ignored native build packages must be explicitly reviewed and the production build verified. |
-| PM2 reload | Blocked | Uses passwordless sudo for the PM2 binary; no approved narrow policy exists. |
-| Deployment result record | Partial | Release paths are recorded, but the Actions contract requires value-free `DEPLOYED_COMMIT` and `PREVIOUS_COMMIT` output. |
+| Control                                   | Result                          | Notes                                                                                                                                                                                                                       |
+| ----------------------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --- | -------------------------------------------- |
+| No automatic database migrations          | Partial                         | `deploy-crm.sh` blocks a release whose startup contains `runMigrations()`. It does not directly invoke migrations. The branch removes the startup call.                                                                     |
+| No secret values in scripts               | Pass                            | The scripts contain paths, URLs, names, and configuration references, but no reviewed secret values. `deploy.conf` contents were not copied.                                                                                |
+| No wildcard deletion                      | Pass                            | No deletion command is present. Release cleanup is not automated.                                                                                                                                                           |
+| No Git operations in `/var/www/legal-crm` | Pass                            | Git operations are confined to `/home/developer/legal-crm-source`; releases use `git archive`.                                                                                                                              |
+| Separate release directory                | Pass                            | Releases target `/var/www/legal-crm-releases/<sha>`.                                                                                                                                                                        |
+| Previous release retained                 | Pass                            | The prior target is recorded and the scripts do not delete it.                                                                                                                                                              |
+| Health checks fail safely                 | Partial                         | `curl --fail`, timeouts, HTTPS, and `set -e` are present. JSON validation is only a substring match and should use a JSON parser and exact booleans.                                                                        |
+| Preserve `.env`                           | Pass after cutover              | Release `.env` links to the shared `.env`; mode 600/640 is enforced.                                                                                                                                                        |
+| Preserve uploads                          | Pass if shared directory exists | Releases link `uploads` only when the shared uploads directory exists. Make it mandatory if uploads are application data.                                                                                                   |
+| Preserve persistent data and logs         | Fail / unspecified              | No shared persistent-data paths are declared and logs are not linked into releases. Inventory these before cutover.                                                                                                         |
+| Backup current release                    | Partial                         | A restrictive code archive is created. Secrets, uploads, logs, SQL, ZIP files, and dependencies are intentionally excluded; separate verified backups are required for persistent data.                                     |
+| Stop on live drift                        | Fail                            | `compare-production-to-github.sh` always returns success because its `diff` ends with `                                                                                                                                     |     | true`, and `deploy-crm.sh` does not call it. |
+| Exact branch and commit contract          | Fail                            | The script hard-codes `main` and accepts a positional commit, but does not accept and verify the proposed `--branch main --commit <sha>` interface.                                                                         |
+| CI-safe tests during release              | Fail                            | The deploy script runs the full `pnpm test` after linking production `.env`; database-backed tests could touch production data. Remove all tests from the server deploy or run only build artifacts already verified by CI. |
+| Lifecycle scripts                         | Pass with operational caveat    | Install uses `--ignore-scripts`; currently ignored native build packages must be explicitly reviewed and the production build verified.                                                                                     |
+| PM2 reload                                | Blocked                         | Uses passwordless sudo for the PM2 binary; no approved narrow policy exists.                                                                                                                                                |
+| Deployment result record                  | Partial                         | Release paths are recorded, but the Actions contract requires value-free `DEPLOYED_COMMIT` and `PREVIOUS_COMMIT` output.                                                                                                    |
 
 ### Required guarded-command contract
 
@@ -138,8 +146,10 @@ code deployment workflow never runs them.
 - Installation always uses `--frozen-lockfile --ignore-scripts`.
 - `pnpm ignored-builds` records which lifecycle builds were suppressed. Nothing
   is automatically approved.
-- `test:unit` excludes the seven suites identified as database-backed.
-- `test:integration` names those suites explicitly and is not invoked by CI.
+- `test:unit` is a conservative allowlist of three suites verified with no
+  database: logout cookie behavior, conflict-name normalization, and safe NVIDIA
+  configuration/RBAC behavior.
+- `test:integration` includes every other suite and is not invoked by CI.
 - No `DATABASE_URL` or production secret is supplied.
 - Prettier is advisory while existing drift is remediated.
 - Gitleaks scans full history and is expected to block until exposed history is
@@ -149,17 +159,17 @@ code deployment workflow never runs them.
 
 ## Remaining blockers and owner
 
-| Blocker | Owner | Required evidence |
-|---|---|---|
-| Credential rotation | Security/IT | Rotation record for every affected credential; old values revoked |
-| Git history exposure | Repository admin + Security | Approved remediation approach and clean full-history scan |
-| Startup migration change | Engineering | Merged commit and test/build evidence |
-| PM2 reload access | IT | Root-owned fixed wrapper and exact sudoers entry |
-| Drift disposition | Engineering + business owners | Signed classification and merged source decisions |
-| Release cutover | IT + Engineering | Supervised cutover record and rollback test |
-| Port and permissions | IT | Firewall/listener/ownership audit |
-| GitHub controls | Repository admin | Active main ruleset and production environment |
-| Server script fixes | IT + Engineering | Reviewed script diff and staging dry run |
+| Blocker                  | Owner                         | Required evidence                                                                                                                                                                                                         |
+| ------------------------ | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Credential rotation      | Security/IT                   | Rotation record for every affected credential; old values revoked                                                                                                                                                         |
+| Git history exposure     | Repository admin + Security   | Approved remediation approach and clean full-history scan                                                                                                                                                                 |
+| Startup migration change | Engineering                   | Merged commit and test/build evidence                                                                                                                                                                                     |
+| PM2 reload access        | IT                            | Root-owned fixed wrapper and exact sudoers entry                                                                                                                                                                          |
+| Drift disposition        | Engineering + business owners | Signed classification and merged source decisions                                                                                                                                                                         |
+| Release cutover          | IT + Engineering              | Supervised cutover record and rollback test                                                                                                                                                                               |
+| Port and permissions     | IT                            | Port 5000 listens on `0.0.0.0`; restrict it to the reverse proxy. Live code is `root:developer` mode 0775, source is `developer:developer` 0755, and admin scripts are 0700. Approve least-privilege ownership and modes. |
+| GitHub controls          | Repository admin              | Active main ruleset and production environment                                                                                                                                                                            |
+| Server script fixes      | IT + Engineering              | Reviewed script diff and staging dry run                                                                                                                                                                                  |
 
 ## Exact next safe action
 

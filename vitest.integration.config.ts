@@ -1,19 +1,24 @@
-import { defineConfig, mergeConfig } from "vitest/config";
-import baseConfig from "./vitest.config";
+import { defineConfig } from "vitest/config";
+import path from "path";
 
-export default mergeConfig(
-  baseConfig,
-  defineConfig({
-    test: {
-      include: [
-        "server/conversionRate.test.ts",
-        "server/financeInvoiceEditing.test.ts",
-        "server/financialReports.test.ts",
-        "server/financialRevenue.test.ts",
-        "server/matterTypeAndAttorneyCreate.test.ts",
-        "server/matterTypeCoverage.test.ts",
-        "server/recentLeads.test.ts",
-      ],
+const templateRoot = path.resolve(import.meta.dirname);
+
+export default defineConfig({
+  root: templateRoot,
+  resolve: {
+    alias: {
+      "@": path.resolve(templateRoot, "client", "src"),
+      "@shared": path.resolve(templateRoot, "shared"),
+      "@assets": path.resolve(templateRoot, "attached_assets"),
     },
-  }),
-);
+  },
+  test: {
+    environment: "node",
+    include: ["server/**/*.test.ts", "server/**/*.spec.ts"],
+    exclude: [
+      "server/auth.logout.test.ts",
+      "server/normalizeForConflict.test.ts",
+      "server/nvidia.test.ts",
+    ],
+  },
+});
