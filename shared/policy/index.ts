@@ -16,3 +16,4 @@ export * from "./roles";
 export * from "./matrix";
 export * from "./overlay";
 export * from "./authorize";
+export * from "./migration";

@@ -14,7 +14,19 @@ import {
 
 // ─── Enums ───────────────────────────────────────────────────────────────────
 
-export const userRoleEnum = pgEnum("user_role", ["admin", "manager", "partner", "lawyer", "finance", "staff", "viewer"]);
+// user_role enum values. LEGACY (admin, manager, partner, lawyer, finance,
+// staff, viewer) coexist with the approved TARGET account roles appended below
+// (migration 0023, additive). Ordering here mirrors ADD VALUE append order and
+// is cosmetic — the app never orders by role. "lead_lawyer" is deliberately
+// absent (a per-matter overlay, not an account role). The canonical, drift-
+// checked value list lives in shared/policy/roles.ts (ACCOUNT_ROLE_VALUES).
+export const userRoleEnum = pgEnum("user_role", [
+  // legacy (retained for coexistence)
+  "admin", "manager", "partner", "lawyer", "finance", "staff", "viewer",
+  // target account roles (Phase 3, additive)
+  "head_of_practice", "senior_associate", "executive_associate", "associate",
+  "junior_lawyer", "trainee", "paralegal", "coordinator",
+]);
 export const userStatusEnum = pgEnum("user_status", ["active", "inactive", "suspended"]);
 
 export const leadStatusEnum = pgEnum("lead_status", [

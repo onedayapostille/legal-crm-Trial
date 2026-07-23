@@ -43,6 +43,42 @@ shared by both eras (`admin`, `manager`, `finance`) deliberately resolve to the
 legacy policy while the app is in the legacy era, so e.g. `finance` does **not**
 gain its expanded target rights prematurely.
 
+## Phase 3 — additive target-role schema support (this change)
+
+Makes the persistence layer *ready* for the target roles without migrating any
+account.
+
+- **Migration `0023_target_roles_additive.sql`** (NOT executed): adds the eight
+  target account roles to the `user_role` enum via `ALTER TYPE ... ADD VALUE IF
+  NOT EXISTS` — additive, idempotent, matching the 0001/0003 precedent. No value
+  removed/renamed; no row updated; `lead_lawyer` never added (overlay, not a
+  role); `viewer` retained but unmapped.
+- **`drizzle/schema.ts`**: `userRoleEnum` widened to the 15 coexisting values
+  (legacy + target). `shared/policy/roles.ts` `ACCOUNT_ROLE_VALUES` is the
+  canonical list; a test drift-guards the two.
+- **Role typing**: `AccountRole` / `isAccountRole` (persistable roles) join the
+  existing `LegacyRole` / `TargetRole` distinction. `lead_lawyer` is excluded
+  from every account-role type and from User Management.
+- **Migration-readiness (`shared/policy/migration.ts`)**: the approved mapping as
+  data + a deterministic `mapLegacyRole()` (never auto-maps Lawyer/Viewer) + a
+  pure `buildPreflightReport()`. **`scripts/preflight-roles.ts`** runs a
+  read-only `SELECT role, COUNT(*) GROUP BY role` and classifies each into
+  auto / manual (Lawyer→HR grade) / decision (Viewer) / unknown — **no personal
+  data**, no writes.
+
+### Role coexistence & API validation across cutover
+
+| State | DB enum | `users.role` rows | `roleSchema` (User-Mgmt create/edit) | `authorize` |
+|---|---|---|---|---|
+| **Before this migration** | 7 legacy | legacy only | legacy (`USER_ROLES`) | `LEGACY_POLICY` |
+| **After 0023, before re-grade** | 15 (legacy+target) | still legacy | still legacy — target roles NOT yet assignable | `LEGACY_POLICY` for live legacy roles; target roles resolvable but unheld |
+| **After controlled re-grade (later phase)** | 15 | target | switches to target set | `TARGET_POLICY` |
+
+`roleSchema` is intentionally left as `z.enum(USER_ROLES)` (legacy) so widening
+the DB enum does **not** let the API assign an unenforced target role early
+(least privilege). The switch to a target-role schema happens with the re-grade,
+not here. Unknown roles fail closed at both `authorize` and `mapLegacyRole`.
+
 ## Deferred to later phases
 
 - **Route migration**: move each `permissionProcedure("x:manage")` to

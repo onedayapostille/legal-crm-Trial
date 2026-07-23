@@ -61,6 +61,38 @@ export function isTargetOnlyRole(v: unknown): v is Exclude<TargetRole, LegacyRol
 }
 
 /**
+ * Persistable account roles — the exact value set the `user_role` DB enum carries
+ * after the Phase-3 additive migration: every legacy role plus every TARGET
+ * account role. Excludes `lead_lawyer` (a per-matter overlay, never stored on an
+ * account). This is the single source of truth the drizzle enum in
+ * `drizzle/schema.ts` is drift-checked against (see roleMigration.test.ts).
+ *
+ * Ordering: legacy first, then target — mirrors the enum's ADD VALUE append order
+ * (cosmetic; the app never orders by role).
+ */
+export const ACCOUNT_ROLE_VALUES = [
+  // legacy (retained for coexistence)
+  "admin", "manager", "partner", "lawyer", "finance", "staff", "viewer",
+  // target account roles (added additively in migration 0023)
+  "head_of_practice", "senior_associate", "executive_associate", "associate",
+  "junior_lawyer", "trainee", "paralegal", "coordinator",
+] as const;
+export type AccountRole = (typeof ACCOUNT_ROLE_VALUES)[number];
+
+const ACCOUNT_ROLE_SET: ReadonlySet<string> = new Set(ACCOUNT_ROLE_VALUES);
+
+/** True for any value the `user_role` column may legitimately store. */
+export function isAccountRole(v: unknown): v is AccountRole {
+  return typeof v === "string" && ACCOUNT_ROLE_SET.has(v);
+}
+
+/** Target account roles only (target set minus the overlay and legacy-only names). */
+export const TARGET_ACCOUNT_ROLE_VALUES = [
+  "head_of_practice", "senior_associate", "executive_associate", "associate",
+  "junior_lawyer", "trainee", "paralegal", "coordinator",
+] as const;
+
+/**
  * Migration mapping (spec §6) — informational only. Consumed by no runtime path
  * in this phase; documents how a later account migration should re-grade users.
  * `null` = a target designation with no source legacy role (new).
