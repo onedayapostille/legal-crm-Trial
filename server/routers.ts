@@ -13,7 +13,27 @@ import { USER_ROLES, USER_STATUSES, MATTER_TYPES, hasPermission, NOT_ADMIN_ERR_M
 import { ASSIGNMENT_FIELD_NAMES, type AssignmentField } from "../shared/assignmentEligibility";
 import * as financialReports from "./financialReports";
 import { reportFilterSchema, EXPORT_REPORT_TYPES } from "./financialReports";
-import { assertOwnPracticeWrite, getClientPracticeClassification } from "./practices";
+import { assertOwnPracticeWrite, getClientPracticeClassification, financialRecordPracticeKey } from "./practices";
+import { authorize } from "@shared/policy";
+
+/**
+ * Coordinator payment-status projection (§B/§G): keeps ONLY payment-status /
+ * tracking fields and NULLS every sensitive value — fees, revenue, all money
+ * amounts, discounts, rates, notes, and the responsible-lawyer attribution. The
+ * row SHAPE is preserved (type-stable for consumers); the sensitive VALUES never
+ * leave the server for a Coordinator.
+ */
+function toPaymentStatusDTO<T extends Record<string, any>>(r: T): T {
+  return {
+    ...r,
+    agreedFees: null, netFees: null,
+    discountApproval: null, discountPercentage: null, discountAmount: null,
+    revenue: null, collectedAmount: null, outstandingAmount: null,
+    remainingAdvanced: null, billedAmount: null,
+    financeNotes: null,
+    responsibleLawyer: null, responsibleLawyerId: null,
+  };
+}
 
 // Money input validation (Finance / Invoicing). A monetary string must be a
 // finite, NON-NEGATIVE number. Negative fees, revenue, or collected amounts are
@@ -35,6 +55,15 @@ function formatDbError(err: any) {
 
 const roleSchema = z.enum(USER_ROLES);
 const statusSchema = z.enum(USER_STATUSES);
+
+// Lead Lawyer overlay — the ONLY client_matters fields a designated Lead Lawyer
+// may edit via the overlay (§G). Derived from the exclusion rule: no assignment
+// (lead/support/attorney*), practice (matterType), financial (billingType), or
+// identifier (matterReference/originalSerial) fields — those need base authority.
+const LEAD_LAWYER_EDITABLE_FIELDS: readonly string[] = [
+  "matterDescription", "matterStatus", "balanceWorkLeft",
+  "achievementPercentage", "achievementStatus", "priority", "opposingParty",
+];
 
 const passwordSchema = z.string()
   .min(8, "Password must be at least 8 characters")
@@ -980,6 +1009,25 @@ export const appRouter = router({
         return db.reassignLeadLawyer(input.clientMatterId, input.userId, ctx.user!.id);
       }),
 
+    // Lead Lawyer overlay (Phase 6): READ-ONLY, matter-filtered financial records
+    // for a single matter. Allowed for base financial viewers OR the designated
+    // Lead Lawyer of THIS matter (e.g. an Executive Associate who otherwise has no
+    // financial visibility). Never grants financial mutation, and never exposes
+    // other matters' records — the query is filtered to clientMatterId.
+    matterFinancials: protectedProcedure
+      .input(z.object({ clientMatterId: z.number() }))
+      .query(async ({ input, ctx }) => {
+        const hasFinancialView = authorize(
+          { id: ctx.user!.id, role: ctx.user!.role, status: ctx.user!.status },
+          "financial:view",
+        ).allowed;
+        const isLead = await db.isLeadLawyerOfMatter(ctx.user!.id, input.clientMatterId);
+        if (!hasFinancialView && !isLead) {
+          throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
+        }
+        return db.getFinancialRecords({ clientMatterId: input.clientMatterId });
+      }),
+
     // Conflict check for a (prospective) matter — by matter name and/or opposing
     // party. Used by the Create Matter form before submitting.
     checkConflicts: capabilityProcedure("clients:view")
@@ -1055,6 +1103,12 @@ export const appRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         const { acknowledgeConflicts, ...matterInput } = input;
+        // Lead Lawyer designation on CREATE is a privileged assignment
+        // (matters:assign_lawyer) — it must NOT be self-granted through the
+        // generic create input (§G: prevent self-designation).
+        if (matterInput.leadLawyerId != null && !hasPermission(ctx.user!.role, "matters:assign_lawyer")) {
+          throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
+        }
         // Rejected clients are locked: no new matters.
         await db.assertClientNotRejected(matterInput.clientId);
         // Backend enforcement (defense in depth): re-run the conflict check and
@@ -1075,7 +1129,7 @@ export const appRouter = router({
         return db.createClientMatter(matterInput as any, ctx.user!.id, conflicts);
       }),
 
-    update: permissionProcedure("clients:manage")
+    update: protectedProcedure
       .input(z.object({
         id: z.number(),
         originalSerial: z.string().max(50).optional(),
@@ -1116,6 +1170,26 @@ export const appRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
+        // Authorization FIRST (before any record lookup, so a caller with no edit
+        // authority gets a consistent FORBIDDEN, not a NOT_FOUND). Base matter/
+        // client managers edit freely; otherwise the ONLY path is the Lead Lawyer
+        // overlay — the actor must be THIS matter's designated Lead Lawyer and may
+        // change ONLY allowlisted detail fields.
+        const canBaseEdit =
+          hasPermission(ctx.user!.role, "clients:manage") || hasPermission(ctx.user!.role, "matters:manage");
+        if (!canBaseEdit) {
+          if (!(await db.isLeadLawyerOfMatter(ctx.user!.id, id))) {
+            throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
+          }
+          const changed = Object.keys(data).filter(k => (data as Record<string, unknown>)[k] !== undefined);
+          const disallowed = changed.filter(k => !LEAD_LAWYER_EDITABLE_FIELDS.includes(k));
+          if (disallowed.length > 0) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: `Lead Lawyer may edit only matter details; not: ${disallowed.join(", ")}.`,
+            });
+          }
+        }
         // Rejected clients are locked: existing matters are read-only.
         await db.assertMatterClientNotRejected(id);
         // Scope guard (IDOR): re-fetch the matter under the caller's scope. An
@@ -1216,19 +1290,30 @@ export const appRouter = router({
   // ─── Financial Records ─────────────────────────────────────────────────────
 
   financial: router({
-    list: permissionProcedure("financial:view")
+    list: capabilityProcedure("financial:view")
       .input(z.object({
         clientId: z.number().optional(),
         clientMatterId: z.number().optional(),
         collectionStatus: z.string().optional(),
       }).optional())
-      .query(async ({ input }) => db.getFinancialRecords(input ?? {})),
+      .query(async ({ input, ctx }) => {
+        const rows = await db.getFinancialRecords(input ?? {}, ctx.user!);
+        // Coordinator sees a RESTRICTED payment-status projection only — no fees,
+        // revenue, amounts, rates, notes, or audit details (§B/§G).
+        if (ctx.user!.role === "coordinator") return rows.map(toPaymentStatusDTO);
+        return rows;
+      }),
 
-    get: permissionProcedure("financial:view")
+    get: capabilityProcedure("financial:view")
       .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => db.getFinancialRecordById(input.id)),
+      .query(async ({ input, ctx }) => {
+        const rec = await db.getFinancialRecordById(input.id, ctx.user!);
+        if (!rec) return null; // out-of-scope / missing — non-enumerating
+        if (ctx.user!.role === "coordinator") return toPaymentStatusDTO(rec);
+        return rec;
+      }),
 
-    create: permissionProcedure("financial:manage")
+    create: capabilityProcedure("financial:create")
       .input(z.object({
         clientId: z.number(),
         clientMatterId: z.number().optional(),
@@ -1255,10 +1340,17 @@ export const appRouter = router({
       .mutation(async ({ input, ctx }) => {
         // Rejected clients are locked: no new financial records.
         await db.assertClientNotRejected(input.clientId);
+        // OWN_PRACTICE (Phase 7): a Head of Practice may create financial records
+        // only within their own practice; ALL-scope writers (finance/admin) are
+        // unrestricted; null/unclassified practice fails closed.
+        await assertOwnPracticeWrite(
+          ctx.user!, "financial:create",
+          await financialRecordPracticeKey(input.clientId, input.clientMatterId),
+        );
         return db.createFinancialRecord(input as any, ctx.user!.id);
       }),
 
-    update: permissionProcedure("financial:manage")
+    update: capabilityProcedure("financial:edit")
       .input(z.object({
         id: z.number(),
         clientMatterId: z.number().nullable().optional(), // null = unlink matter
@@ -1284,26 +1376,48 @@ export const appRouter = router({
         const { id, ...data } = input;
         // Rejected clients are locked: existing financial records are read-only.
         await db.assertFinancialRecordClientNotRejected(id);
+        // OWN_PRACTICE: validate BOTH the current and the proposed practice — a
+        // HoP cannot edit another practice's record, nor move a record into/out of
+        // their practice via clientMatterId. Fetch the record under scope first.
+        const existing = await db.getFinancialRecordById(id, ctx.user!);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Financial record not found." });
+        const proposedMatterId = data.clientMatterId !== undefined ? data.clientMatterId : existing.clientMatterId;
+        await assertOwnPracticeWrite(
+          ctx.user!, "financial:edit",
+          await financialRecordPracticeKey(existing.clientId, proposedMatterId),
+          await financialRecordPracticeKey(existing.clientId, existing.clientMatterId),
+        );
         return db.updateFinancialRecord(id, data as any, ctx.user!.id);
       }),
 
-    delete: permissionProcedure("financial:manage")
+    delete: capabilityProcedure("financial:delete")
       .input(z.object({ id: z.number() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         await db.assertFinancialRecordClientNotRejected(input.id);
+        const existing = await db.getFinancialRecordById(input.id, ctx.user!);
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Financial record not found." });
+        await assertOwnPracticeWrite(
+          ctx.user!, "financial:delete",
+          await financialRecordPracticeKey(existing.clientId, existing.clientMatterId),
+        );
         await db.deleteFinancialRecord(input.id);
         return { success: true };
       }),
 
-    summary: permissionProcedure("financial:view").query(async () => db.getFinancialSummary()),
+    summary: capabilityProcedure("financial:view").query(async ({ ctx }) => db.getFinancialSummary(ctx.user!)),
 
-    toBeBilledBreakdown: permissionProcedure("financial:view").query(async () => db.getToBeBilledBreakdown()),
+    toBeBilledBreakdown: capabilityProcedure("financial:view").query(async () => db.getToBeBilledBreakdown()),
 
-    // Read-only audit trail for a specific financial record.
-    // Returns entries in chronological order (oldest first).
-    auditLog: permissionProcedure("financial:view")
+    // Read-only audit trail for a specific financial record — only if the caller
+    // can see the underlying record (same scope as detail).
+    auditLog: capabilityProcedure("financial:view")
       .input(z.object({ id: z.number() }))
-      .query(async ({ input }) => db.getFinancialAuditLogs(input.id)),
+      .query(async ({ input, ctx }) => {
+        if (!(await db.getFinancialRecordById(input.id, ctx.user!))) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Financial record not found." });
+        }
+        return db.getFinancialAuditLogs(input.id);
+      }),
   }),
 
   // ─── Financial Reporting (central service, shared filter schema) ────────────
@@ -1314,72 +1428,73 @@ export const appRouter = router({
   // module (admin / manager / partner / finance). Not widened.
 
   financialReports: router({
-    summary: permissionProcedure("financial:view")
+    summary: capabilityProcedure("financialReports:view")
       .input(reportFilterSchema)
-      .query(async ({ input }) => financialReports.getReportSummary(input)),
+      .query(async ({ input, ctx }) => financialReports.getReportSummary(input, ctx.user!)),
 
-    byLawyer: permissionProcedure("financial:view")
+    byLawyer: capabilityProcedure("financialReports:view")
       .input(reportFilterSchema)
-      .query(async ({ input }) => financialReports.getRevenueByLawyer(input)),
+      .query(async ({ input, ctx }) => financialReports.getRevenueByLawyer(input, ctx.user!)),
 
-    byLeadPartner: permissionProcedure("financial:view")
+    byLeadPartner: capabilityProcedure("financialReports:view")
       .input(reportFilterSchema)
-      .query(async ({ input }) => financialReports.getRevenueByLeadPartner(input)),
+      .query(async ({ input, ctx }) => financialReports.getRevenueByLeadPartner(input, ctx.user!)),
 
-    byHeadOfPractice: permissionProcedure("financial:view")
+    byHeadOfPractice: capabilityProcedure("financialReports:view")
       .input(reportFilterSchema)
-      .query(async ({ input }) => financialReports.getRevenueByHeadOfPractice(input)),
+      .query(async ({ input, ctx }) => financialReports.getRevenueByHeadOfPractice(input, ctx.user!)),
 
-    byClient: permissionProcedure("financial:view")
+    byClient: capabilityProcedure("financialReports:view")
       .input(reportFilterSchema)
-      .query(async ({ input }) => financialReports.getRevenueByClient(input)),
+      .query(async ({ input, ctx }) => financialReports.getRevenueByClient(input, ctx.user!)),
 
-    byMatter: permissionProcedure("financial:view")
+    byMatter: capabilityProcedure("financialReports:view")
       .input(reportFilterSchema)
-      .query(async ({ input }) => financialReports.getRevenueByMatter(input)),
+      .query(async ({ input, ctx }) => financialReports.getRevenueByMatter(input, ctx.user!)),
 
-    outstandingByLawyer: permissionProcedure("financial:view")
+    outstandingByLawyer: capabilityProcedure("financialReports:view")
       .input(reportFilterSchema)
-      .query(async ({ input }) => financialReports.getOutstandingByLawyer(input)),
+      .query(async ({ input, ctx }) => financialReports.getOutstandingByLawyer(input, ctx.user!)),
 
-    toBeBilledByLawyer: permissionProcedure("financial:view")
+    toBeBilledByLawyer: capabilityProcedure("financialReports:view")
       .input(reportFilterSchema)
-      .query(async ({ input }) => financialReports.getToBeBilledByLawyer(input)),
+      .query(async ({ input, ctx }) => financialReports.getToBeBilledByLawyer(input, ctx.user!)),
 
-    collectedByLawyer: permissionProcedure("financial:view")
+    collectedByLawyer: capabilityProcedure("financialReports:view")
       .input(reportFilterSchema)
-      .query(async ({ input }) => financialReports.getCollectedByLawyer(input)),
+      .query(async ({ input, ctx }) => financialReports.getCollectedByLawyer(input, ctx.user!)),
 
-    discountReport: permissionProcedure("financial:view")
+    discountReport: capabilityProcedure("financialReports:view")
       .input(reportFilterSchema)
-      .query(async ({ input }) => financialReports.getDiscountReport(input)),
+      .query(async ({ input, ctx }) => financialReports.getDiscountReport(input, ctx.user!)),
 
-    invoiceStatus: permissionProcedure("financial:view")
+    invoiceStatus: capabilityProcedure("financialReports:view")
       .input(reportFilterSchema)
-      .query(async ({ input }) => financialReports.getInvoiceStatusReport(input)),
+      .query(async ({ input, ctx }) => financialReports.getInvoiceStatusReport(input, ctx.user!)),
 
-    overdue: permissionProcedure("financial:view")
+    overdue: capabilityProcedure("financialReports:view")
       .input(reportFilterSchema)
-      .query(async ({ input }) => financialReports.getOverdueReport(input)),
+      .query(async ({ input, ctx }) => financialReports.getOverdueReport(input, ctx.user!)),
 
-    details: permissionProcedure("financial:view")
+    details: capabilityProcedure("financialReports:view")
       .input(reportFilterSchema.extend({
         page: z.number().int().positive().default(1),
         pageSize: z.number().int().positive().max(200).default(25),
       }))
-      .query(async ({ input }) => {
+      .query(async ({ input, ctx }) => {
         const { page, pageSize, ...filters } = input;
-        return financialReports.getReportDetails(filters, page, pageSize);
+        return financialReports.getReportDetails(filters, page, pageSize, ctx.user!);
       }),
 
-    // CSV export — same filters + same calculation functions as the screen.
-    export: permissionProcedure("financial:view")
+    // CSV export — same filters + same calculation functions as the screen, and
+    // the SAME actor scope (so an export never contains rows the screen hides).
+    export: capabilityProcedure("financialReports:view")
       .input(reportFilterSchema.extend({
         reportType: z.enum(EXPORT_REPORT_TYPES),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         const { reportType, ...filters } = input;
-        return financialReports.exportReportCsv(reportType, filters);
+        return financialReports.exportReportCsv(reportType, filters, ctx.user!);
       }),
   }),
 

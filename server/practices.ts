@@ -24,7 +24,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { authorize } from "@shared/policy";
 import type { Actor } from "./scoping";
-import { practices, clients } from "../drizzle/schema";
+import { practices, clients, clientMatters } from "../drizzle/schema";
 import { getDb } from "./db";
 
 /** A record's practice coordinates. Either field may be null (unclassified). */
@@ -46,6 +46,33 @@ export async function getPracticeHead(
     .where(and(eq(practices.location, location as any), eq(practices.matterType, matterType as any)))
     .limit(1);
   return row?.headId ?? null;
+}
+
+/**
+ * The practice key of a financial record: location = its client's city;
+ * matter type = the linked matter's type if any, else the client's own type.
+ * Used to enforce OWN_PRACTICE on financial create/edit (Phase 7).
+ */
+export async function financialRecordPracticeKey(
+  clientId: number,
+  clientMatterId: number | null | undefined,
+): Promise<PracticeKey> {
+  const db = getDb();
+  const [c] = await db
+    .select({ city: clients.city, matterType: clients.matterType })
+    .from(clients)
+    .where(eq(clients.id, clientId))
+    .limit(1);
+  let matterType: string | null | undefined = c?.matterType ?? null;
+  if (clientMatterId != null) {
+    const [m] = await db
+      .select({ matterType: clientMatters.matterType })
+      .from(clientMatters)
+      .where(eq(clientMatters.id, clientMatterId))
+      .limit(1);
+    if (m?.matterType) matterType = m.matterType;
+  }
+  return { location: c?.city ?? null, matterType };
 }
 
 const FORBIDDEN = new TRPCError({ code: "FORBIDDEN", message: "You do not have required permission (10002)" });

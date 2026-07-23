@@ -42,6 +42,7 @@ import { and, eq, desc, ilike, or, sql, type SQL } from "drizzle-orm";
 import { alias, type SelectedFields } from "drizzle-orm/pg-core";
 import { financialRecords, clients, clientMatters, users, practices } from "../drizzle/schema";
 import { getDb, getOverdueDays } from "./db";
+import { financialScopeWhere, type Actor } from "./scoping";
 
 // ─── Central filter schema (shared by every reporting endpoint) ───────────────
 
@@ -284,7 +285,7 @@ function escapeLike(q: string) {
   return q.replace(/[\\%_]/g, m => `\\${m}`);
 }
 
-export function buildConditions(f: ReportFilters): SQL[] {
+export function buildConditions(f: ReportFilters, actor?: Actor): SQL[] {
   const conds: SQL[] = [];
   if (f.clientId)       conds.push(eq(financialRecords.clientId, f.clientId));
   if (f.clientMatterId) conds.push(eq(financialRecords.clientMatterId, f.clientMatterId));
@@ -320,8 +321,14 @@ export function buildConditions(f: ReportFilters): SQL[] {
   return conds;
 }
 
-function whereOf(f: ReportFilters, extra: SQL[] = []): SQL | undefined {
+function whereOf(f: ReportFilters, actor?: Actor, extra: SQL[] = []): SQL | undefined {
   const conds = [...buildConditions(f), ...extra];
+  // Actor financial scope (Phase 7) applied identically to EVERY report, detail
+  // page and export — so grouped totals reconcile with the rows the actor can see.
+  if (actor) {
+    const scope = financialScopeWhere(actor);
+    if (scope) conds.push(scope);
+  }
   return conds.length ? and(...conds) : undefined;
 }
 
@@ -355,7 +362,7 @@ const sortByRevenueDesc = <T extends { revenue: string }>(rows: T[]) =>
 
 // ─── KPI summary (Phase 5) ────────────────────────────────────────────────────
 
-export async function getReportSummary(f: ReportFilters) {
+export async function getReportSummary(f: ReportFilters, actor?: Actor) {
   const overdueDays = await getOverdueDays();
   const isOverdue = overdueCond(overdueDays);
   const [row] = await baseSelect({
@@ -370,7 +377,7 @@ export async function getReportSummary(f: ReportFilters) {
     overdueAmount: sql<string>`COALESCE(SUM(${OUTSTANDING}) FILTER (WHERE ${isOverdue} AND ${OUTSTANDING} > 0), 0)::numeric(18,2)::text`,
     recordCount: sql<string>`COUNT(*)`,
     overdueInvoiceCount: sql<string>`COUNT(*) FILTER (WHERE ${isOverdue} AND ${OUTSTANDING} > 0)`,
-  }).where(whereOf(f));
+  }).where(whereOf(f, actor));
 
   return {
     totalAgreedFees:  row?.totalAgreedFees  ?? "0.00",
@@ -401,7 +408,7 @@ const groupMoneyColumns = {
 };
 
 /** A. Revenue by (Responsible) Lawyer — 100% attributed, counted once. */
-export async function getRevenueByLawyer(f: ReportFilters): Promise<LawyerReportRow[]> {
+export async function getRevenueByLawyer(f: ReportFilters, actor?: Actor): Promise<LawyerReportRow[]> {
   const rows = await baseSelect({
     lawyerId:   financialRecords.responsibleLawyerId,
     lawyerName: sql<string>`COALESCE(${respLawyer.name}, ${financialRecords.responsibleLawyer}, 'Unassigned')`,
@@ -411,7 +418,7 @@ export async function getRevenueByLawyer(f: ReportFilters): Promise<LawyerReport
     ...groupMoneyColumns,
     collectionRate,
   })
-    .where(whereOf(f))
+    .where(whereOf(f, actor))
     .groupBy(
       financialRecords.responsibleLawyerId,
       sql`COALESCE(${respLawyer.name}, ${financialRecords.responsibleLawyer}, 'Unassigned')`,
@@ -420,7 +427,7 @@ export async function getRevenueByLawyer(f: ReportFilters): Promise<LawyerReport
 }
 
 /** B. Revenue by Lead Partner (matter's lead_lawyer_id — real user FK). */
-export async function getRevenueByLeadPartner(f: ReportFilters): Promise<LeadPartnerReportRow[]> {
+export async function getRevenueByLeadPartner(f: ReportFilters, actor?: Actor): Promise<LeadPartnerReportRow[]> {
   const rows = await baseSelect({
     leadPartnerId:   clientMatters.leadLawyerId,
     leadPartnerName: sql<string>`COALESCE(${leadPartner.name}, ${clientMatters.leadPartnerFullName}, ${clientMatters.leadPartner}, 'Unassigned')`,
@@ -430,7 +437,7 @@ export async function getRevenueByLeadPartner(f: ReportFilters): Promise<LeadPar
     ...groupMoneyColumns,
     collectionRate,
   })
-    .where(whereOf(f))
+    .where(whereOf(f, actor))
     .groupBy(
       clientMatters.leadLawyerId,
       sql`COALESCE(${leadPartner.name}, ${clientMatters.leadPartnerFullName}, ${clientMatters.leadPartner}, 'Unassigned')`,
@@ -458,7 +465,7 @@ const HOP_NOT_CONFIGURED = {
   rows: [] as never[],
 };
 
-export async function getRevenueByHeadOfPractice(f: ReportFilters) {
+export async function getRevenueByHeadOfPractice(f: ReportFilters, actor?: Actor) {
   const db = getDb();
   const headUser = alias(users, "head_user");
   // Not configured until at least one practice has an appointed head. Also treat
@@ -496,13 +503,13 @@ export async function getRevenueByHeadOfPractice(f: ReportFilters) {
       and(eq(practices.location, clients.city), eq(sql`${practices.matterType}::text`, practiceMatterType)),
     )
     .leftJoin(headUser, eq(practices.headOfPracticeId, headUser.id))
-    .where(whereOf(f))
+    .where(whereOf(f, actor))
     .groupBy(practices.headOfPracticeId, sql`COALESCE(${headUser.name}, 'Unassigned / Unclassified')`);
   return { configured: true as const, rows: sortByRevenueDesc(rows as any[]) };
 }
 
 /** D. Revenue by Client. */
-export async function getRevenueByClient(f: ReportFilters): Promise<ClientReportRow[]> {
+export async function getRevenueByClient(f: ReportFilters, actor?: Actor): Promise<ClientReportRow[]> {
   const rows = await baseSelect({
     clientId:     financialRecords.clientId,
     clientNumber: clients.clientNumber,
@@ -511,7 +518,7 @@ export async function getRevenueByClient(f: ReportFilters): Promise<ClientReport
     recordCount:  sql<string>`COUNT(*)`,
     ...groupMoneyColumns,
   })
-    .where(whereOf(f))
+    .where(whereOf(f, actor))
     .groupBy(
       financialRecords.clientId,
       clients.clientNumber,
@@ -522,7 +529,7 @@ export async function getRevenueByClient(f: ReportFilters): Promise<ClientReport
 
 /** E. Revenue by Matter. Client-level records (no matter) group per client,
  *  flagged isClientLevel so the UI shows them under "Client-level / No Matter". */
-export async function getRevenueByMatter(f: ReportFilters): Promise<MatterReportRow[]> {
+export async function getRevenueByMatter(f: ReportFilters, actor?: Actor): Promise<MatterReportRow[]> {
   const rows = await baseSelect({
     clientMatterId:  financialRecords.clientMatterId,
     clientId:        financialRecords.clientId,
@@ -536,7 +543,7 @@ export async function getRevenueByMatter(f: ReportFilters): Promise<MatterReport
     recordCount: sql<string>`COUNT(*)`,
     ...groupMoneyColumns,
   })
-    .where(whereOf(f))
+    .where(whereOf(f, actor))
     .groupBy(
       financialRecords.clientMatterId,
       financialRecords.clientId,
@@ -551,7 +558,7 @@ export async function getRevenueByMatter(f: ReportFilters): Promise<MatterReport
 }
 
 /** F. Outstanding by Lawyer — only records with Outstanding > 0. */
-export async function getOutstandingByLawyer(f: ReportFilters): Promise<OutstandingByLawyerRow[]> {
+export async function getOutstandingByLawyer(f: ReportFilters, actor?: Actor): Promise<OutstandingByLawyerRow[]> {
   const overdueDays = await getOverdueDays();
   const isOverdue = overdueCond(overdueDays);
   const rows = await baseSelect({
@@ -566,7 +573,7 @@ export async function getOutstandingByLawyer(f: ReportFilters): Promise<Outstand
     overdueOutstanding:   sql<string>`COALESCE(SUM(${OUTSTANDING}) FILTER (WHERE ${isOverdue}), 0)::numeric(18,2)::text`,
     notYetDueOutstanding: sql<string>`COALESCE(SUM(${OUTSTANDING}) FILTER (WHERE NOT ${isOverdue}), 0)::numeric(18,2)::text`,
   })
-    .where(whereOf(f, [sql`${OUTSTANDING} > 0`]))
+    .where(whereOf(f, actor, [sql`${OUTSTANDING} > 0`]))
     .groupBy(
       financialRecords.responsibleLawyerId,
       sql`COALESCE(${respLawyer.name}, ${financialRecords.responsibleLawyer}, 'Unassigned')`,
@@ -577,7 +584,7 @@ export async function getOutstandingByLawyer(f: ReportFilters): Promise<Outstand
 /** G. To Be Billed by Lawyer — only records with To Be Billed > 0.
  *  "Already Billed" = Revenue (the approved To-Be-Billed formula's counterpart:
  *  toBeBilled = netFees − revenue, so revenue is the amount already billed). */
-export async function getToBeBilledByLawyer(f: ReportFilters): Promise<ToBeBilledByLawyerRow[]> {
+export async function getToBeBilledByLawyer(f: ReportFilters, actor?: Actor): Promise<ToBeBilledByLawyerRow[]> {
   const rows = await baseSelect({
     lawyerId:   financialRecords.responsibleLawyerId,
     lawyerName: sql<string>`COALESCE(${respLawyer.name}, ${financialRecords.responsibleLawyer}, 'Unassigned')`,
@@ -587,7 +594,7 @@ export async function getToBeBilledByLawyer(f: ReportFilters): Promise<ToBeBille
     toBeBilled:  money(TO_BE_BILLED),
     oldestUnbilledRecordDate: sql<string | null>`MIN(${EFFECTIVE_DATE})::text`,
   })
-    .where(whereOf(f, [sql`${TO_BE_BILLED} > 0`]))
+    .where(whereOf(f, actor, [sql`${TO_BE_BILLED} > 0`]))
     .groupBy(
       financialRecords.responsibleLawyerId,
       sql`COALESCE(${respLawyer.name}, ${financialRecords.responsibleLawyer}, 'Unassigned')`,
@@ -597,7 +604,7 @@ export async function getToBeBilledByLawyer(f: ReportFilters): Promise<ToBeBille
 
 /** H. Collected Amount by Lawyer. Collection buckets are amount-based
  *  (collected vs revenue), since collection_status is manually controlled. */
-export async function getCollectedByLawyer(f: ReportFilters): Promise<CollectedByLawyerRow[]> {
+export async function getCollectedByLawyer(f: ReportFilters, actor?: Actor): Promise<CollectedByLawyerRow[]> {
   const rows = await baseSelect({
     lawyerId:   financialRecords.responsibleLawyerId,
     lawyerName: sql<string>`COALESCE(${respLawyer.name}, ${financialRecords.responsibleLawyer}, 'Unassigned')`,
@@ -610,7 +617,7 @@ export async function getCollectedByLawyer(f: ReportFilters): Promise<CollectedB
     partiallyCollectedCount: sql<string>`COUNT(*) FILTER (WHERE ${COLLECTED} > 0 AND ${COLLECTED} < ${REVENUE})`,
     uncollectedCount:        sql<string>`COUNT(*) FILTER (WHERE ${COLLECTED} = 0 AND ${REVENUE} > 0)`,
   })
-    .where(whereOf(f))
+    .where(whereOf(f, actor))
     .groupBy(
       financialRecords.responsibleLawyerId,
       sql`COALESCE(${respLawyer.name}, ${financialRecords.responsibleLawyer}, 'Unassigned')`,
@@ -621,7 +628,7 @@ export async function getCollectedByLawyer(f: ReportFilters): Promise<CollectedB
 /** I. Discount Report — records with Discount Amount > 0, plus summary cards.
  *  Notes: there is no discount-reason column (discountApproval is the approval
  *  level / "type"); updated-by is only in the per-record audit trail. */
-export async function getDiscountReport(f: ReportFilters) {
+export async function getDiscountReport(f: ReportFilters, actor?: Actor) {
   const db = getDb();
   const discountCond = sql`${DISCOUNT} > 0`;
 
@@ -648,7 +655,7 @@ export async function getDiscountReport(f: ReportFilters) {
     .leftJoin(respLawyer, eq(financialRecords.responsibleLawyerId, respLawyer.id))
     .leftJoin(leadPartner, eq(clientMatters.leadLawyerId, leadPartner.id))
     .leftJoin(createdByUser, eq(financialRecords.createdBy, createdByUser.id))
-    .where(whereOf(f, [discountCond]))
+    .where(whereOf(f, actor, [discountCond]))
     .orderBy(desc(sql`${DISCOUNT}`));
 
   const [summary] = await baseSelect({
@@ -656,7 +663,7 @@ export async function getDiscountReport(f: ReportFilters) {
     avgDiscountPercentage: sql<string | null>`ROUND(AVG(COALESCE(${financialRecords.discountPercentage}, 0)::numeric), 2)::text`,
     discountedRecordCount: sql<string>`COUNT(*)`,
     largestDiscount: sql<string>`COALESCE(MAX(${DISCOUNT}), 0)::numeric(18,2)::text`,
-  }).where(whereOf(f, [discountCond]));
+  }).where(whereOf(f, actor, [discountCond]));
 
   return {
     rows,
@@ -672,7 +679,7 @@ export async function getDiscountReport(f: ReportFilters) {
 /** J. Invoice Status Report — grouped on the existing collection_status enum.
  *  No separate invoice entity exists: "Invoice Amount" = Revenue (amount
  *  invoiced to date under the approved formula set); limitation surfaced. */
-export async function getInvoiceStatusReport(f: ReportFilters): Promise<InvoiceStatusRow[]> {
+export async function getInvoiceStatusReport(f: ReportFilters, actor?: Actor): Promise<InvoiceStatusRow[]> {
   const rows = await baseSelect({
     invoiceStatus: financialRecords.collectionStatus,
     recordCount: sql<string>`COUNT(*)`,
@@ -682,7 +689,7 @@ export async function getInvoiceStatusReport(f: ReportFilters): Promise<InvoiceS
     outstanding: money(OUTSTANDING),
     toBeBilled:  money(TO_BE_BILLED),
   })
-    .where(whereOf(f))
+    .where(whereOf(f, actor))
     .groupBy(financialRecords.collectionStatus);
   const order = new Map(INVOICE_STATUSES.map((s, i) => [s as string, i]));
   return (rows as any[]).sort(
@@ -693,7 +700,7 @@ export async function getInvoiceStatusReport(f: ReportFilters): Promise<InvoiceS
 /** K. Overdue Invoice Report. Overdue = due date passed (billing_date +
  *  threshold), outstanding > 0, and status not Fully Collected / Not Billed
  *  (the enum has no "Cancelled" status). */
-export async function getOverdueReport(f: ReportFilters) {
+export async function getOverdueReport(f: ReportFilters, actor?: Actor) {
   const overdueDays = await getOverdueDays();
   const isOverdue = overdueCond(overdueDays);
   const withOutstanding = sql`${OUTSTANDING} > 0`;
@@ -716,7 +723,7 @@ export async function getOverdueReport(f: ReportFilters) {
     outstanding: sql<string>`${OUTSTANDING}::numeric(18,2)::text`,
     status: financialRecords.collectionStatus,
   })
-    .where(whereOf(f, [isOverdue, withOutstanding]))
+    .where(whereOf(f, actor, [isOverdue, withOutstanding]))
     .orderBy(desc(daysOver));
 
   // Aging buckets on days-overdue (0 counts in the 1–30 bucket: it became due today).
@@ -733,7 +740,7 @@ export async function getOverdueReport(f: ReportFilters) {
     bucket180plus: sql<string>`COALESCE(SUM(${OUTSTANDING}) FILTER (WHERE ${bucket(null, 180)}), 0)::numeric(18,2)::text`,
     totalOverdueOutstanding: money(OUTSTANDING),
     overdueCount: sql<string>`COUNT(*)`,
-  }).where(whereOf(f, [isOverdue, withOutstanding]));
+  }).where(whereOf(f, actor, [isOverdue, withOutstanding]));
 
   return {
     rows,
@@ -752,7 +759,7 @@ export async function getOverdueReport(f: ReportFilters) {
 
 // ─── Detail rows (server-side pagination) ─────────────────────────────────────
 
-export async function getReportDetails(f: ReportFilters, page = 1, pageSize = 25) {
+export async function getReportDetails(f: ReportFilters, page = 1, pageSize = 25, actor?: Actor) {
   const overdueDays = await getOverdueDays();
   const isOverdue = overdueCond(overdueDays);
   const safePage = Math.max(1, Math.floor(page));
@@ -787,12 +794,12 @@ export async function getReportDetails(f: ReportFilters, page = 1, pageSize = 25
     effectiveDate: sql<string>`${EFFECTIVE_DATE}::text`,
     createdAt: financialRecords.createdAt,
   })
-    .where(whereOf(f))
+    .where(whereOf(f, actor))
     .orderBy(desc(sql`${EFFECTIVE_DATE}`), desc(financialRecords.id))
     .limit(safeSize)
     .offset((safePage - 1) * safeSize);
 
-  const [count] = await baseSelect({ total: sql<string>`COUNT(*)` }).where(whereOf(f));
+  const [count] = await baseSelect({ total: sql<string>`COUNT(*)` }).where(whereOf(f, actor));
 
   return {
     rows,
@@ -825,7 +832,7 @@ function csvRows(lines: unknown[][]): string {
   return lines.map(cells => cells.map(csvCell).join(",")).join("\r\n");
 }
 
-function appliedFilterLines(f: ReportFilters): unknown[][] {
+function appliedFilterLines(f: ReportFilters, actor?: Actor): unknown[][] {
   const entries = Object.entries(f).filter(([, v]) => v !== undefined && v !== "");
   if (!entries.length) return [["Filters", "none"]];
   return entries.map(([k, v]) => [`Filter: ${k}`, String(v)]);
@@ -917,22 +924,22 @@ function exportTable(reportType: ExportReportType, data: any): { header: string[
   }
 }
 
-export async function exportReportCsv(reportType: ExportReportType, f: ReportFilters) {
-  const summary = await getReportSummary(f);
+export async function exportReportCsv(reportType: ExportReportType, f: ReportFilters, actor?: Actor) {
+  const summary = await getReportSummary(f, actor);
   let data: any;
   switch (reportType) {
     case "summary":             data = summary; break;
-    case "byLawyer":            data = await getRevenueByLawyer(f); break;
-    case "byLeadPartner":       data = await getRevenueByLeadPartner(f); break;
-    case "byClient":            data = await getRevenueByClient(f); break;
-    case "byMatter":            data = await getRevenueByMatter(f); break;
-    case "outstandingByLawyer": data = await getOutstandingByLawyer(f); break;
-    case "toBeBilledByLawyer":  data = await getToBeBilledByLawyer(f); break;
-    case "collectedByLawyer":   data = await getCollectedByLawyer(f); break;
-    case "discountReport":      data = await getDiscountReport(f); break;
-    case "invoiceStatus":       data = await getInvoiceStatusReport(f); break;
-    case "overdue":             data = await getOverdueReport(f); break;
-    case "details":             data = await getReportDetails(f, 1, EXPORT_DETAILS_CAP); break;
+    case "byLawyer":            data = await getRevenueByLawyer(f, actor); break;
+    case "byLeadPartner":       data = await getRevenueByLeadPartner(f, actor); break;
+    case "byClient":            data = await getRevenueByClient(f, actor); break;
+    case "byMatter":            data = await getRevenueByMatter(f, actor); break;
+    case "outstandingByLawyer": data = await getOutstandingByLawyer(f, actor); break;
+    case "toBeBilledByLawyer":  data = await getToBeBilledByLawyer(f, actor); break;
+    case "collectedByLawyer":   data = await getCollectedByLawyer(f, actor); break;
+    case "discountReport":      data = await getDiscountReport(f, actor); break;
+    case "invoiceStatus":       data = await getInvoiceStatusReport(f, actor); break;
+    case "overdue":             data = await getOverdueReport(f, actor); break;
+    case "details":             data = await getReportDetails(f, 1, EXPORT_DETAILS_CAP, actor); break;
   }
 
   const table = exportTable(reportType, data);

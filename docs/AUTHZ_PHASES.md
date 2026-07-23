@@ -156,6 +156,103 @@ under ALL, **not writable** under OWN_PRACTICE. `practices.classification`
 reports, per `(city, matter_type)`, how many client rows are writable vs.
 unclassified — read-only, no backfill.
 
+## Phase 6 — per-matter Lead Lawyer overlay (this change)
+
+Additive, matter-specific authority derived ONLY from the authenticated user id
+vs. the authoritative `client_matters.lead_lawyer_id` — never an account role.
+
+- **`server/db.ts`**: `ledMatterIds(actorId)`, `isLeadLawyerOfMatter(actorId,
+  matterId)`. Task visibility (`taskVisibilityCondition`, `isTaskVisibleTo`)
+  extended so a lead lawyer additionally sees/updates/assigns tasks whose
+  `clientMatterId` is a matter they lead — and no other tasks.
+- **`server/routers.ts`**:
+  - `clientMatters.update` → `protectedProcedure` with authz FIRST: base
+    matter/client managers edit freely; otherwise the ONLY path is the overlay —
+    must be the matter's lead lawyer AND may change only the **editable-field
+    allowlist**: `matterDescription, matterStatus, balanceWorkLeft,
+    achievementPercentage, achievementStatus, priority, opposingParty`.
+    Assignment / practice (`matterType`) / financial (`billingType`) / identifier
+    fields are excluded.
+  - `clientMatters.create` → rejects a non-null `leadLawyerId` unless the actor
+    holds `matters:assign_lawyer` (**prevents self-designation on create**).
+  - `clientMatters.matterFinancials` (new) → READ-ONLY, matter-filtered financial
+    records; allowed for base `financial:view` OR the matter's lead lawyer (the
+    Executive-Associate case). Never grants financial mutation; never exposes
+    other matters.
+- **Designation changes** remain gated by `matters:assign_lawyer` (Phase-1 guard
+  on generic update + `reassignLeadLawyer`); Lead Lawyer changes are audit-logged
+  by the existing `reassignLeadLawyer` path.
+- **`0025_lead_lawyer_overlay_indexes.sql`** (additive, **not executed**):
+  indexes on `client_matters.lead_lawyer_id` and `tasks.client_matter_id`.
+
+### Overlay decision flow
+
+`allowed = base-role authorize(cap) OR (matter.leadLawyerId === actor.id AND cap
+∈ overlay grants)`, applied only to that matter, additive, financial read-only,
+edit restricted to the allowlist. Removing the designation removes overlay access
+immediately (it is recomputed from `lead_lawyer_id` every request).
+
+### Deferred within phase
+
+Target-role (non-legacy) lead lawyers reaching the **task** routes needs the task
+gates migrated to `capabilityProcedure` — that is Phase 8 (final task policy). The
+overlay itself is enforced for any caller who reaches the route (verified here
+with a legacy `lawyer` for tasks and an `executive_associate` for financial/matter
+paths).
+
+## Phase 7 — financial authorization & scoped projections (this change)
+
+Scopes every financial read/write/report/export/dashboard path.
+
+- **`server/scoping.ts::financialScopeWhere`**: from `financial:view` — ALL → no
+  restriction; ASSIGNED → `client_matter_id IS NOT NULL AND EXISTS(client_matters
+  cm WHERE cm.id = client_matter_id AND actor ∈ 7 assignment FKs)` (**null-matter
+  records excluded from ASSIGNED**, §B/§G); else deny.
+- **`server/db.ts`**: `getFinancialRecords`, `getFinancialRecordById`,
+  `getFinancialSummary` take an actor and apply the predicate — so the **summary
+  aggregates reconcile exactly with the visible detail rows**.
+- **`server/financialReports.ts`**: the actor threads through the single `whereOf`
+  chokepoint → **every report, `details` page and CSV `export` gets the identical
+  scope** (an export never contains rows the screen hides). Report routes gated by
+  `financialReports:view` (admin/manager/HoP/finance) — Coordinator and the legal
+  grades cannot run reports.
+- **`server/routers.ts`**:
+  - Financial reads → `capabilityProcedure("financial:view")` + actor.
+  - **Coordinator projection**: `financial.list/get` null out every sensitive
+    value (fees, revenue, all money, discounts, rates, notes, responsible-lawyer)
+    while keeping payment-status/tracking fields — a Coordinator never receives
+    the values.
+  - Financial mutations → `capabilityProcedure("financial:create|edit|delete")` +
+    **HoP OWN_PRACTICE** via `assertOwnPracticeWrite` on the record's practice
+    (`financialRecordPracticeKey` = client city + matter/client type), validating
+    BOTH current and proposed on edit. Finance/admin unrestricted; others denied.
+  - `financial.auditLog` returns entries only if the caller can see the record.
+
+### Roles → financial (verified)
+
+| Role | Records | Reports | Mutations |
+|---|---|---|---|
+| Admin / Finance | ALL | yes | full |
+| Manager / HoP | ALL read | yes | Manager none; HoP OWN_PRACTICE create/edit |
+| Senior Associate | ASSIGNED read-only | no | none |
+| Exec Assoc & lower | none (base) | no | none |
+| Coordinator | ALL, payment-status DTO | no | none |
+| Lead Lawyer (overlay) | one matter read-only (Phase 6) | no | none |
+
+### Safe-by-construction (no new leak)
+
+- **AI analytics** (`aiAnalytics.gatherCrmData`) already includes firm-wide
+  financial ONLY for admin/manager/finance (all ALL-scope) — ASSIGNED roles get
+  no financial section. No change; no leak.
+- **Dashboard** financial totals are zeroed for every target role by the Phase-1
+  guard (`hasPermission(role,"financial:view")`) — safe. Scoped dashboard totals
+  for ASSIGNED financial viewers are deferred (no leak; just zeroed).
+- **Reports/export scope** is defense-in-depth: current report viewers all hold
+  `financial:view = ALL`, so the predicate is inert for them but applies the
+  moment a scoped role is ever granted `financialReports:view`.
+- **No migration**: the ASSIGNED predicate resolves via a `client_matters` PK
+  lookup; no index proven necessary (§H).
+
 ## Deferred to later phases
 
 - **Route migration**: move each `permissionProcedure("x:manage")` to

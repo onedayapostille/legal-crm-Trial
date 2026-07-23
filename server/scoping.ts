@@ -24,7 +24,7 @@
  */
 import { and, eq, or, sql, type SQL } from "drizzle-orm";
 import { authorize, type DataScope } from "@shared/policy";
-import { clientMatters, leads, matters } from "../drizzle/schema";
+import { clientMatters, leads, matters, financialRecords } from "../drizzle/schema";
 
 export interface Actor {
   id: number;
@@ -142,6 +142,37 @@ export function leadScopeWhere(actor: Actor): SQL | undefined {
  */
 export function hasAllScope(actor: Actor, capability: string): boolean {
   return scopeOf(actor, capability) === "ALL";
+}
+
+/**
+ * Financial record scope (Phase 7), from `financial:view`.
+ *   - ALL      → no restriction (admin/manager/HoP/finance/coordinator).
+ *   - ASSIGNED → the record's matter is one the actor is assigned to. CLIENT-LEVEL
+ *                records (null client_matter_id) are EXCLUDED from ASSIGNED access
+ *                (§B/§G) — they can't be attributed to an assigned matter.
+ *   - else     → deny (Executive Associate and lower have no BASE financial; they
+ *                reach a single matter's records only via the Lead Lawyer overlay,
+ *                Phase 6).
+ * The predicate references `financial_records.client_matter_id`, so it composes
+ * into both the plain records query and the reporting joins.
+ */
+export function financialScopeWhere(actor: Actor): SQL | undefined {
+  const scope = scopeOf(actor, "financial:view");
+  if (scope === "ALL") return undefined;
+  if (scope === "ASSIGNED") {
+    const id = actor.id;
+    return sql`(
+      ${financialRecords.clientMatterId} IS NOT NULL AND EXISTS (
+        SELECT 1 FROM "client_matters" cm
+         WHERE cm."id" = ${financialRecords.clientMatterId}
+           AND (cm."lead_lawyer_id" = ${id} OR cm."support_lead_id" = ${id}
+             OR cm."attorney_head_id" = ${id} OR cm."attorney_1_id" = ${id}
+             OR cm."attorney_2_id" = ${id} OR cm."attorney_3_id" = ${id}
+             OR cm."attorney_4_id" = ${id})
+      )
+    )`;
+  }
+  return DENY;
 }
 
 /** Combine a base condition with a scope predicate (either may be undefined). */
