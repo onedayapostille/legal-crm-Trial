@@ -93,6 +93,45 @@ export const TARGET_ACCOUNT_ROLE_VALUES = [
 ] as const;
 
 /**
+ * The 11 APPROVED persistent account roles offered for NEW assignment in User
+ * Management (spec §3 — every target role except the Lead Lawyer overlay). The
+ * four legacy-only roles (partner/lawyer/staff/viewer) are excluded from new
+ * assignments but remain displayable on existing accounts during coexistence.
+ * Lead Lawyer is never here — it is a per-matter overlay, not an account role.
+ */
+export const APPROVED_ACCOUNT_ROLES = [
+  "admin", "manager", "head_of_practice", "senior_associate", "executive_associate",
+  "associate", "junior_lawyer", "trainee", "paralegal", "finance", "coordinator",
+] as const satisfies readonly AccountRole[];
+
+const LEGACY_ONLY_ROLES: ReadonlySet<string> = new Set(["partner", "lawyer", "staff", "viewer"]);
+
+/** A legacy-only role: still valid on existing accounts, never offered for new assignment. */
+export function isLegacyOnlyAccountRole(v: unknown): boolean {
+  return typeof v === "string" && LEGACY_ONLY_ROLES.has(v);
+}
+
+/** Human labels for every persistable account role (legacy + target), for the UI. */
+export const ACCOUNT_ROLE_LABELS: Record<AccountRole, string> = {
+  admin: "Admin",
+  manager: "Manager",
+  head_of_practice: "Head of Practice",
+  senior_associate: "Senior Associate",
+  executive_associate: "Executive Associate",
+  associate: "Associate",
+  junior_lawyer: "Junior Lawyer",
+  trainee: "Trainee",
+  paralegal: "Paralegal",
+  finance: "Finance",
+  coordinator: "Coordinator",
+  // Legacy-only — shown for existing accounts, not offered for new assignment.
+  partner: "Partner (legacy)",
+  lawyer: "Lawyer (legacy)",
+  staff: "Staff (legacy)",
+  viewer: "Viewer (legacy)",
+};
+
+/**
  * Migration mapping (spec §6) — informational only. Consumed by no runtime path
  * in this phase; documents how a later account migration should re-grade users.
  * `null` = a target designation with no source legacy role (new).
