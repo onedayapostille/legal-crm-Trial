@@ -108,16 +108,16 @@ describe("no base finance for Executive Associate & lower", () => {
 });
 
 describe("Coordinator payment-status projection", () => {
-  it("sees all rows but with sensitive values nulled (status kept)", async () => {
+  it("sees all rows through an allowlisted DTO with sensitive fields omitted", async () => {
     const coord = callerFor("coordinator", 1);
     const rows = await coord.financial.list({});
     const rec = rows.find(r => r.id === recAssigned)!;
     expect(rec).toBeTruthy();
     expect(rec.collectionStatus).toBeTruthy();     // payment status retained
-    expect(rec.revenue).toBeNull();                // revenue excluded
-    expect((rec as any).agreedFees).toBeNull();
-    expect((rec as any).financeNotes).toBeNull();
-    expect((rec as any).responsibleLawyerId).toBeNull();
+    expect(rec).not.toHaveProperty("revenue");
+    expect(rec).not.toHaveProperty("agreedFees");
+    expect(rec).not.toHaveProperty("financeNotes");
+    expect(rec).not.toHaveProperty("responsibleLawyerId");
   });
 });
 

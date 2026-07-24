@@ -31,6 +31,7 @@ const admin = () => callerFor("admin", 1);
 const PW = "Passw0rd123";
 
 let ownerId = 0, otherId = 0, leadId = 0, inactiveId = 0, viewerId = 0, scopedId = 0;
+let managerId = 0, financeId = 0;
 let clientId = 0, matterLed = 0;
 let tOwned = 0, tOther = 0, tLed = 0;
 
@@ -44,11 +45,15 @@ beforeAll(async () => {
   leadId = await mk("lead");
   inactiveId = await mk("inact");
   scopedId = await mk("scoped");
+  managerId = await mk("manager");
+  financeId = await mk("finance");
   viewerId = (await a.users.create({ name: `vw ${s}`, email: `vw-${s}@x.com`, password: PW, role: "viewer" })).id;
 
   // Model states the create-user API does not expose.
   await getDb().update(users).set({ status: "inactive" }).where(eq(users.id, inactiveId));
   await getDb().update(users).set({ role: "senior_associate" as any }).where(eq(users.id, scopedId));
+  await getDb().update(users).set({ role: "manager" }).where(eq(users.id, managerId));
+  await getDb().update(users).set({ role: "finance" }).where(eq(users.id, financeId));
 
   const c = await a.clients.create({ clientName: `TClient ${s}`, clientStatus: "Existing Client" });
   clientId = c.id;
@@ -66,7 +71,7 @@ afterAll(async () => {
   for (const id of [tOwned, tOther, tLed]) if (id) await a.tasks.delete({ id }).catch(() => {});
   if (matterLed) await a.clientMatters.delete({ id: matterLed }).catch(() => {});
   if (clientId) await a.clients.delete({ id: clientId }).catch(() => {});
-  for (const id of [ownerId, otherId, leadId, inactiveId, viewerId, scopedId]) if (id) await a.users.delete({ userId: id }).catch(() => {});
+  for (const id of [ownerId, otherId, leadId, inactiveId, viewerId, scopedId, managerId, financeId]) if (id) await a.users.delete({ userId: id }).catch(() => {});
 });
 
 const ids = (rows: { id: number }[]) => new Set(rows.map(r => r.id));
@@ -129,12 +134,15 @@ describe("assignee validation (§G)", () => {
     await expect(a.tasks.create({ title: "x", clientId, assignedTo: 99999999 })).rejects.toMatchObject({ code: "BAD_REQUEST" });
     await expect(a.tasks.create({ title: "x", clientId, assignedTo: inactiveId })).rejects.toMatchObject({ code: "BAD_REQUEST" });
     await expect(a.tasks.create({ title: "x", clientId, assignedTo: viewerId })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(a.tasks.create({ title: "x", clientId, assignedTo: managerId })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(a.tasks.create({ title: "x", clientId, assignedTo: financeId })).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
-  it("a non-ALL assigner cannot assign a user who cannot access the task's matter; can once they can", async () => {
+  it("ALL and non-ALL assigners cannot grant target access through assignment", async () => {
     // Lead Lawyer of matterLed (associate base has no assign; overlay grants it).
     const leadCaller = callerFor("associate", leadId);
     // scopedId is a senior_associate (matters:view ASSIGNED) NOT on matterLed → blocked.
+    await expect(admin().tasks.update({ id: tLed, assignedTo: scopedId })).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(leadCaller.tasks.update({ id: tLed, assignedTo: scopedId })).rejects.toMatchObject({ code: "FORBIDDEN" });
     // Put scopedId on the matter → now reachable.
     await getDb().update(clientMatters).set({ attorney1Id: scopedId }).where(eq(clientMatters.id, matterLed));
@@ -144,6 +152,49 @@ describe("assignee validation (§G)", () => {
     } finally {
       await getDb().update(clientMatters).set({ attorney1Id: null }).where(eq(clientMatters.id, matterLed));
       await admin().tasks.update({ id: tLed, assignedTo: otherId });
+    }
+  });
+});
+
+describe("task create relationship integrity", () => {
+  it("rejects a matter that belongs to a different client", async () => {
+    const a = admin();
+    const otherClient = await a.clients.create({
+      clientName: `Task mismatch ${Date.now()}`,
+      clientStatus: "Existing Client",
+    });
+    try {
+      await expect(a.tasks.create({
+        title: "mismatched matter",
+        clientId: otherClient.id,
+        clientMatterId: matterLed,
+      })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    } finally {
+      await a.clients.delete({ id: otherClient.id });
+    }
+  });
+
+  it("rejects forged or cross-client Action Log provenance", async () => {
+    const a = admin();
+    const otherClient = await a.clients.create({
+      clientName: `Task source ${Date.now()}`,
+      clientStatus: "Existing Client",
+    });
+    const action = await a.clientActions.create({
+      clientId: otherClient.id,
+      actionType: "Call",
+      actionDetails: "Different client",
+    });
+    try {
+      await expect(a.tasks.create({
+        title: "forged source",
+        clientId,
+        sourceType: "action_log",
+        sourceId: action.id,
+        clientActionLogId: action.id,
+      })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    } finally {
+      await a.clients.delete({ id: otherClient.id });
     }
   });
 });

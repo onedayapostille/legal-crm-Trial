@@ -17,22 +17,25 @@ import { assertOwnPracticeWrite, getClientPracticeClassification, financialRecor
 import { authorize, ACCOUNT_ROLE_VALUES } from "@shared/policy";
 
 /**
- * Coordinator payment-status projection (§B/§G): keeps ONLY payment-status /
- * tracking fields and NULLS every sensitive value — fees, revenue, all money
- * amounts, discounts, rates, notes, and the responsible-lawyer attribution. The
- * row SHAPE is preserved (type-stable for consumers); the sensitive VALUES never
- * leave the server for a Coordinator.
+ * Coordinator payment-status projection (§B/§G).
+ *
+ * This is deliberately an allowlist: adding a column to financial_records cannot
+ * accidentally disclose it to a Coordinator. The compatibility cast preserves
+ * the existing tRPC client shape until the frontend-alignment PR consumes the
+ * restricted DTO; it does not add the omitted properties at runtime.
  */
 function toPaymentStatusDTO<T extends Record<string, any>>(r: T): T {
   return {
-    ...r,
-    agreedFees: null, netFees: null,
-    discountApproval: null, discountPercentage: null, discountAmount: null,
-    revenue: null, collectedAmount: null, outstandingAmount: null,
-    remainingAdvanced: null, billedAmount: null,
-    financeNotes: null,
-    responsibleLawyer: null, responsibleLawyerId: null,
-  };
+    id: r.id,
+    clientId: r.clientId,
+    clientMatterId: r.clientMatterId,
+    collectionStatus: r.collectionStatus,
+    billingDate: r.billingDate,
+    paymentDate: r.paymentDate,
+    invoiceNumber: r.invoiceNumber,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+  } as unknown as T;
 }
 
 // Money input validation (Finance / Invoicing). A monetary string must be a
@@ -112,20 +115,15 @@ async function taskCapabilityForMatter(
 /**
  * Validate + authorize assigning `assigneeId` to a task on (clientId, clientMatterId).
  * The caller must already have confirmed the actor holds tasks:assign for the task.
- * Approved cross-assigners (tasks:assign at ALL scope — Admin / Head of Practice /
- * Coordinator, and legacy admin/partner/lawyer/staff) may assign to any eligible
- * user; OWN-scope or Lead-Lawyer-overlay assigners may assign only to a user who
- * can already access the task's client/matter (§G).
+ * The assignee must already be able to access the task's client/matter,
+ * independently of the assigner's scope. Assignment never creates target access.
  */
 async function enforceTaskAssignment(
-  assigner: TaskActor,
   assigneeId: number,
   clientId: number | null,
   clientMatterId: number | null,
 ): Promise<void> {
   const assignee = await db.resolveTaskAssignee(assigneeId); // exists / active / eligible or throws
-  const scope = authorize({ id: assigner.id, role: assigner.role, status: assigner.status }, "tasks:assign").scope;
-  if (scope === "ALL") return;
   if (!(await db.assigneeCanAccessTaskTarget(assignee, clientId, clientMatterId))) {
     throw new TRPCError({
       code: "FORBIDDEN",
@@ -465,8 +463,6 @@ export const appRouter = router({
         description: z.string().optional(),
         status: z.string().optional(),
         priority: z.string().optional(),
-        matterId: z.number().optional(),
-        leadId: z.number().optional(),
         // Client context is REQUIRED — every task must belong to a client (no
         // orphan tasks). A matter-scoped task additionally carries clientMatterId.
         clientId: z.number(),
@@ -481,6 +477,33 @@ export const appRouter = router({
         dueDate: z.string().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
+        const client = await db.getClientById(input.clientId, ctx.user!);
+        if (!client) throw new TRPCError({ code: "NOT_FOUND", message: "Client not found." });
+        if (input.clientMatterId != null) {
+          const matter = await db.getClientMatterById(input.clientMatterId, ctx.user!);
+          if (!matter) throw new TRPCError({ code: "NOT_FOUND", message: "Matter not found." });
+          if (matter.clientId !== input.clientId) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "The selected matter does not belong to the selected client." });
+          }
+        }
+        if (input.sourceType != null || input.sourceId != null || input.clientActionLogId != null) {
+          if (
+            input.sourceType !== "action_log" ||
+            input.sourceId == null ||
+            input.clientActionLogId == null ||
+            input.sourceId !== input.clientActionLogId
+          ) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Task source references are invalid." });
+          }
+          const source = await db.getTaskActionLogSource(input.clientActionLogId);
+          if (
+            !source ||
+            source.clientId !== input.clientId ||
+            (source.clientMatterId != null && source.clientMatterId !== (input.clientMatterId ?? null))
+          ) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Task source does not belong to the selected client/matter." });
+          }
+        }
         // Rejected clients are locked: no new tasks under them.
         await db.assertClientNotRejected(input.clientId);
         // Assigning a NEW task to ANOTHER user requires tasks:assign (base, or the
@@ -490,7 +513,7 @@ export const appRouter = router({
           if (!(await taskCapabilityForMatter(ctx.user!, "tasks:assign", input.clientMatterId ?? null))) {
             throw new TRPCError({ code: "FORBIDDEN", message: "You do not have authority to assign tasks to other users." });
           }
-          await enforceTaskAssignment(ctx.user!, input.assignedTo, input.clientId, input.clientMatterId ?? null);
+          await enforceTaskAssignment(input.assignedTo, input.clientId, input.clientMatterId ?? null);
         }
         const task = await db.createTask(input, ctx.user!.id);
         if (input.assignedTo != null && input.assignedTo !== ctx.user!.id) {
@@ -539,7 +562,7 @@ export const appRouter = router({
 
         const reassign = assignedTo !== undefined && assignedTo !== existing.assignedTo;
         if (reassign && assignedTo != null) {
-          await enforceTaskAssignment(ctx.user!, assignedTo, existing.clientId, existing.clientMatterId);
+          await enforceTaskAssignment(assignedTo, existing.clientId, existing.clientMatterId);
         }
         const updated = await db.updateTask(id, { ...content, ...(reassign ? { assignedTo } : {}) });
         if (reassign) await db.auditTaskAssignment(id, existing.assignedTo, assignedTo ?? null, ctx.user!.id);
@@ -1158,7 +1181,8 @@ export const appRouter = router({
         // this matter's rows only when they are assigned to it (otherwise an empty
         // set), closing cross-matter financial leakage through this nested endpoint.
         const actor = (isLead || decision.scope === "ALL") ? undefined : ctx.user!;
-        return db.getFinancialRecords({ clientMatterId: input.clientMatterId }, actor);
+        const rows = await db.getFinancialRecords({ clientMatterId: input.clientMatterId }, actor);
+        return ctx.user!.role === "coordinator" ? rows.map(toPaymentStatusDTO) : rows;
       }),
 
     // Conflict check for a (prospective) matter — by matter name and/or opposing
@@ -1564,15 +1588,31 @@ export const appRouter = router({
         return { success: true };
       }),
 
-    summary: capabilityProcedure("financial:view").query(async ({ ctx }) => db.getFinancialSummary(ctx.user!)),
+    summary: capabilityProcedure("financial:view").query(async ({ ctx }) => {
+      if (ctx.user!.role === "coordinator") {
+        throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
+      }
+      return db.getFinancialSummary(ctx.user!);
+    }),
 
-    toBeBilledBreakdown: capabilityProcedure("financial:view").query(async ({ ctx }) => db.getToBeBilledBreakdown(ctx.user!)),
+    toBeBilledBreakdown: capabilityProcedure("financial:view").query(async ({ ctx }) => {
+      if (ctx.user!.role === "coordinator") {
+        throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
+      }
+      return db.getToBeBilledBreakdown(ctx.user!);
+    }),
 
     // Read-only audit trail for a specific financial record — only if the caller
     // can see the underlying record (same scope as detail).
     auditLog: capabilityProcedure("financial:view")
       .input(z.object({ id: z.number() }))
       .query(async ({ input, ctx }) => {
+        // Audit rows contain field names plus old/new values, including monetary
+        // amounts. Coordinator is restricted to the payment-status DTO and must
+        // never recover omitted values through this nested surface.
+        if (ctx.user!.role === "coordinator") {
+          throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
+        }
         if (!(await db.getFinancialRecordById(input.id, ctx.user!))) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Financial record not found." });
         }

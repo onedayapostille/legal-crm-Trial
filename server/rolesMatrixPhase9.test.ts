@@ -37,11 +37,15 @@ const ASSIGNED_LEGAL_TIER: Cells = {
 };
 
 const EXPECTED: Record<string, Cells> = {
-  // Manager — firm-wide READ-ONLY (BR-08); Payment Tracker & Notes are not target modules.
+  // Manager — firm-wide READ-ONLY oversight (BR-08 "views everything"). BR-08 takes
+  // precedence over the matrix's silence on Payment Tracker, Notes and the Client
+  // Action Log: the overseer sees them, so payments:view + notes:view + actions:view
+  // are granted (view only). No mutations; no ai:use / financialReports:export.
   manager: {
     "dashboard:view": "ALL", "analytics:view": "ALL", "audit:view": "ALL",
     "clients:view": "ALL", "leads:view": "ALL", "matters:view": "ALL",
     "tasks:view": "ALL", "financial:view": "ALL", "financialReports:view": "ALL", "rates:view": "ALL",
+    "payments:view": "ALL", "notes:view": "ALL", "actions:view": "ALL",
   },
   // Head of Practice — views all, OWN_PRACTICE writes, all tasks + assign, reports (BR-02/14).
   head_of_practice: {
@@ -129,6 +133,42 @@ describe("approved matrix — TARGET_POLICY data locked cell-by-cell to the sour
   });
 });
 
+describe("Manager complete approved read surface (BR-08)", () => {
+  // The full read surface the approved read-only overseer holds — dashboard,
+  // clients, leads, matters, tasks, actions, notes, analytics, payments, financial
+  // records + reports + rates, and audit — each at ALL, and nothing beyond it.
+  const MANAGER_READ_SURFACE = [
+    "dashboard:view", "clients:view", "leads:view", "matters:view", "tasks:view",
+    "actions:view", "notes:view", "analytics:view", "payments:view",
+    "financial:view", "financialReports:view", "rates:view", "audit:view",
+  ] as const;
+
+  it("grants exactly the approved read surface at ALL — no more, no less", () => {
+    const mgr = TARGET_POLICY.manager as Record<string, string | undefined>;
+    for (const cap of MANAGER_READ_SURFACE) {
+      expect(mgr[cap], cap).toBe("ALL");
+    }
+    // Complete surface: no capability beyond these reads — so every mutation, plus
+    // ai:use and financialReports:export, are absent until separately approved.
+    expect(Object.keys(TARGET_POLICY.manager).sort()).toEqual([...MANAGER_READ_SURFACE].sort());
+  });
+
+  it("denies every Manager mutation (BR-08 read-only)", () => {
+    const mgr = TARGET_POLICY.manager as Record<string, string | undefined>;
+    for (const cap of CAPABILITIES) {
+      if (/:(create|edit|delete|assign|updateStatus|manage)$/.test(cap)) {
+        expect(mgr[cap], cap).toBeUndefined();
+      }
+    }
+  });
+
+  it("does NOT grant ai:use or financialReports:export (pending a separate decision)", () => {
+    const mgr = TARGET_POLICY.manager as Record<string, string | undefined>;
+    expect(mgr["ai:use"]).toBeUndefined();
+    expect(mgr["financialReports:export"]).toBeUndefined();
+  });
+});
+
 describe("live enforcement — authorize() resolves target-only roles to the matrix", () => {
   for (const role of TARGET_ONLY_ROLES) {
     it(`authorize(${role}) matches the approved matrix on every capability`, () => {
@@ -149,9 +189,11 @@ describe("live enforcement — authorize() resolves target-only roles to the mat
 
 describe("era isolation — shared-name roles stay LEGACY until account migration", () => {
   it("admin/manager/finance still resolve to LEGACY_POLICY, not their TARGET cells", () => {
-    // Manager: TARGET withholds payments:view (conflict #1 fix) but LEGACY grants it.
-    expect(TARGET_POLICY.manager["payments:view"]).toBeUndefined();
-    expect(authorize(actor("manager"), "payments:view").allowed).toBe(true); // legacy still on
+    // Manager: LEGACY grants financialReports:export; TARGET does not → authorize
+    // (which resolves the shared name to LEGACY) still grants it. (payments:view is
+    // no longer a discriminator — BR-08 grants it in TARGET too.)
+    expect(TARGET_POLICY.manager["financialReports:export"]).toBeUndefined();
+    expect(authorize(actor("manager"), "financialReports:export").allowed).toBe(true); // legacy still on
     // Finance: TARGET grants audit:view; LEGACY does not.
     expect(TARGET_POLICY.finance["audit:view"]).toBe("ALL");
     expect(authorize(actor("finance"), "audit:view").allowed).toBe(false); // legacy still off

@@ -1223,10 +1223,21 @@ export async function deleteTask(id: number) {
 // ─── Task assignment validation & audit (Phase 8) ─────────────────────────────
 
 /**
- * Validate a task assignee: it must EXIST, be ACTIVE, and hold a role that can
- * hold tasks (i.e. can view tasks under the policy — excludes viewer / legacy
- * finance). Throws BAD_REQUEST otherwise (§G). Returns the minimal actor shape the
- * downstream target-access check needs.
+ * Roles that may operationally receive tasks during legacy/target coexistence.
+ * Read-only Manager, Viewer, and legacy Finance are intentionally excluded.
+ * Target Finance is activated only after the policy-era discriminator lands and
+ * must be added based on that discriminator rather than this ambiguous role name.
+ */
+export const TASK_ASSIGNEE_ROLES: ReadonlySet<string> = new Set([
+  "admin",
+  "partner", "lawyer", "staff",
+  "head_of_practice", "senior_associate", "executive_associate", "associate",
+  "junior_lawyer", "trainee", "paralegal", "coordinator",
+]);
+
+/**
+ * Validate a task assignee against existence, active status, and the explicit
+ * operational-role allowlist. Returns the actor used by target-access validation.
  */
 export async function resolveTaskAssignee(userId: number): Promise<Actor & { name: string | null }> {
   const db = getDb();
@@ -1239,7 +1250,7 @@ export async function resolveTaskAssignee(userId: number): Promise<Actor & { nam
   if (u.status !== "active") {
     throw new TRPCError({ code: "BAD_REQUEST", message: "Selected assignee is inactive and cannot receive tasks." });
   }
-  if (!authorize({ id: u.id, role: u.role, status: "active" }, "tasks:view").allowed) {
+  if (!TASK_ASSIGNEE_ROLES.has(u.role)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: `Selected assignee's role (${u.role}) cannot hold tasks.` });
   }
   return { id: u.id, role: u.role, status: u.status, name: u.name };
@@ -1259,6 +1270,21 @@ export async function assigneeCanAccessTaskTarget(
   if (clientMatterId != null) return !!(await getClientMatterById(clientMatterId, assignee));
   if (clientId != null) return !!(await getClientById(clientId, assignee));
   return true; // no client/matter context to gate
+}
+
+/** Minimal authoritative source row used to validate task provenance. */
+export async function getTaskActionLogSource(id: number) {
+  const db = getDb();
+  const [row] = await db
+    .select({
+      id: clientActionLogs.id,
+      clientId: clientActionLogs.clientId,
+      clientMatterId: clientActionLogs.clientMatterId,
+    })
+    .from(clientActionLogs)
+    .where(eq(clientActionLogs.id, id))
+    .limit(1);
+  return row ?? null;
 }
 
 /** Audit a task assignment / reassignment (§G). */
