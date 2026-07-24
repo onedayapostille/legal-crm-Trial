@@ -1607,6 +1607,12 @@ export const appRouter = router({
     auditLog: capabilityProcedure("financial:view")
       .input(z.object({ id: z.number() }))
       .query(async ({ input, ctx }) => {
+        // Audit rows contain field names plus old/new values, including monetary
+        // amounts. Coordinator is restricted to the payment-status DTO and must
+        // never recover omitted values through this nested surface.
+        if (ctx.user!.role === "coordinator") {
+          throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
+        }
         if (!(await db.getFinancialRecordById(input.id, ctx.user!))) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Financial record not found." });
         }
