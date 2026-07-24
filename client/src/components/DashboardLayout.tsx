@@ -158,26 +158,40 @@ function DashboardLayoutContent({
           className="border-r-0"
           disableTransition={isResizing}
         >
-          <SidebarHeader className="h-16 justify-center">
-            <div className="flex items-center gap-3 px-2 transition-all w-full">
-              <button
-                onClick={toggleSidebar}
-                className="h-8 w-8 flex items-center justify-center hover:bg-accent rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring shrink-0"
-                aria-label="Toggle navigation"
-              >
-                <PanelLeft className="h-4 w-4 text-muted-foreground" />
-              </button>
+          <SidebarHeader className="h-16 justify-center border-b border-sidebar-border/60">
+            <div className="flex items-center gap-3 px-1.5 transition-all w-full">
+              {/* G&P brand identity */}
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground text-[11px] font-bold tracking-tight shadow-sm">
+                G&amp;P
+              </div>
               {!isCollapsed ? (
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="font-semibold tracking-tight truncate">
-                    Navigation
-                  </span>
+                <div className="flex flex-1 items-center justify-between min-w-0">
+                  <div className="min-w-0 leading-tight">
+                    <p className="text-sm font-semibold tracking-tight text-sidebar-accent-foreground truncate">
+                      Legal CRM
+                    </p>
+                    <p className="text-[11px] text-sidebar-foreground/70 truncate">
+                      Practice Management
+                    </p>
+                  </div>
+                  <button
+                    onClick={toggleSidebar}
+                    className="h-7 w-7 flex items-center justify-center hover:bg-sidebar-accent rounded-md transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring shrink-0 text-sidebar-foreground/70"
+                    aria-label="Collapse navigation"
+                  >
+                    <PanelLeft className="h-4 w-4" />
+                  </button>
                 </div>
               ) : null}
             </div>
           </SidebarHeader>
 
           <SidebarContent className="gap-0">
+            {!isCollapsed && (
+              <p className="px-4 pt-4 pb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-sidebar-foreground/50">
+                Navigation
+              </p>
+            )}
             <SidebarMenu className="px-2 py-1">
               {visibleMenuItems.map(item => {
                 const isActive = location === item.path;
@@ -187,11 +201,12 @@ function DashboardLayoutContent({
                       isActive={isActive}
                       onClick={() => setLocation(item.path)}
                       tooltip={item.label}
-                      className={`h-10 transition-all font-normal`}
+                      className="relative h-10 font-normal transition-all data-[active=true]:font-medium"
                     >
-                      <item.icon
-                        className={`h-4 w-4 ${isActive ? "text-primary" : ""}`}
-                      />
+                      {isActive && (
+                        <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r bg-sidebar-primary group-data-[collapsible=icon]:hidden" />
+                      )}
+                      <item.icon className="h-4 w-4" />
                       <span>{item.label}</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
@@ -200,20 +215,20 @@ function DashboardLayoutContent({
             </SidebarMenu>
           </SidebarContent>
 
-          <SidebarFooter className="p-3">
+          <SidebarFooter className="p-3 border-t border-sidebar-border/60">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button className="flex items-center gap-3 rounded-lg px-1 py-1 hover:bg-accent/50 transition-colors w-full text-left group-data-[collapsible=icon]:justify-center focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                  <Avatar className="h-9 w-9 border shrink-0">
-                    <AvatarFallback className="text-xs font-medium">
+                <button className="flex items-center gap-3 rounded-lg px-1.5 py-1.5 hover:bg-sidebar-accent transition-colors w-full text-left group-data-[collapsible=icon]:justify-center focus:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring">
+                  <Avatar className="h-9 w-9 border border-sidebar-border shrink-0">
+                    <AvatarFallback className="text-xs font-medium bg-sidebar-accent text-sidebar-accent-foreground">
                       {user?.name?.charAt(0).toUpperCase()}
                     </AvatarFallback>
                   </Avatar>
                   <div className="flex-1 min-w-0 group-data-[collapsible=icon]:hidden">
-                    <p className="text-sm font-medium truncate leading-none">
+                    <p className="text-sm font-medium truncate leading-none text-sidebar-accent-foreground">
                       {user?.name || "-"}
                     </p>
-                    <p className="text-xs text-muted-foreground truncate mt-1.5">
+                    <p className="text-xs text-sidebar-foreground/70 truncate mt-1.5">
                       {user?.email || "-"}
                     </p>
                   </div>
@@ -243,18 +258,30 @@ function DashboardLayoutContent({
 
       <SidebarInset>
         {/* Top bar — always shows the notification bell; mobile shows the menu trigger. */}
-        <div className="flex border-b h-14 items-center justify-between bg-background/95 px-2 backdrop-blur supports-[backdrop-filter]:backdrop-blur sticky top-0 z-40">
-          <div className="flex items-center gap-2">
-            {isMobile && <SidebarTrigger className="h-9 w-9 rounded-lg bg-background" />}
-            {isMobile && (
-              <span className="tracking-tight text-foreground">
+        <div className="flex border-b h-14 items-center justify-between bg-card/95 px-3 sm:px-4 backdrop-blur supports-[backdrop-filter]:backdrop-blur sticky top-0 z-40">
+          <div className="flex items-center gap-2 min-w-0">
+            {isMobile && <SidebarTrigger className="h-9 w-9 rounded-lg" aria-label="Open navigation" />}
+            {isMobile ? (
+              <span className="tracking-tight font-medium text-foreground truncate">
                 {activeMenuItem?.label ?? "Menu"}
               </span>
+            ) : (
+              <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-sm min-w-0">
+                <span className="font-medium text-foreground truncate">AlGhazzawi &amp; Partners</span>
+                {activeMenuItem && (
+                  <>
+                    <span className="text-muted-foreground/50">/</span>
+                    <span className="text-muted-foreground truncate">{activeMenuItem.label}</span>
+                  </>
+                )}
+              </nav>
             )}
           </div>
           <NotificationBell />
         </div>
-        <main className="flex-1 p-4">{children}</main>
+        <main className="flex-1 p-4 sm:p-6">
+          <div className="mx-auto w-full max-w-[1400px]">{children}</div>
+        </main>
       </SidebarInset>
     </>
   );
