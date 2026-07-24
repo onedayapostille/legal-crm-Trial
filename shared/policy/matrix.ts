@@ -143,10 +143,12 @@ export const LEGACY_POLICY: Record<LegacyRole, RolePolicy> = {
 // matters, financial records, tasks, reports — with no create/edit rights").
 // BR-08's "views everything" rule takes PRECEDENCE over the permission matrix's
 // silence on modules it does not enumerate: a read-only overseer still sees Payment
-// Tracker and Notes, so `payments:view` and `notes:view` are granted (VIEW only),
-// even though those modules have no dedicated matrix row. `rates:view` likewise
-// mirrors `financial:view`. Manager holds NO create/edit/delete/assign/manage
-// capability anywhere — the read grants below are the whole of its authority.
+// Tracker, Notes and the Client Action Log, so `payments:view`, `notes:view` and
+// `actions:view` are granted (VIEW only), even though those modules have no
+// dedicated matrix row. `rates:view` likewise mirrors `financial:view`. Manager
+// holds NO create/edit/delete/assign/manage capability anywhere — the read grants
+// below are the whole of its authority. (ai:use and financialReports:export are
+// deliberately NOT granted, pending a separate approved decision.)
 const TARGET_MANAGER: RolePolicy = {
   "dashboard:view": "ALL",
   "clients:view": "ALL",
@@ -158,6 +160,7 @@ const TARGET_MANAGER: RolePolicy = {
   "rates:view": "ALL",
   "payments:view": "ALL",
   "notes:view": "ALL",
+  "actions:view": "ALL",
   "audit:view": "ALL",
   "analytics:view": "ALL",
 };
@@ -268,14 +271,16 @@ export const TARGET_POLICY: Record<TargetAccountRole, RolePolicy> = {
  * Capabilities not yet granted to any target role in this phase — MUTATION and
  * ancillary capabilities the approved matrix does not enumerate, which fail closed
  * for target roles until a later phase resolves them with the business owner.
- * NOTE: `payments:view` and `notes:view` are intentionally NOT here — BR-08's
- * read-only overseer (Manager) sees those modules, so their VIEW grant is live
- * (their create/edit/delete remain deferred). Documented so the gap is explicit.
+ * NOTE: `payments:view`, `notes:view` and `actions:view` are intentionally NOT
+ * here — BR-08's read-only overseer (Manager) sees those modules, so their VIEW
+ * grant is live (their create/edit/delete remain deferred). `ai:use` and
+ * `financialReports:export` remain deferred pending a separate approved decision.
+ * Documented so the gap is explicit.
  */
 export const DEFERRED_TARGET_CAPABILITIES: readonly KnownCapability[] = [
   "payments:create", "payments:edit",
   "notes:create", "notes:delete",
   "companies:create", "companies:edit",
-  "actions:view", "actions:create", "actions:edit", "actions:delete",
+  "actions:create", "actions:edit", "actions:delete",
   "ai:use",
 ];
