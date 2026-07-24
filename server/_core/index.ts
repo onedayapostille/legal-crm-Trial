@@ -43,7 +43,6 @@ import {
   assertAuthorizationModelReady,
   ensureAdminExists,
   getRawClient,
-  runMigrations,
 } from "../db";
 
 function isPortAvailable(port: number): Promise<boolean> {
@@ -99,10 +98,10 @@ async function startServer() {
     );
   }
 
-  // Migration-first authorization rollout. The server never begins accepting
-  // API traffic against a schema that lacks the explicit policy-era column.
+  // Migrations are an explicit deployment step. Startup only verifies that the
+  // database is already compatible, so a process reload can never mutate the
+  // production schema implicitly.
   if (process.env.DATABASE_URL) {
-    await runMigrations();
     await assertAuthorizationModelReady();
     await ensureAdminExists();
   }
