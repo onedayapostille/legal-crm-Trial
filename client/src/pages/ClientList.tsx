@@ -21,6 +21,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import DashboardLayout from "@/components/DashboardLayout";
+import { PageHeader } from "@/components/PageHeader";
 import ConflictCheckDialog from "@/components/ConflictCheckDialog";
 import { useQueryParam } from "@/hooks/useQueryParam";
 
@@ -116,34 +117,32 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
     <DashboardLayout>
       <div className="space-y-6">
         {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">{pageTitle}</h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              AlGhazzawi & Partners Client Registry
-            </p>
-          </div>
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={() => refetch()}>
-              <RefreshCw className="h-4 w-4 mr-1" />
-              Refresh
-            </Button>
-            <Button variant="outline" size="sm" onClick={handleExport} disabled={clients.length === 0}>
-              <Download className="h-4 w-4 mr-1" />
-              Export
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => setConflictCheckOpen(true)}>
-              <ShieldCheck className="h-4 w-4 mr-1" />
-              Conflict Check
-            </Button>
-            {canCreate && (
-              <Button size="sm" onClick={() => navigate("/clients/new")}>
-                <Plus className="h-4 w-4 mr-1" />
-                Add Client
+        <PageHeader
+          title={pageTitle}
+          description="AlGhazzawi & Partners Client Registry"
+          actions={
+            <>
+              <Button variant="outline" size="sm" onClick={() => refetch()}>
+                <RefreshCw className="h-4 w-4 mr-1" />
+                Refresh
               </Button>
-            )}
-          </div>
-        </div>
+              <Button variant="outline" size="sm" onClick={handleExport} disabled={clients.length === 0}>
+                <Download className="h-4 w-4 mr-1" />
+                Export
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setConflictCheckOpen(true)}>
+                <ShieldCheck className="h-4 w-4 mr-1" />
+                Conflict Check
+              </Button>
+              {canCreate && (
+                <Button size="sm" onClick={() => navigate("/clients/new")}>
+                  <Plus className="h-4 w-4 mr-1" />
+                  Add Client
+                </Button>
+              )}
+            </>
+          }
+        />
 
         {/* Status summary cards — only on the "All Clients" view */}
         {!statusFilter && (

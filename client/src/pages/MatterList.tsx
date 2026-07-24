@@ -2,6 +2,7 @@ import { Link, useSearch } from "wouter";
 import { Plus, Briefcase, Calendar, X } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import DashboardLayout from "@/components/DashboardLayout";
+import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useAuth } from "@/_core/hooks/useAuth";
@@ -31,12 +32,10 @@ export default function MatterList() {
   return (
     <DashboardLayout>
       <div className="space-y-5">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold">
-              {statusFilter ? `${statusFilter} Matters` : "Matters"}
-            </h1>
-            <p className="text-sm text-muted-foreground mt-0.5">
+        <PageHeader
+          title={statusFilter ? `${statusFilter} Matters` : "Matters"}
+          description={
+            <>
               {matters.length} matter{matters.length !== 1 ? "s" : ""}
               {statusFilter && (
                 <>
@@ -44,20 +43,22 @@ export default function MatterList() {
                   <span className="font-medium">{statusFilter}</span>
                   <Link
                     href="/matters"
-                    className="inline-flex items-center gap-0.5 ml-2 text-blue-600 hover:underline"
+                    className="inline-flex items-center gap-0.5 ml-2 text-primary hover:underline"
                   >
                     <X className="h-3 w-3" /> clear
                   </Link>
                 </>
               )}
-            </p>
-          </div>
-          {canCreateMatter && (
-            <Link href="/matters/new">
-              <Button size="sm"><Plus className="h-4 w-4 mr-1" /> New Matter</Button>
-            </Link>
-          )}
-        </div>
+            </>
+          }
+          actions={
+            canCreateMatter && (
+              <Link href="/matters/new">
+                <Button size="sm"><Plus className="h-4 w-4 mr-1" /> New Matter</Button>
+              </Link>
+            )
+          }
+        />
 
         {isLoading ? (
           <div className="space-y-3">

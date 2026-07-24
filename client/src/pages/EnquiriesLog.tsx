@@ -12,6 +12,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import DashboardLayout from "@/components/DashboardLayout";
+import { PageHeader } from "@/components/PageHeader";
 import { useQueryParam } from "@/hooks/useQueryParam";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { CHANNEL_TYPES } from "@shared/const";
@@ -47,19 +48,17 @@ export default function EnquiriesLog() {
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">Enquiries Log</h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              Intake enquiries by communication channel — for marketing-source reporting.
-            </p>
-          </div>
-          {canCreateLeads && (
-            <Button size="sm" onClick={() => navigate("/enquiries/new")}>
-              <Plus className="h-4 w-4 mr-1" /> New Enquiry
-            </Button>
-          )}
-        </div>
+        <PageHeader
+          title="Enquiries Log"
+          description="Intake enquiries by communication channel — for marketing-source reporting."
+          actions={
+            canCreateLeads && (
+              <Button size="sm" onClick={() => navigate("/enquiries/new")}>
+                <Plus className="h-4 w-4 mr-1" /> New Enquiry
+              </Button>
+            )
+          }
+        />
 
         {/* Filters */}
         <Card>

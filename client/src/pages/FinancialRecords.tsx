@@ -16,6 +16,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import DashboardLayout from "@/components/DashboardLayout";
+import { PageHeader } from "@/components/PageHeader";
 import FinancialDialog from "@/components/FinancialDialog";
 import type { MatterOption, ClientOption } from "@/components/FinancialDialog";
 import { FinancialAuditTrail } from "@/components/FinancialAuditTrail";
@@ -379,14 +380,11 @@ export default function FinancialRecords() {
       <div className="space-y-5">
 
         {/* ── Header ─────────────────────────────────────────────────────── */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">Financial Records</h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              Fee agreements, billing, and collection tracking
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
+        <PageHeader
+          title="Financial Records"
+          description="Fee agreements, billing, and collection tracking"
+          actions={
+            <>
             {/* Quick Add */}
             {canCreate && (
               <Button size="sm" onClick={() => setAddDialogOpen(true)}>
@@ -432,8 +430,9 @@ export default function FinancialRecords() {
             <Button variant="outline" size="sm" onClick={() => refetch()}>
               <RefreshCw className="h-4 w-4 mr-1" />Refresh
             </Button>
-          </div>
-        </div>
+            </>
+          }
+        />
 
         {/* ── KPI cards (global totals — not affected by filters) ─────────── */}
         {canViewFullFinancial && <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">

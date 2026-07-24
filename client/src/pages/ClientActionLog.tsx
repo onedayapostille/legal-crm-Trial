@@ -9,6 +9,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import DashboardLayout from "@/components/DashboardLayout";
+import { PageHeader } from "@/components/PageHeader";
 
 export default function ClientActionLog() {
   const [, navigate] = useLocation();
@@ -42,18 +43,16 @@ export default function ClientActionLog() {
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-bold">Client Action Log</h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              All client activity and follow-up timeline
-            </p>
-          </div>
-          <Button variant="outline" size="sm" onClick={() => refetch()}>
-            <RefreshCw className="h-4 w-4 mr-1" />
-            Refresh
-          </Button>
-        </div>
+        <PageHeader
+          title="Client Action Log"
+          description="All client activity and follow-up timeline"
+          actions={
+            <Button variant="outline" size="sm" onClick={() => refetch()}>
+              <RefreshCw className="h-4 w-4 mr-1" />
+              Refresh
+            </Button>
+          }
+        />
 
         {/* Summary */}
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">

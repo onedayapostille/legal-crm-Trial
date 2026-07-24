@@ -3,6 +3,7 @@ import { Link } from "wouter";
 import { Plus, CheckCircle2, Clock, AlertCircle, Circle } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import DashboardLayout from "@/components/DashboardLayout";
+import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -79,20 +80,22 @@ export default function TaskList() {
   return (
     <DashboardLayout>
       <div className="space-y-5">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold">Tasks</h1>
-            <p className="text-sm text-muted-foreground mt-0.5">
+        <PageHeader
+          title="Tasks"
+          description={
+            <>
               {tasks.length} task{tasks.length !== 1 ? "s" : ""}
-              {overdue.length > 0 && <span className="text-orange-500 ml-2">· {overdue.length} overdue</span>}
-            </p>
-          </div>
-          {canCreateTask && (
-            <Link href="/tasks/new">
-              <Button size="sm"><Plus className="h-4 w-4 mr-1" /> New Task</Button>
-            </Link>
-          )}
-        </div>
+              {overdue.length > 0 && <span className="text-warning ml-2">· {overdue.length} overdue</span>}
+            </>
+          }
+          actions={
+            canCreateTask && (
+              <Link href="/tasks/new">
+                <Button size="sm"><Plus className="h-4 w-4 mr-1" /> New Task</Button>
+              </Link>
+            )
+          }
+        />
 
         <div className="flex gap-3 items-center">
           <Select value={statusFilter} onValueChange={setStatusFilter}>
