@@ -263,7 +263,11 @@ export type AiGathered = {
  *                            workload restricted to what the viewer may see
  */
 export async function gatherCrmData(
-  viewer: { id: number; role: string },
+  viewer: {
+    id: number;
+    role: string;
+    authorizationModel: "legacy" | "target" | string | null | undefined;
+  },
   period: AiPeriod,
 ): Promise<AiGathered> {
   const role = viewer.role;
@@ -288,7 +292,9 @@ export async function gatherCrmData(
 
   // Partner/lawyer/staff are restricted to tasks/workload they may see.
   const restrictToOwn = !isAdminLike;
-  const taskViewer = restrictToOwn ? { id: viewer.id, role } : undefined;
+  const taskViewer = restrictToOwn
+    ? { id: viewer.id, role, authorizationModel: viewer.authorizationModel }
+    : undefined;
   add("tasksSummary", await getTasksSummary(period, taskViewer));
   add("lawyerWorkload", await getLawyerWorkload(period, taskViewer));
   add("recentActivity", await getRecentActivitySummary(period));

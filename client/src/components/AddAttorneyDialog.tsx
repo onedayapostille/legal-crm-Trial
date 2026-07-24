@@ -11,7 +11,11 @@ import { Label } from "@/components/ui/label";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { ROLE_LABELS, type UserRole } from "@shared/const";
+import {
+  ACCOUNT_ROLE_DESCRIPTIONS,
+  ACCOUNT_ROLE_LABELS,
+  type TargetAccountRole,
+} from "@shared/policy";
 import { ASSIGNMENT_FIELDS, type AssignmentField } from "@shared/assignmentEligibility";
 
 /**
@@ -27,7 +31,14 @@ import { ASSIGNMENT_FIELDS, type AssignmentField } from "@shared/assignmentEligi
  * legal roles (partner / lawyer) — admins/managers are created from User
  * Management, not from a matter form.
  */
-const CREATABLE_ROLES: readonly UserRole[] = ["partner", "lawyer"];
+const CREATABLE_ROLES: readonly TargetAccountRole[] = [
+  "head_of_practice",
+  "senior_associate",
+  "executive_associate",
+  "associate",
+  "junior_lawyer",
+  "trainee",
+];
 
 export default function AddAttorneyDialog({
   open,
@@ -46,7 +57,7 @@ export default function AddAttorneyDialog({
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<UserRole>("lawyer");
+  const [role, setRole] = useState<TargetAccountRole>("associate");
   const [status, setStatus] = useState<"active" | "inactive">("active");
 
   const eligibleRoles = CREATABLE_ROLES.filter(r =>
@@ -55,7 +66,7 @@ export default function AddAttorneyDialog({
 
   const reset = () => {
     setName(""); setEmail(""); setPassword("");
-    setRole("lawyer"); setStatus("active");
+    setRole("associate"); setStatus("active");
   };
 
   const create = trpc.users.create.useMutation({
@@ -125,14 +136,17 @@ export default function AddAttorneyDialog({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label className="text-xs">Role</Label>
-              <Select value={role} onValueChange={v => setRole(v as UserRole)}>
+              <Select value={role} onValueChange={v => setRole(v as TargetAccountRole)}>
                 <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {eligibleRoles.map(r => (
-                    <SelectItem key={r} value={r}>{ROLE_LABELS[r]}</SelectItem>
+                    <SelectItem key={r} value={r}>{ACCOUNT_ROLE_LABELS[r]}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {ACCOUNT_ROLE_DESCRIPTIONS[role]}
+              </p>
             </div>
             <div>
               <Label className="text-xs">Status</Label>

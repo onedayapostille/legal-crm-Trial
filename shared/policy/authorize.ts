@@ -19,13 +19,20 @@
  */
 import type { DataScope } from "./scopes";
 import { isCapability, type KnownCapability } from "./capabilities";
-import { isLegacyRole, isTargetOnlyRole } from "./roles";
+import {
+  isLegacyRole,
+  isPolicyEra,
+  isTargetRole,
+  isValidRoleEra,
+  type PolicyEra,
+} from "./roles";
 import { LEGACY_POLICY, TARGET_POLICY, type RolePolicy, type TargetAccountRole } from "./matrix";
 
 /** The authenticated actor. Role is a plain string so unknown values fail closed. */
 export interface Actor {
   id: number;
   role: string | null | undefined;
+  authorizationModel: PolicyEra | string | null | undefined;
   status?: string | null;
 }
 
@@ -34,6 +41,7 @@ export type PolicyReason =
   | "NO_CAPABILITY"
   | "UNKNOWN_ROLE"
   | "UNKNOWN_CAPABILITY"
+  | "NO_ERA"
   | "INACTIVE";
 
 export interface PolicyDecision {
@@ -53,11 +61,12 @@ function deny(capability: string, reason: PolicyReason, detail: string): PolicyD
 }
 
 /** Resolve the policy map for a role, honoring the active (legacy) era. */
-function policyForRole(role: string): RolePolicy | null {
-  if (isLegacyRole(role)) return LEGACY_POLICY[role];
+export function policyForRole(role: string, era: PolicyEra): RolePolicy | null {
+  if (!isValidRoleEra(role, era)) return null;
+  if (era === "legacy" && isLegacyRole(role)) return LEGACY_POLICY[role];
   // Lead Lawyer is a per-matter overlay, never a base account role — no base
   // policy, so it fails closed here and is granted only via the overlay path.
-  if (isTargetOnlyRole(role) && role !== "lead_lawyer") {
+  if (era === "target" && isTargetRole(role) && role !== "lead_lawyer") {
     return TARGET_POLICY[role as TargetAccountRole] ?? null;
   }
   return null;
@@ -79,13 +88,20 @@ export function authorize(
   if (actor.status != null && actor.status !== "active") {
     return deny(capability, "INACTIVE", "Account is not active.");
   }
+  if (!isPolicyEra(actor.authorizationModel)) {
+    return deny(capability, "NO_ERA", "Actor has no valid authorization model.");
+  }
   const role = actor.role;
   if (!role || typeof role !== "string") {
     return deny(capability, "UNKNOWN_ROLE", "No role on actor.");
   }
-  const policy = policyForRole(role);
+  const policy = policyForRole(role, actor.authorizationModel);
   if (!policy) {
-    return deny(capability, "UNKNOWN_ROLE", `Unknown role "${role}".`);
+    return deny(
+      capability,
+      "UNKNOWN_ROLE",
+      `Role "${role}" is invalid for authorization model "${actor.authorizationModel}".`,
+    );
   }
 
   const baseScope = policy[capability];

@@ -12,6 +12,7 @@ function adminCaller() {
     name: "Admin",
     loginMethod: "manus",
     role: "admin",
+    authorizationModel: "legacy",
     status: "active",
     createdAt: new Date(),
     updatedAt: new Date(),

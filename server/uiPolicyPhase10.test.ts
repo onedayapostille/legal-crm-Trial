@@ -22,7 +22,12 @@ import {
   type KnownCapability,
 } from "@shared/policy";
 
-const active = (role: string) => ({ id: 1, role, status: "active" });
+const targetActive = (role: string) => ({
+  id: 1, role, authorizationModel: "target" as const, status: "active" as const,
+});
+const legacyActive = (role: string) => ({
+  id: 1, role, authorizationModel: "legacy" as const, status: "active" as const,
+});
 
 describe("route→capability map is valid and matches the server", () => {
   it("every ROUTE_CAPABILITIES value is a real server capability", () => {
@@ -35,7 +40,9 @@ describe("route→capability map is valid and matches the server", () => {
     const roles = ["admin", "manager", "head_of_practice", "senior_associate", "paralegal", "coordinator", "finance"];
     for (const role of roles) {
       for (const cap of Object.values(ROUTE_CAPABILITIES)) {
-        expect(userCan(active(role), cap as KnownCapability)).toBe(authorize(active(role), cap).allowed);
+        expect(userCan(targetActive(role), cap as KnownCapability)).toBe(
+          authorize(targetActive(role), cap).allowed,
+        );
       }
     }
   });
@@ -45,39 +52,48 @@ describe("userCan — session gating", () => {
   it("no session and inactive/suspended sessions can do nothing", () => {
     expect(userCan(null, "clients:view")).toBe(false);
     expect(userCan(undefined, "dashboard:view")).toBe(false);
-    expect(userCan({ id: 1, role: "admin", status: "inactive" }, "clients:view")).toBe(false);
-    expect(userCan({ id: 1, role: "admin", status: "suspended" }, "dashboard:view")).toBe(false);
-    expect(isActiveSession({ id: 1, role: "admin", status: "inactive" })).toBe(false);
+    expect(userCan({
+      id: 1, role: "admin", authorizationModel: "target", status: "inactive",
+    }, "clients:view")).toBe(false);
+    expect(userCan({
+      id: 1, role: "admin", authorizationModel: "target", status: "suspended",
+    }, "dashboard:view")).toBe(false);
+    expect(isActiveSession({
+      id: 1, role: "admin", authorizationModel: "target", status: "inactive",
+    })).toBe(false);
+    expect(userCan({
+      id: 1, role: "admin", authorizationModel: null, status: "active",
+    }, "clients:view")).toBe(false);
     expect(isActiveSession(null)).toBe(false);
   });
 
   it("an active admin session is fully capable", () => {
-    expect(isActiveSession(active("admin"))).toBe(true);
-    expect(userCan(active("admin"), "users:manage")).toBe(true);
-    expect(userCan(active("admin"), "financial:delete")).toBe(true);
+    expect(isActiveSession(targetActive("admin"))).toBe(true);
+    expect(userCan(targetActive("admin"), "users:manage")).toBe(true);
+    expect(userCan(targetActive("admin"), "financial:delete")).toBe(true);
   });
 });
 
 describe("Manager is read-only in the UI (BR-08)", () => {
   it("sees view routes but no create/edit/delete/assign/manage capability", () => {
-    expect(userCan(active("manager"), "clients:view")).toBe(true);
-    expect(userCan(active("manager"), "financial:view")).toBe(true);
+    expect(userCan(targetActive("manager"), "clients:view")).toBe(true);
+    expect(userCan(targetActive("manager"), "financial:view")).toBe(true);
     for (const cap of ["clients:create", "matters:create", "financial:create", "tasks:create", "tasks:edit", "tasks:assign", "users:manage"] as const) {
-      expect(userCan(active("manager"), cap), cap).toBe(false);
+      expect(userCan(targetActive("manager"), cap), cap).toBe(false);
     }
   });
 });
 
 describe("representative role UI gating", () => {
   it("Paralegal may edit clients/matters but not create them, and has no finance", () => {
-    expect(userCan(active("paralegal"), "clients:edit")).toBe(true);
-    expect(userCan(active("paralegal"), "clients:create")).toBe(false);
-    expect(userCan(active("paralegal"), "clients:delete")).toBe(false);
-    expect(userCan(active("paralegal"), "matters:delete")).toBe(false);
-    expect(userCan(active("paralegal"), "financial:view")).toBe(false);
+    expect(userCan(targetActive("paralegal"), "clients:edit")).toBe(true);
+    expect(userCan(targetActive("paralegal"), "clients:create")).toBe(false);
+    expect(userCan(targetActive("paralegal"), "clients:delete")).toBe(false);
+    expect(userCan(targetActive("paralegal"), "matters:delete")).toBe(false);
+    expect(userCan(targetActive("paralegal"), "financial:view")).toBe(false);
   });
   it("Head of Practice edit authority never implies delete authority", () => {
-    const hop = active("head_of_practice");
+    const hop = targetActive("head_of_practice");
     expect(userCan(hop, "matters:edit")).toBe(true);
     expect(userCan(hop, "matters:delete")).toBe(false);
     expect(userCan(hop, "financial:edit")).toBe(true);
@@ -88,18 +104,18 @@ describe("representative role UI gating", () => {
     expect(userCan(hop, "tasks:delete")).toBe(false);
   });
   it("Coordinator manages intake, sees financial (read-only), assigns tasks", () => {
-    expect(userCan(active("coordinator"), "leads:create")).toBe(true);
-    expect(userCan(active("coordinator"), "financial:view")).toBe(true);
-    expect(userCan(active("coordinator"), "financial:create")).toBe(false);
-    expect(userCan(active("coordinator"), "tasks:assign")).toBe(true);
-    expect(isPaymentStatusOnly(active("coordinator"))).toBe(true);
-    expect(isPaymentStatusOnly(active("finance"))).toBe(false);
+    expect(userCan(targetActive("coordinator"), "leads:create")).toBe(true);
+    expect(userCan(targetActive("coordinator"), "financial:view")).toBe(true);
+    expect(userCan(targetActive("coordinator"), "financial:create")).toBe(false);
+    expect(userCan(targetActive("coordinator"), "tasks:assign")).toBe(true);
+    expect(isPaymentStatusOnly(targetActive("coordinator"))).toBe(true);
+    expect(isPaymentStatusOnly(targetActive("finance"))).toBe(false);
   });
   it("only Admin sees the User Management route", () => {
     const cap = ROUTE_CAPABILITIES["/user-management"];
-    expect(userCan(active("admin"), cap)).toBe(true);
+    expect(userCan(targetActive("admin"), cap)).toBe(true);
     for (const role of ["manager", "head_of_practice", "coordinator", "finance", "senior_associate"]) {
-      expect(userCan(active(role), cap), role).toBe(false);
+      expect(userCan(targetActive(role), cap), role).toBe(false);
     }
   });
 });
@@ -129,22 +145,21 @@ describe("role dropdown offers only the 11 approved persistent roles", () => {
   });
 });
 
-describe("Finance assignment is withheld until a policy-era discriminator exists", () => {
-  it("a NEW account cannot be assigned Finance (nor any legacy-only role)", () => {
+describe("target account role options after the era discriminator", () => {
+  it("a NEW account can be assigned target Finance but no legacy-only role", () => {
     const opts = assignableRoleOptions(); // no edit target = new account
-    expect(opts).not.toContain("finance");
+    expect(opts).toContain("finance");
     for (const legacy of ["partner", "lawyer", "staff", "viewer"]) {
       expect(opts).not.toContain(legacy);
     }
-    // Still offers the other 10 approved roles.
     expect(opts).toContain("head_of_practice");
     expect(opts).toContain("coordinator");
-    expect(opts.length).toBe(APPROVED_ACCOUNT_ROLES.length - 1); // 11 minus finance
+    expect(opts.length).toBe(APPROVED_ACCOUNT_ROLES.length);
   });
 
-  it("a non-Finance account cannot be TRANSITIONED to Finance", () => {
-    expect(assignableRoleOptions("senior_associate")).not.toContain("finance");
-    expect(assignableRoleOptions("coordinator")).not.toContain("finance");
+  it("target accounts may be explicitly reassigned to target Finance", () => {
+    expect(assignableRoleOptions("senior_associate")).toContain("finance");
+    expect(assignableRoleOptions("coordinator")).toContain("finance");
   });
 
   it("an EXISTING Finance account still displays/keeps its role (coexistence)", () => {
@@ -160,9 +175,9 @@ describe("Finance assignment is withheld until a policy-era discriminator exists
 describe("legacy accounts keep working in the UI during coexistence", () => {
   it("a legacy Lawyer's UI gates reflect LEGACY policy, not a target grade", () => {
     // Legacy lawyer can create clients (legacy :manage) but has no financial view.
-    expect(userCan(active("lawyer"), "clients:create")).toBe(true);
-    expect(userCan(active("lawyer"), "financial:view")).toBe(false);
+    expect(userCan(legacyActive("lawyer"), "clients:create")).toBe(true);
+    expect(userCan(legacyActive("lawyer"), "financial:view")).toBe(false);
     // Not accidentally treated as a target senior/associate (those are OWN-scope, different).
-    expect(userCan(active("lawyer"), "tasks:view")).toBe(true);
+    expect(userCan(legacyActive("lawyer"), "tasks:view")).toBe(true);
   });
 });

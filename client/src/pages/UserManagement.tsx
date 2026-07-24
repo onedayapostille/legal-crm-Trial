@@ -3,6 +3,7 @@ import DashboardLayout from "@/components/DashboardLayout";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -30,7 +31,13 @@ import {
 } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
 import { USER_STATUSES, type UserStatus } from "@shared/const";
-import { ACCOUNT_ROLE_LABELS, type AccountRole } from "@shared/policy";
+import {
+  ACCOUNT_ROLE_LABELS,
+  ACCOUNT_ROLE_DESCRIPTIONS,
+  APPROVED_ACCOUNT_ROLES,
+  type AccountRole,
+  type TargetAccountRole,
+} from "@shared/policy";
 import { userCan, assignableRoleOptions } from "@/lib/permissions";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "../../../server/routers";
@@ -47,6 +54,7 @@ type UserFormState = {
   password: string;
   role: AccountRole | ""; // "" until the Admin explicitly picks one — no preselect
   status: UserStatus;
+  activateTarget: boolean;
   reportsToId: number | null; // supervising partner (legacy lawyer accounts only)
 };
 
@@ -59,6 +67,7 @@ const emptyForm: UserFormState = {
   // unintended grant. Creation is blocked until a role is chosen.
   role: "",
   status: "active",
+  activateTarget: false,
   reportsToId: null,
 };
 
@@ -171,6 +180,7 @@ export default function UserManagement() {
       password: "",
       role: user.role as AccountRole,
       status: user.status as UserStatus,
+      activateTarget: false,
       reportsToId: (user as any).reportsToId ?? null,
     });
     setFormOpen(true);
@@ -198,9 +208,17 @@ export default function UserManagement() {
         toast.error(passwordError);
         return;
       }
+      if (!(APPROVED_ACCOUNT_ROLES as readonly string[]).includes(role)) {
+        toast.error("Legacy-only roles cannot be assigned to new accounts");
+        return;
+      }
       createMutation.mutate({
-        ...form, role, email, name: form.name.trim(),
-        reportsToId: role === "lawyer" ? form.reportsToId : null,
+        name: form.name.trim(),
+        email,
+        password: form.password,
+        role: role as TargetAccountRole,
+        status: form.status,
+        reportsToId: null,
       });
       return;
     }
@@ -211,6 +229,7 @@ export default function UserManagement() {
       email,
       role,
       status: form.status,
+      activateTarget: form.activateTarget,
       reportsToId: role === "lawyer" ? form.reportsToId : null,
     });
   };
@@ -323,6 +342,7 @@ export default function UserManagement() {
                   <TableHead>Name</TableHead>
                   <TableHead>Email</TableHead>
                   <TableHead>Role</TableHead>
+                  <TableHead>Policy</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Last Login</TableHead>
                   <TableHead>Created</TableHead>
@@ -339,7 +359,17 @@ export default function UserManagement() {
                       ) : null}
                     </TableCell>
                     <TableCell>{user.email}</TableCell>
-                    <TableCell>{ACCOUNT_ROLE_LABELS[user.role as AccountRole] ?? user.role}</TableCell>
+                    <TableCell>
+                      <div>{ACCOUNT_ROLE_LABELS[user.role as AccountRole] ?? user.role}</div>
+                      <div className="max-w-xs text-xs text-muted-foreground">
+                        {ACCOUNT_ROLE_DESCRIPTIONS[user.role as AccountRole]}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={user.authorizationModel === "target" ? "default" : "outline"}>
+                        {user.authorizationModel}
+                      </Badge>
+                    </TableCell>
                     <TableCell>{getStatusBadge(user.status)}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{formatDate(user.lastLoginAt)}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{formatDate(user.createdAt)}</TableCell>
@@ -366,7 +396,7 @@ export default function UserManagement() {
                 ))}
                 {users?.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
+                    <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
                       No users found
                     </TableCell>
                   </TableRow>
@@ -393,6 +423,23 @@ export default function UserManagement() {
               <Label htmlFor="name">Name</Label>
               <Input id="name" value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} />
             </div>
+            {editingUser?.authorizationModel === "legacy"
+              && ["admin", "manager", "finance"].includes(editingUser.role)
+              && form.role === editingUser.role ? (
+              <div className="flex items-start gap-3 rounded-md border p-3">
+                <Checkbox
+                  id="activate-target"
+                  checked={form.activateTarget}
+                  onCheckedChange={checked => setForm({ ...form, activateTarget: checked === true })}
+                />
+                <div className="grid gap-1">
+                  <Label htmlFor="activate-target">Activate the approved target policy</Label>
+                  <p className="text-xs text-muted-foreground">
+                    This audited transition changes the account's authorization model and cannot be rolled back to legacy.
+                  </p>
+                </div>
+              </div>
+            ) : null}
             <div className="grid gap-2">
               <Label htmlFor="email">Email</Label>
               <Input id="email" type="email" value={form.email} onChange={event => setForm({ ...form, email: event.target.value })} />
@@ -414,6 +461,11 @@ export default function UserManagement() {
                     ))}
                   </SelectContent>
                 </Select>
+                {form.role ? (
+                  <p className="text-xs text-muted-foreground">
+                    {ACCOUNT_ROLE_DESCRIPTIONS[form.role]}
+                  </p>
+                ) : null}
               </div>
               <div className="grid gap-2">
                 <Label>Status</Label>

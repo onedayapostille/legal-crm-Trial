@@ -1,5 +1,10 @@
-import { hasPermission, NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from '@shared/const';
-import { authorize, type KnownCapability, type PolicyDecision } from '@shared/policy';
+import { NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from '@shared/const';
+import {
+  authorize,
+  satisfiesLegacyPermission,
+  type KnownCapability,
+  type PolicyDecision,
+} from '@shared/policy';
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
@@ -42,7 +47,12 @@ export function serverAuthorize(
   user: NonNullable<TrpcContext["user"]>,
   capability: KnownCapability,
 ): PolicyDecision {
-  return authorize({ id: user.id, role: user.role, status: user.status }, capability);
+  return authorize({
+    id: user.id,
+    role: user.role,
+    authorizationModel: user.authorizationModel,
+    status: user.status,
+  }, capability);
 }
 
 /**
@@ -84,7 +94,12 @@ export function permissionProcedure(permission: string) {
     t.middleware(async opts => {
       const { ctx, next } = opts;
 
-      if (!hasPermission(ctx.user!.role, permission)) {
+      if (!satisfiesLegacyPermission({
+        id: ctx.user!.id,
+        role: ctx.user!.role,
+        authorizationModel: ctx.user!.authorizationModel,
+        status: ctx.user!.status,
+      }, permission)) {
         throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
       }
 
@@ -102,7 +117,11 @@ export const adminProcedure = t.procedure.use(
   t.middleware(async opts => {
     const { ctx, next } = opts;
 
-    if (!ctx.user || ctx.user.status !== "active" || ctx.user.role !== 'admin') {
+    if (
+      !ctx.user
+      || ctx.user.status !== "active"
+      || !serverAuthorize(ctx.user, "users:manage").allowed
+    ) {
       throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
     }
 

@@ -7,14 +7,28 @@
  * engine the server uses, so the UI and the server agree for both legacy and
  * migrated (target) accounts.
  */
-import { can, APPROVED_ACCOUNT_ROLES, isLegacyOnlyAccountRole, type KnownCapability } from "@shared/policy";
+import {
+  can,
+  APPROVED_ACCOUNT_ROLES,
+  isLegacyOnlyAccountRole,
+  isPolicyEra,
+  type KnownCapability,
+  type PolicyEra,
+} from "@shared/policy";
 
-export type SessionUser = { id: number; role: string; status?: string | null } | null | undefined;
+export type SessionUser = {
+  id: number;
+  role: string;
+  authorizationModel: PolicyEra | string | null | undefined;
+  status?: string | null;
+} | null | undefined;
 
 /** A session that is present AND active. An inactive/suspended user is treated as
  *  logged out (see useAuth) — never as an authenticated, capable actor. */
 export function isActiveSession(user: SessionUser): boolean {
-  return !!user && (user.status == null || user.status === "active");
+  return !!user
+    && isPolicyEra(user.authorizationModel)
+    && (user.status == null || user.status === "active");
 }
 
 /**
@@ -24,7 +38,12 @@ export function isActiveSession(user: SessionUser): boolean {
  */
 export function userCan(user: SessionUser, capability: KnownCapability): boolean {
   if (!isActiveSession(user)) return false;
-  return can({ id: user!.id, role: user!.role, status: "active" }, capability);
+  return can({
+    id: user!.id,
+    role: user!.role,
+    authorizationModel: user!.authorizationModel,
+    status: "active",
+  }, capability);
 }
 
 /** Coordinator receives only the strict payment-status financial projection. */
@@ -85,9 +104,9 @@ export type GatedRoute = keyof typeof ROUTE_CAPABILITIES;
  *   is appended so it remains visible/selectable for that account only.
  */
 export function assignableRoleOptions(currentRole?: string | null): string[] {
-  const opts = (APPROVED_ACCOUNT_ROLES as readonly string[]).filter(r => r !== "finance");
-  if (currentRole && (isLegacyOnlyAccountRole(currentRole) || currentRole === "finance") && !opts.includes(currentRole)) {
+  const opts = [...APPROVED_ACCOUNT_ROLES] as string[];
+  if (currentRole && isLegacyOnlyAccountRole(currentRole) && !opts.includes(currentRole)) {
     return [...opts, currentRole];
   }
-  return [...opts];
+  return opts;
 }
