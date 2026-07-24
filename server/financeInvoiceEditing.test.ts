@@ -1,7 +1,8 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
-import { applyDiscountRules } from "./db";
+import { applyDiscountRules, createUser, deleteUser } from "./db";
+import { hashPassword } from "./_core/auth";
 
 /**
  * Finance / Invoicing editing — RBAC, existing-record edits, outstanding
@@ -97,17 +98,19 @@ describe("Finance-only editing permissions", () => {
 // ─── Existing-record edit: recalc, no duplicate, negative rejection (DB) ────────
 describe("Finance edits an existing invoice (SAR 40,000 / SAR 20,000)", () => {
   // A real finance user is needed so the created_by / audit user_id FKs resolve.
-  // Created once via the admin API and removed afterwards (deleteUser nulls the
-  // user's audit references first, so removal is safe).
+  // Phase 10: the User Management API now blocks creating a Finance account (target
+  // Finance activation is unavailable pending policy convergence), so this LEGACY
+  // Finance fixture is seeded directly against the disposable test DB via a test-
+  // only helper — never through the production create endpoint. deleteUser nulls
+  // the user's audit references first, so removal is safe.
   let financeUserId: number;
 
   beforeAll(async () => {
-    const admin = adminCaller();
     const stamp = Date.now();
-    const u = await admin.users.create({
+    const u = await createUser({
       name: "Finance Tester",
       email: `finance.tester.${stamp}@example.com`,
-      password: "Finance123",
+      passwordHash: await hashPassword("Finance123"),
       role: "finance",
       status: "active",
     });
@@ -115,7 +118,7 @@ describe("Finance edits an existing invoice (SAR 40,000 / SAR 20,000)", () => {
   });
 
   afterAll(async () => {
-    if (financeUserId) await adminCaller().users.delete({ userId: financeUserId });
+    if (financeUserId) await deleteUser(financeUserId);
   });
 
   it("updates the same record, recalculates outstanding, and never duplicates", async () => {
