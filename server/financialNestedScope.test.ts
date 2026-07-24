@@ -112,6 +112,28 @@ describe("clientMatters.matterFinancials — ASSIGNED viewers cannot read a matt
     const rows = await f.clientMatters.matterFinancials({ clientMatterId: matterOther });
     expect(rows.some(r => r.id === recOther)).toBe(true);
   });
+
+  it("Coordinator receives the strict payment-status DTO on nested and direct reads", async () => {
+    const coordinator = callerFor("coordinator", 1);
+    const expectedKeys = [
+      "billingDate", "clientId", "clientMatterId", "collectionStatus", "createdAt",
+      "id", "invoiceNumber", "paymentDate", "updatedAt",
+    ];
+    const nested = await coordinator.clientMatters.matterFinancials({ clientMatterId: matterAssigned });
+    const nestedRecord = nested.find(r => r.id === recAssigned)!;
+    expect(Object.keys(nestedRecord).sort()).toEqual(expectedKeys);
+
+    const listed = (await coordinator.financial.list({})).find(r => r.id === recAssigned)!;
+    expect(Object.keys(listed).sort()).toEqual(expectedKeys);
+    const direct = await coordinator.financial.get({ id: recAssigned });
+    expect(Object.keys(direct!).sort()).toEqual(expectedKeys);
+    for (const record of [nestedRecord, listed, direct!]) {
+      expect(record).not.toHaveProperty("revenue");
+      expect(record).not.toHaveProperty("agreedFees");
+      expect(record).not.toHaveProperty("responsibleLawyerId");
+      expect(record).not.toHaveProperty("financeNotes");
+    }
+  });
 });
 
 describe("financial.toBeBilledBreakdown — grouped aggregate honors actor scope", () => {
@@ -132,6 +154,12 @@ describe("financial.toBeBilledBreakdown — grouped aggregate honors actor scope
     expect(b.byMatter.find(m => m.clientMatterId === matterAssigned)?.toBeBilled).toBe(1500);
     expect(b.byMatter.find(m => m.clientMatterId === matterOther)?.toBeBilled).toBe(1000);
     expect(b.byClient.find(c => c.clientId === clientId)?.toBeBilled).toBe(2500);
+  });
+
+  it("Coordinator cannot access confidential financial aggregates", async () => {
+    const coordinator = callerFor("coordinator", 1);
+    await expect(coordinator.financial.summary()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(coordinator.financial.toBeBilledBreakdown()).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 });
 
