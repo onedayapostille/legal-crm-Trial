@@ -137,6 +137,12 @@ export const LEGACY_POLICY: Record<LegacyRole, RolePolicy> = {
 
 // ─── TARGET_POLICY (approved spec v1.1 — inert until account migration) ────────
 
+// Manager: firm-wide READ-ONLY oversight (BR-08). Views the modules the approved
+// matrix names — clients, matters, financial records + reports, tasks, Enquiries
+// Log, dashboard/activity — and nothing else. Payment Tracker and Notes are NOT
+// target-spec modules (see DEFERRED_TARGET_CAPABILITIES), so they are withheld
+// here rather than granted; `rates:view` mirrors `financial:view` (rates are a
+// financial-records sub-resource the "View financial records = All" cell covers).
 const TARGET_MANAGER: RolePolicy = {
   "dashboard:view": "ALL",
   "clients:view": "ALL",
@@ -148,12 +154,17 @@ const TARGET_MANAGER: RolePolicy = {
   "rates:view": "ALL",
   "audit:view": "ALL",
   "analytics:view": "ALL",
-  "payments:view": "ALL",
-  "notes:view": "ALL",
 };
 
 // Head of Practice: views all; creates/edits within OWN_PRACTICE; sees & assigns
 // all tasks; views financial reports (BR-14).
+//   - `matters:assign` (designate the Lead Lawyer) has no explicit cell in the
+//     approved matrix; retained at OWN_PRACTICE by decision — every matter reports
+//     to a Head of Practice (BR-01) and a migrated Partner holds this today.
+//   - `tasks:create` is an implementation capability the matrix does not list as a
+//     distinct row (it names task view/update + assign only); granted to the ALL-
+//     scope task managers (Admin, HoP). Other roles fail closed on create — least
+//     privilege — since the source is silent.
 const TARGET_HEAD_OF_PRACTICE: RolePolicy = {
   "dashboard:view": "ALL", "audit:view": "ALL", "analytics:view": "ALL",
   "clients:view": "ALL", "clients:create": "OWN_PRACTICE", "clients:edit": "OWN_PRACTICE",
