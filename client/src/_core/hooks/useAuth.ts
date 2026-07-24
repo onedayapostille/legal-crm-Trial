@@ -44,11 +44,20 @@ export function useAuth(options?: UseAuthOptions) {
   }, [logoutMutation, utils]);
 
   const state = useMemo(() => {
+    // An inactive/suspended account must NOT remain in an apparently authenticated
+    // state (Phase 10). The server rejects it in middleware; here we defensively
+    // treat a non-active `auth.me` as no session so the UI logs it out and gates
+    // everything closed rather than rendering an authenticated shell.
+    const raw = meQuery.data ?? null;
+    const active = raw != null && (raw.status == null || raw.status === "active");
     return {
-      user: meQuery.data ?? null,
+      user: active ? raw : null,
+      /** The raw session even when inactive — lets callers show an access-disabled state. */
+      rawUser: raw,
+      isInactiveSession: raw != null && !active,
       loading: meQuery.isLoading || logoutMutation.isPending,
       error: meQuery.error ?? logoutMutation.error ?? null,
-      isAuthenticated: Boolean(meQuery.data),
+      isAuthenticated: active,
     };
   }, [
     meQuery.data,
@@ -57,6 +66,14 @@ export function useAuth(options?: UseAuthOptions) {
     logoutMutation.error,
     logoutMutation.isPending,
   ]);
+
+  // If the session resolves to an inactive/suspended account, clear the cached
+  // auth state so no stale authenticated data lingers in the client.
+  useEffect(() => {
+    if (state.isInactiveSession) {
+      utils.auth.me.setData(undefined, null);
+    }
+  }, [state.isInactiveSession, utils]);
 
   useEffect(() => {
     if (!redirectOnUnauthenticated) return;

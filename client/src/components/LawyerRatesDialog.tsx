@@ -26,7 +26,7 @@ import { Pencil, Trash2, Plus, Clock, Check, X, UserCog, ShieldCheck } from "luc
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { hasPermission } from "@shared/const";
+import { userCan } from "@/lib/permissions";
 
 interface LawyerRatesDialogProps {
   open: boolean;
@@ -55,9 +55,9 @@ function fmtRate(v: string | null | undefined, currency: string | null | undefin
 export function LawyerRatesDialog({ open, onClose, matter }: LawyerRatesDialogProps) {
   const utils = trpc.useUtils();
   const { user } = useAuth();
-  const canAssignLead = hasPermission(user?.role, "matters:assign_lawyer");
+  const canAssignLead = userCan(user, "matters:assign");
   // Creating/editing/removing rates is a financial mutation (financial:manage).
-  const canManageRates = hasPermission(user?.role, "financial:manage");
+  const canManageRates = userCan(user, "rates:create") || userCan(user, "rates:edit");
 
   // ── Data ─────────────────────────────────────────────────────────────────
   const { data: billable, isLoading } = trpc.clientMatters.billableLawyers.useQuery(

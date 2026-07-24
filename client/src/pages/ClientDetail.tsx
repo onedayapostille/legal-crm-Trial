@@ -40,7 +40,8 @@ import { useQueryParam } from "@/hooks/useQueryParam";
 import { ClientTasksSection, RelatedTasks } from "@/components/ClientTasks";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { hasPermission, CHANNEL_TYPES, DIGITAL_MEDIUMS, channelMediumLabel, MATTER_TYPES, isSupportedMatterType } from "@shared/const";
+import { CHANNEL_TYPES, DIGITAL_MEDIUMS, channelMediumLabel, MATTER_TYPES, isSupportedMatterType } from "@shared/const";
+import { userCan } from "@/lib/permissions";
 
 const STATUS_COLORS: Record<string, string> = {
   "Existing Client": "bg-green-100 text-green-800 border-green-200",
@@ -52,9 +53,9 @@ export default function ClientDetail({ id }: { id: number }) {
   const [, navigate] = useLocation();
   const goBack = useGoBack("/clients");
   const { user } = useAuth();
-  const canManage = hasPermission(user?.role, "clients:manage");
-  const canViewFinancial = hasPermission(user?.role, "financial:view");
-  const canViewTasks = hasPermission(user?.role, "tasks:view");
+  const canManage = userCan(user, "clients:edit");
+  const canViewFinancial = userCan(user, "financial:view");
+  const canViewTasks = userCan(user, "tasks:view");
   const utils = trpc.useUtils();
 
   // Deep-link support: /clients/:id?tab=tasks&taskId=NN opens the Tasks tab and
@@ -686,7 +687,7 @@ function RejectedDetailCard({ clientId, detail, canManage }: { clientId: number;
 
 function AuditTrailCard({ entityType, entityId }: { entityType: string; entityId: number }) {
   const { user } = useAuth();
-  const canViewAudit = hasPermission(user?.role, "audit:view");
+  const canViewAudit = userCan(user, "audit:view");
   const [show, setShow] = useState(false);
   const { data: logs = [] } = trpc.auditLogs.byEntity.useQuery(
     { entityType, entityId },
@@ -727,7 +728,7 @@ function MattersTable({ matters, clientId, canManage, inheritedSerial }: { matte
   const utils = trpc.useUtils();
   const { user } = useAuth();
   // Hourly rates are financial data (financial:view server-side).
-  const canViewRates = hasPermission(user?.role, "financial:view");
+  const canViewRates = userCan(user, "rates:view");
   const [editingMatter, setEditingMatter] = useState<any | null>(null);
   const [ratesMatter, setRatesMatter] = useState<any | null>(null);
 
@@ -1498,7 +1499,7 @@ function FinancialSection({
   const [auditRecord, setAuditRecord] = useState<any | null>(null);
   const [matterFilter, setMatterFilter] = useState("all");
   // Rejected clients lock create/edit/delete; viewing + audit stay available.
-  const canManage = hasPermission(user?.role, "financial:manage") && !locked;
+  const canManage = (userCan(user, "financial:create") || userCan(user, "financial:edit")) && !locked;
 
   const deleteRecord = trpc.financial.delete.useMutation({
     onSuccess: () => {

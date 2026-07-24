@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/table";
 import DashboardLayout from "@/components/DashboardLayout";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { hasPermission } from "@shared/const";
+import { userCan } from "@/lib/permissions";
 import { useQueryParam } from "@/hooks/useQueryParam";
 
 // ─── Formatting (display only — totals are computed server-side in SQL) ───────
@@ -76,7 +76,7 @@ const TAB_EXPORT: Record<TabKey, string | null> = {
 
 export default function FinancialReports() {
   const { user } = useAuth();
-  const canViewClients = hasPermission(user?.role, "clients:view");
+  const canViewClients = userCan(user, "clients:view");
 
   // ── URL-backed filter state ────────────────────────────────────────────────
   const [tabRaw, setTab]            = useQueryParam("tab", "overview");

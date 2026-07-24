@@ -12,7 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { TaskDetailDialog } from "@/components/TaskDetailDialog";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { hasPermission } from "@shared/const";
+import { userCan } from "@/lib/permissions";
 
 const STATUS_OPTIONS = ["all", "todo", "in_progress", "done", "cancelled"];
 const PRIORITY_LABELS: Record<string, { label: string; color: string }> = {
@@ -52,7 +52,11 @@ export default function TaskList() {
   const utils = trpc.useUtils();
   const { user } = useAuth();
   // tasks:view grants read-only visibility (e.g. Manager); mutations need tasks:manage.
-  const canManageTasks = hasPermission(user?.role, "tasks:manage");
+  // Distinct capabilities (Phase 8/10): creating, updating status/content, and
+  // deleting a task are separate authorities — never one "manage" flag.
+  const canCreateTask = userCan(user, "tasks:create");
+  const canEditTask   = userCan(user, "tasks:edit");
+  const canDeleteTask = userCan(user, "tasks:delete");
 
   const { data: tasks = [], isLoading } = trpc.tasks.list.useQuery(
     statusFilter !== "all" ? { status: statusFilter } : {}
@@ -83,7 +87,7 @@ export default function TaskList() {
               {overdue.length > 0 && <span className="text-orange-500 ml-2">· {overdue.length} overdue</span>}
             </p>
           </div>
-          {canManageTasks && (
+          {canCreateTask && (
             <Link href="/tasks/new">
               <Button size="sm"><Plus className="h-4 w-4 mr-1" /> New Task</Button>
             </Link>
@@ -113,7 +117,7 @@ export default function TaskList() {
           <Card>
             <CardContent className="py-12 text-center text-muted-foreground">
               No tasks found.
-              {canManageTasks && (
+              {canCreateTask && (
                 <>
                   {" "}
                   <Link href="/tasks/new" className="text-blue-600 hover:underline">Create one</Link>
@@ -131,9 +135,9 @@ export default function TaskList() {
                   <CardContent className="py-3 px-4">
                     <div className="flex items-start gap-3">
                       <button
-                        onClick={() => canManageTasks && task.status !== "done" && markDone(task.id)}
+                        onClick={() => canEditTask && task.status !== "done" && markDone(task.id)}
                         className="mt-0.5 flex-shrink-0"
-                        disabled={!canManageTasks || task.status === "done"}
+                        disabled={!canEditTask || task.status === "done"}
                       >
                         <StatusIcon status={task.status ?? "todo"} />
                       </button>
@@ -192,7 +196,7 @@ export default function TaskList() {
                         </div>
                       </button>
 
-                      {canManageTasks && (
+                      {canDeleteTask && (
                         <button
                           onClick={() => deleteTask.mutate({ id: task.id })}
                           className="text-xs text-muted-foreground hover:text-red-500 flex-shrink-0"

@@ -11,7 +11,8 @@ import { Loader2, Save, ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 import { useEffect } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { CHANNEL_TYPES, DIGITAL_MEDIUMS, channelMediumRequired, hasPermission } from "@shared/const";
+import { CHANNEL_TYPES, DIGITAL_MEDIUMS, channelMediumRequired } from "@shared/const";
+import { userCan } from "@/lib/permissions";
 
 interface EnquiryFormProps {
   id?: number;
@@ -73,7 +74,7 @@ export default function EnquiryForm({ id }: EnquiryFormProps) {
   const utils = trpc.useUtils();
   const { user } = useAuth();
   // leads:view (e.g. Manager) may open an enquiry read-only; saving needs leads:manage.
-  const canManageLeads = hasPermission(user?.role, "leads:manage");
+  const canManageLeads = userCan(user, "leads:create") || userCan(user, "leads:edit");
 
   const { data: enquiry, isLoading: loadingEnquiry } = trpc.leads.get.useQuery(
     { id: id! },

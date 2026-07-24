@@ -30,26 +30,29 @@ import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
 import NotificationBell from './NotificationBell';
-import { hasPermission } from "@shared/const";
+import { ROUTE_CAPABILITIES, userCan } from "@/lib/permissions";
 
+// Each item's capability is derived from the single ROUTE_CAPABILITIES source of
+// truth (shared with ProtectedRoute), so a sidebar entry can never disagree with
+// the route gate or the server capability name.
 const menuItems = [
-  { icon: Home,          label: "Dashboard",         path: "/dashboard",         permission: "dashboard:view" },
+  { icon: Home,          label: "Dashboard",         path: "/dashboard",         capability: ROUTE_CAPABILITIES["/dashboard"] },
   // ── Clients Module ──
-  { icon: Building2,     label: "All Clients",        path: "/clients",           permission: "clients:view" },
-  { icon: UserCheck,     label: "Existing Clients",   path: "/clients/existing",  permission: "clients:view" },
-  { icon: Users,         label: "Leads Pipeline",     path: "/clients/leads",     permission: "clients:view" },
-  { icon: FileText,      label: "Enquiries Log",      path: "/enquiries/log",     permission: "leads:view" },
-  { icon: UserX,         label: "Rejected Clients",   path: "/clients/rejected",  permission: "clients:view" },
-  { icon: Calendar,      label: "Action Log",         path: "/client-actions",    permission: "actions:view" },
-  { icon: DollarSign,    label: "Financial Records",  path: "/financial",         permission: "financial:view" },
-  { icon: PieChart,      label: "Financial Reports",  path: "/financial-reports", permission: "financial:view" },
-  { icon: Upload,        label: "Import Clients",     path: "/import",            permission: "clients:manage" },
+  { icon: Building2,     label: "All Clients",        path: "/clients",           capability: ROUTE_CAPABILITIES["/clients"] },
+  { icon: UserCheck,     label: "Existing Clients",   path: "/clients/existing",  capability: ROUTE_CAPABILITIES["/clients/existing"] },
+  { icon: Users,         label: "Leads Pipeline",     path: "/clients/leads",     capability: ROUTE_CAPABILITIES["/clients/leads"] },
+  { icon: FileText,      label: "Enquiries Log",      path: "/enquiries/log",     capability: ROUTE_CAPABILITIES["/enquiries/log"] },
+  { icon: UserX,         label: "Rejected Clients",   path: "/clients/rejected",  capability: ROUTE_CAPABILITIES["/clients/rejected"] },
+  { icon: Calendar,      label: "Action Log",         path: "/client-actions",    capability: ROUTE_CAPABILITIES["/client-actions"] },
+  { icon: DollarSign,    label: "Financial Records",  path: "/financial",         capability: ROUTE_CAPABILITIES["/financial"] },
+  { icon: PieChart,      label: "Financial Reports",  path: "/financial-reports", capability: ROUTE_CAPABILITIES["/financial-reports"] },
+  { icon: Upload,        label: "Import Clients",     path: "/import",            capability: ROUTE_CAPABILITIES["/import"] },
   // ── Legacy / Other ──
-  { icon: Briefcase,     label: "Matters",            path: "/matters",           permission: "matters:view" },
-  { icon: CheckSquare,   label: "Tasks",              path: "/tasks",             permission: "tasks:view" },
-  { icon: BarChart3,     label: "Status Tracker",     path: "/status-tracker",    permission: "analytics:view" },
-  { icon: Sparkles,      label: "AI Assistant",       path: "/ai-assistant",      permission: "ai:assistant" },
-  { icon: UserCog,       label: "User Management",   path: "/user-management",   permission: "users:manage" },
+  { icon: Briefcase,     label: "Matters",            path: "/matters",           capability: ROUTE_CAPABILITIES["/matters"] },
+  { icon: CheckSquare,   label: "Tasks",              path: "/tasks",             capability: ROUTE_CAPABILITIES["/tasks"] },
+  { icon: BarChart3,     label: "Status Tracker",     path: "/status-tracker",    capability: ROUTE_CAPABILITIES["/status-tracker"] },
+  { icon: Sparkles,      label: "AI Assistant",       path: "/ai-assistant",      capability: ROUTE_CAPABILITIES["/ai-assistant"] },
+  { icon: UserCog,       label: "User Management",   path: "/user-management",   capability: ROUTE_CAPABILITIES["/user-management"] },
 ];
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
@@ -107,7 +110,7 @@ function DashboardLayoutContent({
   const isCollapsed = state === "collapsed";
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
-  const visibleMenuItems = menuItems.filter(item => hasPermission(user?.role, item.permission));
+  const visibleMenuItems = menuItems.filter(item => userCan(user, item.capability));
   const activeMenuItem = visibleMenuItems.find(item => item.path === location);
   const isMobile = useIsMobile();
 
