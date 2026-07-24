@@ -160,6 +160,7 @@ describe("financial.toBeBilledBreakdown — grouped aggregate honors actor scope
     const coordinator = callerFor("coordinator", 1);
     await expect(coordinator.financial.summary()).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(coordinator.financial.toBeBilledBreakdown()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(coordinator.financial.auditLog({ id: recAssigned })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 });
 
