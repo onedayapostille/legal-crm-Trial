@@ -16,7 +16,7 @@ import {
 import DashboardLayout from "@/components/DashboardLayout";
 import { TaskDetailDialog } from "@/components/TaskDetailDialog";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { hasPermission } from "@shared/const";
+import { userCan } from "@/lib/permissions";
 
 function StatCard({
   title, value, subtitle, icon: Icon, color, href
@@ -54,10 +54,10 @@ export default function Dashboard() {
   const { user } = useAuth();
 
   // AlGhazzawi client stats
-  const canViewClients = hasPermission(user?.role, "clients:view");
-  const canViewFinancial = hasPermission(user?.role, "financial:view");
+  const canViewClients = userCan(user, "clients:view");
+  const canViewFinancial = userCan(user, "financial:view");
   // The firm-wide activity feed is audit data (audit:view server-side).
-  const canViewActivity = hasPermission(user?.role, "audit:view");
+  const canViewActivity = userCan(user, "audit:view");
   const { data: recentActivity } = trpc.dashboard.recentActivity.useQuery(
     { limit: 8 },
     { enabled: canViewActivity },
@@ -121,14 +121,14 @@ export default function Dashboard() {
             <Button size="sm" variant="outline" onClick={() => setConflictOpen(true)}>
               <ShieldCheck className="h-4 w-4 mr-1" /> Run Conflict Check
             </Button>
-            {hasPermission(user?.role, "clients:manage") && (
+            {userCan(user, "clients:create") && (
               <Link href="/clients/new">
                 <Button size="sm">
                   <Plus className="h-4 w-4 mr-1" /> New Client
                 </Button>
               </Link>
             )}
-            {hasPermission(user?.role, "leads:manage") && (
+            {userCan(user, "leads:create") && (
               <Link href="/leads/new">
                 <Button size="sm" variant="outline">
                   <Plus className="h-4 w-4 mr-1" /> New Lead

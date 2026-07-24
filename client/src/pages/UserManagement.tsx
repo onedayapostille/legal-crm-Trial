@@ -29,7 +29,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
-import { ROLE_LABELS, USER_ROLES, USER_STATUSES, type UserRole, type UserStatus } from "@shared/const";
+import { USER_STATUSES, type UserStatus } from "@shared/const";
+import { ACCOUNT_ROLE_LABELS, type AccountRole } from "@shared/policy";
+import { userCan, assignableRoleOptions } from "@/lib/permissions";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "../../../server/routers";
 import { Edit, KeyRound, Loader2, Plus, Settings, ShieldAlert, ShieldCheck, Trash2, Users } from "lucide-react";
@@ -43,16 +45,19 @@ type UserFormState = {
   name: string;
   email: string;
   password: string;
-  role: UserRole;
+  role: AccountRole | ""; // "" until the Admin explicitly picks one — no preselect
   status: UserStatus;
-  reportsToId: number | null; // supervising partner (lawyers)
+  reportsToId: number | null; // supervising partner (legacy lawyer accounts only)
 };
 
 const emptyForm: UserFormState = {
   name: "",
   email: "",
   password: "",
-  role: "staff",
+  // NO preselected role. The Admin must choose explicitly — a silent default (even
+  // a "low" one like Paralegal, which can edit ALL clients & matters) is an
+  // unintended grant. Creation is blocked until a role is chosen.
+  role: "",
   status: "active",
   reportsToId: null,
 };
@@ -142,6 +147,16 @@ export default function UserManagement() {
     };
   }, [users]);
 
+  // Role dropdown offers the approved persistent roles for new assignment MINUS
+  // `finance` (withheld until a policy-era discriminator exists — assigning it today
+  // yields LEGACY finance, not the approved TARGET Finance). An existing
+  // legacy/finance account's current role is surfaced so it displays and can be kept
+  // unchanged during coexistence. See assignableRoleOptions.
+  const roleOptions = useMemo<string[]>(
+    () => assignableRoleOptions(editingUser?.role),
+    [editingUser],
+  );
+
   const openCreate = () => {
     setEditingUser(null);
     setForm(emptyForm);
@@ -154,7 +169,7 @@ export default function UserManagement() {
       name: user.name ?? "",
       email: user.email,
       password: "",
-      role: user.role as UserRole,
+      role: user.role as AccountRole,
       status: user.status as UserStatus,
       reportsToId: (user as any).reportsToId ?? null,
     });
@@ -171,6 +186,12 @@ export default function UserManagement() {
       toast.error("Enter a valid email address");
       return;
     }
+    // A role must be explicitly selected — never inferred from a default.
+    if (!form.role) {
+      toast.error("Select a role");
+      return;
+    }
+    const role: AccountRole = form.role;
     if (!editingUser) {
       const passwordError = validatePassword(form.password);
       if (passwordError) {
@@ -178,8 +199,8 @@ export default function UserManagement() {
         return;
       }
       createMutation.mutate({
-        ...form, email, name: form.name.trim(),
-        reportsToId: form.role === "lawyer" ? form.reportsToId : null,
+        ...form, role, email, name: form.name.trim(),
+        reportsToId: role === "lawyer" ? form.reportsToId : null,
       });
       return;
     }
@@ -188,9 +209,9 @@ export default function UserManagement() {
       userId: editingUser.id,
       name: form.name.trim(),
       email,
-      role: form.role,
+      role,
       status: form.status,
-      reportsToId: form.role === "lawyer" ? form.reportsToId : null,
+      reportsToId: role === "lawyer" ? form.reportsToId : null,
     });
   };
 
@@ -318,7 +339,7 @@ export default function UserManagement() {
                       ) : null}
                     </TableCell>
                     <TableCell>{user.email}</TableCell>
-                    <TableCell>{ROLE_LABELS[user.role as UserRole] ?? user.role}</TableCell>
+                    <TableCell>{ACCOUNT_ROLE_LABELS[user.role as AccountRole] ?? user.role}</TableCell>
                     <TableCell>{getStatusBadge(user.status)}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{formatDate(user.lastLoginAt)}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{formatDate(user.createdAt)}</TableCell>
@@ -356,8 +377,8 @@ export default function UserManagement() {
         </Card>
       </div>
 
-      {/* System Settings — admin only */}
-      {currentUser?.role === "admin" && <SystemSettings />}
+      {/* System Settings — gated by capability, not a role-name comparison */}
+      {userCan(currentUser, "settings:manage") && <SystemSettings />}
 
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent>
@@ -385,11 +406,11 @@ export default function UserManagement() {
             <div className="grid gap-2 sm:grid-cols-2">
               <div className="grid gap-2">
                 <Label>Role</Label>
-                <Select value={form.role} onValueChange={value => setForm({ ...form, role: value as UserRole })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                <Select value={form.role} onValueChange={value => setForm({ ...form, role: value as AccountRole })}>
+                  <SelectTrigger><SelectValue placeholder="Select a role…" /></SelectTrigger>
                   <SelectContent>
-                    {USER_ROLES.map(role => (
-                      <SelectItem key={role} value={role}>{ROLE_LABELS[role]}</SelectItem>
+                    {roleOptions.map(role => (
+                      <SelectItem key={role} value={role}>{ACCOUNT_ROLE_LABELS[role as AccountRole] ?? role}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>

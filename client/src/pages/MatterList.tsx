@@ -5,7 +5,7 @@ import DashboardLayout from "@/components/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { hasPermission } from "@shared/const";
+import { userCan } from "@/lib/permissions";
 
 const PRIORITY_COLORS: Record<string, string> = {
   low:    "bg-gray-100 text-gray-600",
@@ -22,7 +22,7 @@ export default function MatterList() {
   const statusFilter = new URLSearchParams(search).get("status")?.trim() || undefined;
   const { user } = useAuth();
   // Matter creation is clients:manage (same gate as the /matters/new route).
-  const canCreateMatter = hasPermission(user?.role, "clients:manage");
+  const canCreateMatter = userCan(user, "matters:create");
 
   const { data: matters = [], isLoading } = trpc.clientMatters.listAll.useQuery(
     statusFilter ? { status: statusFilter } : undefined,

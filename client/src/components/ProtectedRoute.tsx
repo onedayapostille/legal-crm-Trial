@@ -1,26 +1,31 @@
 import { useEffect } from "react";
 import { useLocation } from "wouter";
 import { trpc } from "@/lib/trpc";
-import { hasPermission } from "@shared/const";
+import { isActiveSession, userCan } from "@/lib/permissions";
+import type { KnownCapability } from "@shared/policy";
 import { Loader2 } from "lucide-react";
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
-  permission?: string;
+  /** Capability required to open this route (Phase 10 — typed, not a legacy string). */
+  capability?: KnownCapability;
 }
 
-export default function ProtectedRoute({ children, permission }: ProtectedRouteProps) {
+export default function ProtectedRoute({ children, capability }: ProtectedRouteProps) {
   const [, navigate] = useLocation();
   const { data: user, isLoading, error } = trpc.auth.me.useQuery(undefined, {
     retry: false,
     staleTime: 60_000,
   });
 
+  // No session, an errored session, or an inactive/suspended account → login.
+  // (The server also enforces this; this is the UI reflection, not the gate.)
+  const active = isActiveSession(user);
   useEffect(() => {
-    if (!isLoading && (!user || error)) {
+    if (!isLoading && (!user || error || !active)) {
       navigate("/login");
     }
-  }, [user, isLoading, error, navigate]);
+  }, [user, isLoading, error, active, navigate]);
 
   if (isLoading) {
     return (
@@ -30,9 +35,9 @@ export default function ProtectedRoute({ children, permission }: ProtectedRouteP
     );
   }
 
-  if (!user) return null;
+  if (!user || !active) return null;
 
-  if (permission && !hasPermission(user.role, permission)) {
+  if (capability && !userCan(user, capability)) {
     return (
       <div className="min-h-screen flex items-center justify-center p-6">
         <div className="max-w-md text-center">

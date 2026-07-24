@@ -14,7 +14,8 @@ import {
 import DashboardLayout from "@/components/DashboardLayout";
 import { useQueryParam } from "@/hooks/useQueryParam";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { CHANNEL_TYPES, hasPermission } from "@shared/const";
+import { CHANNEL_TYPES } from "@shared/const";
+import { userCan } from "@/lib/permissions";
 
 const LEAD_STATUSES = ["New", "Contacted", "Meeting Scheduled", "Proposal Sent", "Converted", "Lost", "On Hold"];
 
@@ -26,7 +27,7 @@ export default function EnquiriesLog() {
   const [, navigate] = useLocation();
   const { user } = useAuth();
   // leads:view (e.g. Manager) can read the log; creating/editing needs leads:manage.
-  const canManageLeads = hasPermission(user?.role, "leads:manage");
+  const canCreateLeads = userCan(user, "leads:create");
   const [search, setSearch] = useQueryParam("search", "");
   const [channelType, setChannelType] = useQueryParam("channelType", "all");
   const [channelMedium, setChannelMedium] = useQueryParam("channelMedium", "all");
@@ -53,7 +54,7 @@ export default function EnquiriesLog() {
               Intake enquiries by communication channel — for marketing-source reporting.
             </p>
           </div>
-          {canManageLeads && (
+          {canCreateLeads && (
             <Button size="sm" onClick={() => navigate("/enquiries/new")}>
               <Plus className="h-4 w-4 mr-1" /> New Enquiry
             </Button>

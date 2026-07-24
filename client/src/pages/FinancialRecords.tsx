@@ -20,7 +20,7 @@ import FinancialDialog from "@/components/FinancialDialog";
 import type { MatterOption, ClientOption } from "@/components/FinancialDialog";
 import { FinancialAuditTrail } from "@/components/FinancialAuditTrail";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { hasPermission } from "@shared/const";
+import { isPaymentStatusOnly, userCan } from "@/lib/permissions";
 import { useQueryParam } from "@/hooks/useQueryParam";
 
 // ─── Shared constants ─────────────────────────────────────────────────────────
@@ -108,12 +108,16 @@ interface GrandTotals {
 
 export default function FinancialRecords() {
   const { user } = useAuth();
-  const canManage      = hasPermission(user?.role, "financial:manage");
-  const canViewClients = hasPermission(user?.role, "clients:view");   // NC-10
+  const canCreate      = userCan(user, "financial:create");
+  const canEdit        = userCan(user, "financial:edit");
+  const paymentOnly    = isPaymentStatusOnly(user);
+  const canViewFullFinancial = userCan(user, "financial:view") && !paymentOnly;
+  const canViewClients = userCan(user, "clients:view");   // NC-10
 
   // ── View / tab state (URL-backed so it survives Back navigation) ────────────
   const [viewModeRaw, setViewMode]   = useQueryParam("view", "records");
-  const viewMode = viewModeRaw as "records" | "overdue" | "summary";
+  const requestedViewMode = viewModeRaw as "records" | "overdue" | "summary";
+  const viewMode = paymentOnly && requestedViewMode === "summary" ? "records" : requestedViewMode;
   const [summaryTabRaw, setSummaryTab] = useQueryParam("tab", "client");
   const summaryTab = summaryTabRaw as "client" | "matter";
 
@@ -131,7 +135,10 @@ export default function FinancialRecords() {
   const [auditRecord,    setAuditRecord]    = useState<any | null>(null);
 
   // ── Settings ───────────────────────────────────────────────────────────────
-  const { data: overdueDays = 30 } = trpc.settings.getOverdueDays.useQuery();
+  const { data: overdueDays = 30 } = trpc.settings.getOverdueDays.useQuery(
+    undefined,
+    { enabled: canViewFullFinancial },
+  );
 
   // ── Data fetching ──────────────────────────────────────────────────────────
   const { data: records = [], isLoading, refetch } = trpc.financial.list.useQuery({
@@ -139,7 +146,10 @@ export default function FinancialRecords() {
     collectionStatus: invoiceStatus !== "all" ? invoiceStatus : undefined,
   });
 
-  const { data: summary } = trpc.financial.summary.useQuery();
+  const { data: summary } = trpc.financial.summary.useQuery(
+    undefined,
+    { enabled: canViewFullFinancial },
+  );
   // NC-10: only call clients.list when the user has clients:view permission to avoid
   // a tRPC permission error for users who have financial:view but not clients:view.
   const { data: clients  = [] } = trpc.clients.list.useQuery({}, { enabled: canViewClients });
@@ -317,7 +327,7 @@ export default function FinancialRecords() {
   }, [filteredRecords]);
 
   // ── Permission guard ───────────────────────────────────────────────────────
-  if (!hasPermission(user?.role, "financial:view")) {
+  if (!userCan(user, "financial:view")) {
     return (
       <DashboardLayout>
         <div className="p-12 text-center">
@@ -378,7 +388,7 @@ export default function FinancialRecords() {
           </div>
           <div className="flex items-center gap-2">
             {/* Quick Add */}
-            {canManage && (
+            {canCreate && (
               <Button size="sm" onClick={() => setAddDialogOpen(true)}>
                 <Plus className="h-4 w-4 mr-1.5" />Add Financial Record
               </Button>
@@ -408,14 +418,16 @@ export default function FinancialRecords() {
                   </span>
                 )}
               </Button>
-              <Button
-                variant={viewMode === "summary" ? "default" : "ghost"}
-                size="sm"
-                className="h-7 text-xs px-3"
-                onClick={() => setViewMode("summary")}
-              >
-                <BarChart3 className="h-3.5 w-3.5 mr-1.5" />Summary
-              </Button>
+              {canViewFullFinancial && (
+                <Button
+                  variant={viewMode === "summary" ? "default" : "ghost"}
+                  size="sm"
+                  className="h-7 text-xs px-3"
+                  onClick={() => setViewMode("summary")}
+                >
+                  <BarChart3 className="h-3.5 w-3.5 mr-1.5" />Summary
+                </Button>
+              )}
             </div>
             <Button variant="outline" size="sm" onClick={() => refetch()}>
               <RefreshCw className="h-4 w-4 mr-1" />Refresh
@@ -424,7 +436,7 @@ export default function FinancialRecords() {
         </div>
 
         {/* ── KPI cards (global totals — not affected by filters) ─────────── */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {canViewFullFinancial && <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <SummaryCard
             label="Total Revenue"
             value={formatCurrency(summary?.totalRevenue ?? 0)}
@@ -443,7 +455,7 @@ export default function FinancialRecords() {
             icon={AlertTriangle}
             color="bg-red-600"
           />
-        </div>
+        </div>}
 
         {/* ── Filters ─────────────────────────────────────────────────────── */}
         <Card>
@@ -559,7 +571,7 @@ export default function FinancialRecords() {
         </Card>
 
         {/* ── Totals strip — reflects current filters ──────────────────────── */}
-        {filteredRecords.length > 0 && (
+        {canViewFullFinancial && filteredRecords.length > 0 && (
           <div className="rounded-lg border bg-muted/30 px-4 py-2.5">
             <div className="flex flex-wrap gap-x-6 gap-y-1.5 items-center">
               <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
@@ -665,15 +677,17 @@ export default function FinancialRecords() {
                           <TableCell className="text-sm">{r.responsibleLawyer ?? "—"}</TableCell>
                           <TableCell>
                             <div className="flex items-center gap-1">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setAuditRecord(r)}
-                                title="View change history"
-                              >
-                                <History className="h-4 w-4 text-muted-foreground" />
-                              </Button>
-                              {canManage && (
+                              {canViewFullFinancial && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setAuditRecord(r)}
+                                  title="View change history"
+                                >
+                                  <History className="h-4 w-4 text-muted-foreground" />
+                                </Button>
+                              )}
+                              {canEdit && (
                                 <Button
                                   variant="ghost"
                                   size="sm"
@@ -799,15 +813,17 @@ export default function FinancialRecords() {
                             <TableCell className="text-sm">{r.responsibleLawyer ?? "—"}</TableCell>
                             <TableCell>
                               <div className="flex items-center gap-1">
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => setAuditRecord(r)}
-                                  title="View change history"
-                                >
-                                  <History className="h-4 w-4 text-muted-foreground" />
-                                </Button>
-                                {canManage && (
+                                {canViewFullFinancial && (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setAuditRecord(r)}
+                                    title="View change history"
+                                  >
+                                    <History className="h-4 w-4 text-muted-foreground" />
+                                  </Button>
+                                )}
+                                {canEdit && (
                                   <Button
                                     variant="ghost"
                                     size="sm"
@@ -833,7 +849,7 @@ export default function FinancialRecords() {
         {/* ════════════════════════════════════════════════════════════════════ */}
         {/*  SUMMARY VIEW                                                        */}
         {/* ════════════════════════════════════════════════════════════════════ */}
-        {viewMode === "summary" && (
+        {canViewFullFinancial && viewMode === "summary" && (
           <Card>
             <CardHeader className="pb-3">
               <div className="flex flex-wrap items-center justify-between gap-3">

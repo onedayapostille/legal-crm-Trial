@@ -12,12 +12,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useState } from "react";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { hasPermission } from "@shared/const";
+import { userCan } from "@/lib/permissions";
 
 export default function PaymentTracker() {
   const { user } = useAuth();
   // payments:view is read-only (e.g. Manager); recording/editing needs payments:manage.
-  const canManagePayments = hasPermission(user?.role, "payments:manage");
+  const canManagePayments = userCan(user, "payments:create");
   const [selectedEnquiry, setSelectedEnquiry] = useState<number | null>(null);
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [paymentData, setPaymentData] = useState({

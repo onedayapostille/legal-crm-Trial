@@ -8,7 +8,8 @@ import * as XLSX from "xlsx";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { hasPermission, CHANNEL_TYPES } from "@shared/const";
+import { CHANNEL_TYPES } from "@shared/const";
+import { userCan } from "@/lib/permissions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -33,7 +34,8 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
   const { user } = useAuth();
-  const canManage = hasPermission(user?.role, "clients:manage");
+  const canCreate = userCan(user, "clients:create");
+  const canManage = userCan(user, "clients:edit"); // gates the inline status control
 
   // Filters live in the URL so they survive List → Detail → Back navigation.
   const [search, setSearch] = useQueryParam("search", "");
@@ -134,10 +136,12 @@ export default function ClientList({ statusFilter }: { statusFilter?: string }) 
               <ShieldCheck className="h-4 w-4 mr-1" />
               Conflict Check
             </Button>
-            <Button size="sm" onClick={() => navigate("/clients/new")}>
-              <Plus className="h-4 w-4 mr-1" />
-              Add Client
-            </Button>
+            {canCreate && (
+              <Button size="sm" onClick={() => navigate("/clients/new")}>
+                <Plus className="h-4 w-4 mr-1" />
+                Add Client
+              </Button>
+            )}
           </div>
         </div>
 

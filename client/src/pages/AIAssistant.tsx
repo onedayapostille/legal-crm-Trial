@@ -10,7 +10,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { hasPermission } from "@shared/const";
+import { userCan } from "@/lib/permissions";
 
 type Period = "month" | "quarter" | "year" | "all";
 const PERIODS: { value: Period; label: string }[] = [
@@ -39,7 +39,7 @@ type ChatMessage = {
 
 export default function AIAssistant() {
   const { user } = useAuth();
-  const canUse = hasPermission(user?.role, "ai:assistant");
+  const canUse = userCan(user, "ai:use");
   const isAdmin = user?.role === "admin";
 
   // Admin-only connectivity diagnostic (calls ai.testNvidia).
