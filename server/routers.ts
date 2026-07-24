@@ -14,25 +14,28 @@ import { ASSIGNMENT_FIELD_NAMES, type AssignmentField } from "../shared/assignme
 import * as financialReports from "./financialReports";
 import { reportFilterSchema, EXPORT_REPORT_TYPES } from "./financialReports";
 import { assertOwnPracticeWrite, getClientPracticeClassification, financialRecordPracticeKey } from "./practices";
-import { authorize } from "@shared/policy";
+import { authorize, ACCOUNT_ROLE_VALUES } from "@shared/policy";
 
 /**
- * Coordinator payment-status projection (§B/§G): keeps ONLY payment-status /
- * tracking fields and NULLS every sensitive value — fees, revenue, all money
- * amounts, discounts, rates, notes, and the responsible-lawyer attribution. The
- * row SHAPE is preserved (type-stable for consumers); the sensitive VALUES never
- * leave the server for a Coordinator.
+ * Coordinator payment-status projection (§B/§G).
+ *
+ * This is deliberately an allowlist: adding a column to financial_records cannot
+ * accidentally disclose it to a Coordinator. The compatibility cast preserves
+ * the existing tRPC client shape until the frontend-alignment PR consumes the
+ * restricted DTO; it does not add the omitted properties at runtime.
  */
 function toPaymentStatusDTO<T extends Record<string, any>>(r: T): T {
   return {
-    ...r,
-    agreedFees: null, netFees: null,
-    discountApproval: null, discountPercentage: null, discountAmount: null,
-    revenue: null, collectedAmount: null, outstandingAmount: null,
-    remainingAdvanced: null, billedAmount: null,
-    financeNotes: null,
-    responsibleLawyer: null, responsibleLawyerId: null,
-  };
+    id: r.id,
+    clientId: r.clientId,
+    clientMatterId: r.clientMatterId,
+    collectionStatus: r.collectionStatus,
+    billingDate: r.billingDate,
+    paymentDate: r.paymentDate,
+    invoiceNumber: r.invoiceNumber,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+  } as unknown as T;
 }
 
 // Money input validation (Finance / Invoicing). A monetary string must be a
@@ -53,7 +56,31 @@ function formatDbError(err: any) {
   return messages.join(" | ") || String(err);
 }
 
-const roleSchema = z.enum(USER_ROLES);
+// Phase 10: User Management may now assign the approved TARGET account roles, so
+// the write schema accepts every persistable account role (legacy + target). The
+// UI offers only the 11 approved roles for NEW assignment; legacy values remain
+// accepted so existing legacy accounts can be re-saved unchanged (coexistence).
+// This is per-user re-grading via the admin UI, NOT the bulk account migration.
+const roleSchema = z.enum(ACCOUNT_ROLE_VALUES);
+
+// Phase 10 (temporary): target Finance activation is unavailable until an additive
+// legacy/target policy-era discriminator exists. `authorize()` resolves the
+// `finance` string to LEGACY finance, so User Management must NOT create a Finance
+// account or transition another role INTO Finance — doing so would represent it as
+// the approved target Finance role without the enforcement that implies. An
+// EXISTING Finance account may remain Finance (unchanged) and stays fully editable.
+// Remove this guard once policy convergence lands.
+const FINANCE_TRANSITION_BLOCKED_MSG =
+  "Assigning the Finance role is unavailable pending policy convergence: target " +
+  "Finance activation requires the legacy/target policy-era discriminator, which " +
+  "is not implemented yet. Existing Finance accounts are unaffected.";
+
+/** Reject creating a Finance account or transitioning a non-Finance role into Finance. */
+function assertFinanceAssignmentAllowed(proposedRole: string, currentRole?: string | null) {
+  if (proposedRole === "finance" && currentRole !== "finance") {
+    throw new TRPCError({ code: "CONFLICT", message: FINANCE_TRANSITION_BLOCKED_MSG });
+  }
+}
 const statusSchema = z.enum(USER_STATUSES);
 
 // Lead Lawyer overlay — the ONLY client_matters fields a designated Lead Lawyer
@@ -64,6 +91,46 @@ const LEAD_LAWYER_EDITABLE_FIELDS: readonly string[] = [
   "matterDescription", "matterStatus", "balanceWorkLeft",
   "achievementPercentage", "achievementStatus", "priority", "opposingParty",
 ];
+
+// ─── Task authorization helpers (Phase 8) ─────────────────────────────────────
+
+type TaskActor = { id: number; role: string; status: string };
+
+/**
+ * Does the actor hold `capability` for THIS task — via base role, or the Lead
+ * Lawyer overlay of the task's matter (which grants tasks:view/edit/assign for the
+ * led matter)? Called only AFTER visibility is confirmed, so a base grant is
+ * already scope-bounded by the rows the actor can see.
+ */
+async function taskCapabilityForMatter(
+  actor: TaskActor,
+  capability: "tasks:edit" | "tasks:assign",
+  clientMatterId: number | null,
+): Promise<boolean> {
+  if (authorize({ id: actor.id, role: actor.role, status: actor.status }, capability).allowed) return true;
+  if (clientMatterId != null) return db.isLeadLawyerOfMatter(actor.id, clientMatterId);
+  return false;
+}
+
+/**
+ * Validate + authorize assigning `assigneeId` to a task on (clientId, clientMatterId).
+ * The caller must already have confirmed the actor holds tasks:assign for the task.
+ * The assignee must already be able to access the task's client/matter,
+ * independently of the assigner's scope. Assignment never creates target access.
+ */
+async function enforceTaskAssignment(
+  assigneeId: number,
+  clientId: number | null,
+  clientMatterId: number | null,
+): Promise<void> {
+  const assignee = await db.resolveTaskAssignee(assigneeId); // exists / active / eligible or throws
+  if (!(await db.assigneeCanAccessTaskTarget(assignee, clientId, clientMatterId))) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Cannot assign this task to a user who cannot access its client/matter.",
+    });
+  }
+}
 
 const passwordSchema = z.string()
   .min(8, "Password must be at least 8 characters")
@@ -375,7 +442,7 @@ export const appRouter = router({
   // ─── Tasks ────────────────────────────────────────────────────────────────
 
   tasks: router({
-    list: permissionProcedure("tasks:view")
+    list: capabilityProcedure("tasks:view")
       .input(z.object({
         matterId: z.number().optional(),
         assignedTo: z.number().optional(),
@@ -386,18 +453,16 @@ export const appRouter = router({
       // Visibility is enforced server-side from the session user (role + id).
       .query(async ({ input, ctx }) => db.getAllTasks(input ?? {}, ctx.user!)),
 
-    get: permissionProcedure("tasks:view")
+    get: capabilityProcedure("tasks:view")
       .input(z.object({ id: z.number() }))
       .query(async ({ input, ctx }) => db.getTaskById(input.id, ctx.user!)),
 
-    create: permissionProcedure("tasks:manage")
+    create: capabilityProcedure("tasks:create")
       .input(z.object({
         title: z.string().min(1),
         description: z.string().optional(),
         status: z.string().optional(),
         priority: z.string().optional(),
-        matterId: z.number().optional(),
-        leadId: z.number().optional(),
         // Client context is REQUIRED — every task must belong to a client (no
         // orphan tasks). A matter-scoped task additionally carries clientMatterId.
         clientId: z.number(),
@@ -412,31 +477,101 @@ export const appRouter = router({
         dueDate: z.string().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
+        const client = await db.getClientById(input.clientId, ctx.user!);
+        if (!client) throw new TRPCError({ code: "NOT_FOUND", message: "Client not found." });
+        if (input.clientMatterId != null) {
+          const matter = await db.getClientMatterById(input.clientMatterId, ctx.user!);
+          if (!matter) throw new TRPCError({ code: "NOT_FOUND", message: "Matter not found." });
+          if (matter.clientId !== input.clientId) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "The selected matter does not belong to the selected client." });
+          }
+        }
+        if (input.sourceType != null || input.sourceId != null || input.clientActionLogId != null) {
+          if (
+            input.sourceType !== "action_log" ||
+            input.sourceId == null ||
+            input.clientActionLogId == null ||
+            input.sourceId !== input.clientActionLogId
+          ) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Task source references are invalid." });
+          }
+          const source = await db.getTaskActionLogSource(input.clientActionLogId);
+          if (
+            !source ||
+            source.clientId !== input.clientId ||
+            (source.clientMatterId != null && source.clientMatterId !== (input.clientMatterId ?? null))
+          ) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Task source does not belong to the selected client/matter." });
+          }
+        }
         // Rejected clients are locked: no new tasks under them.
         await db.assertClientNotRejected(input.clientId);
-        return db.createTask(input, ctx.user!.id);
+        // Assigning a NEW task to ANOTHER user requires tasks:assign (base, or the
+        // Lead Lawyer overlay of the task's matter) + assignee validation (§G).
+        // Assigning to oneself is covered by tasks:create alone.
+        if (input.assignedTo != null && input.assignedTo !== ctx.user!.id) {
+          if (!(await taskCapabilityForMatter(ctx.user!, "tasks:assign", input.clientMatterId ?? null))) {
+            throw new TRPCError({ code: "FORBIDDEN", message: "You do not have authority to assign tasks to other users." });
+          }
+          await enforceTaskAssignment(input.assignedTo, input.clientId, input.clientMatterId ?? null);
+        }
+        const task = await db.createTask(input, ctx.user!.id);
+        if (input.assignedTo != null && input.assignedTo !== ctx.user!.id) {
+          await db.auditTaskAssignment(task.id, null, input.assignedTo, ctx.user!.id);
+        }
+        return task;
       }),
 
-    update: permissionProcedure("tasks:manage")
+    // Content/status update needs tasks:edit; REASSIGNMENT (changing assignedTo)
+    // needs tasks:assign — a user who may edit their task never gains reassign or
+    // delete rights (§G). clientId, clientMatterId, matterId, source ids and
+    // createdBy are PROTECTED (not accepted here), so a task can't be moved onto a
+    // different client/matter to escape scope. Gate is tasks:view; the mutation
+    // authority is checked per-operation inside (Manager therefore mutates nothing).
+    update: capabilityProcedure("tasks:view")
       .input(z.object({
         id: z.number(),
         title: z.string().optional(),
         description: z.string().optional(),
         status: z.string().optional(),
         priority: z.string().optional(),
-        matterId: z.number().optional(),
-        clientMatterId: z.number().nullable().optional(),
-        assignedTo: z.number().optional(),
+        assignedTo: z.number().nullable().optional(), // null = unassign
         dueDate: z.string().optional(),
       }))
       .mutation(async ({ input, ctx }) => {
-        const { id, ...data } = input;
-        // Can only modify a task the viewer is allowed to see.
-        await db.assertTaskVisible(id, ctx.user!);
-        return db.updateTask(id, data);
+        const { id, assignedTo, ...content } = input;
+        const wantsContent = Object.values(content).some(v => v !== undefined);
+        const wantsReassign = assignedTo !== undefined;
+        if (!wantsContent && !wantsReassign) {
+          return db.assertTaskVisible(id, ctx.user!); // no-op read (still scoped)
+        }
+        // Resolve the task under the actor's visibility (null = missing OR invisible).
+        // A Lead Lawyer gains edit/assign for tasks OF the matter they lead.
+        const existing = await db.getTaskById(id, ctx.user!);
+        const leadsMatter =
+          !!existing && existing.clientMatterId != null &&
+          (await db.isLeadLawyerOfMatter(ctx.user!.id, existing.clientMatterId));
+        const editOK = authorize({ id: ctx.user!.id, role: ctx.user!.role, status: ctx.user!.status }, "tasks:edit").allowed || leadsMatter;
+        const assignOK = authorize({ id: ctx.user!.id, role: ctx.user!.role, status: ctx.user!.status }, "tasks:assign").allowed || leadsMatter;
+        // Authorization is checked BEFORE existence so a role with no mutation
+        // authority (e.g. Manager) is denied FORBIDDEN, never NOT_FOUND (§G).
+        if (wantsContent && !editOK) throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
+        if (wantsReassign && !assignOK) throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
+        // Authorized in principle — now require the task to exist and be visible.
+        if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "Task not found." });
+
+        const reassign = assignedTo !== undefined && assignedTo !== existing.assignedTo;
+        if (reassign && assignedTo != null) {
+          await enforceTaskAssignment(assignedTo, existing.clientId, existing.clientMatterId);
+        }
+        const updated = await db.updateTask(id, { ...content, ...(reassign ? { assignedTo } : {}) });
+        if (reassign) await db.auditTaskAssignment(id, existing.assignedTo, assignedTo ?? null, ctx.user!.id);
+        return updated;
       }),
 
-    delete: permissionProcedure("tasks:manage")
+    // Deletion is a DISTINCT authority (tasks:delete) — Admin only among target
+    // roles (legacy partner/lawyer/staff retain it). Visibility still required.
+    delete: capabilityProcedure("tasks:delete")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input, ctx }) => {
         await db.assertTaskVisible(input.id, ctx.user!);
@@ -476,15 +611,15 @@ export const appRouter = router({
   // ─── Payments ─────────────────────────────────────────────────────────────
 
   payments: router({
-    list: permissionProcedure("payments:view").query(async () => db.getAllPayments()),
+    list: capabilityProcedure("payments:view").query(async () => db.getAllPayments()),
 
-    getByLead: permissionProcedure("payments:view")
+    getByLead: capabilityProcedure("payments:view")
       .input(z.object({ leadId: z.number() }))
       .query(async ({ input }) => db.getPaymentByLeadId(input.leadId)),
 
-    // Recording or editing money is a mutation authority (payments:manage) —
-    // payments:view alone must never authorize a write.
-    create: permissionProcedure("payments:manage")
+    // Recording or editing money is a mutation authority (payments:create /
+    // payments:edit) — payments:view alone must never authorize a write.
+    create: capabilityProcedure("payments:create")
       .input(z.object({
         leadId: z.number(),
         matterCode: z.string(),
@@ -503,7 +638,7 @@ export const appRouter = router({
       }))
       .mutation(async ({ input }) => db.createPayment(input)),
 
-    update: permissionProcedure("payments:manage")
+    update: capabilityProcedure("payments:edit")
       .input(z.object({
         id: z.number(),
         paymentTerms: z.string().optional(),
@@ -602,6 +737,9 @@ export const appRouter = router({
         reportsToId: z.number().nullable().optional(), // supervising partner
       }))
       .mutation(async ({ input, ctx }) => {
+        // No new account may be created as Finance until policy convergence.
+        assertFinanceAssignmentAllowed(input.role);
+
         const existing = await db.getUserByEmail(input.email);
         if (existing) {
           throw new TRPCError({ code: "CONFLICT", message: "A user with this email already exists" });
@@ -642,6 +780,9 @@ export const appRouter = router({
         if (!target) {
           throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
         }
+
+        // Existing Finance may remain Finance; no OTHER role may transition into it.
+        assertFinanceAssignmentAllowed(input.role, target.role);
 
         const emailOwner = await db.getUserByEmail(input.email);
         if (emailOwner && emailOwner.id !== input.userId) {
@@ -701,6 +842,8 @@ export const appRouter = router({
       .input(z.object({ userId: z.number(), role: roleSchema }))
       .mutation(async ({ input, ctx }) => {
         const target = await assertCanRemoveActiveAdmin(input.userId);
+        // Existing Finance may remain Finance; no OTHER role may transition into it.
+        assertFinanceAssignmentAllowed(input.role, target.role);
         if (input.userId === ctx.user.id && input.role !== "admin") {
           throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot remove your own admin role" });
         }
@@ -995,10 +1138,17 @@ export const appRouter = router({
 
     // Lead + co-lawyers billable on a matter, each with their effective hourly
     // rate. The source of truth for the Hourly Rate section and billing logic.
-    // Exposes hourly rates, so it is financial data — not tied to clients:view.
-    billableLawyers: permissionProcedure("financial:view")
+    // Exposes hourly rates → it is rate data (rates:view), and ASSIGNED-scope
+    // holders (Senior Associate) may read it only for a matter they are assigned to.
+    billableLawyers: capabilityProcedure("rates:view")
       .input(z.object({ clientMatterId: z.number() }))
-      .query(async ({ input }) => db.getMatterBillableLawyers(input.clientMatterId)),
+      .query(async ({ input, ctx }) => {
+        if (authorize({ id: ctx.user!.id, role: ctx.user!.role, status: ctx.user!.status }, "rates:view").scope !== "ALL"
+            && !(await db.isActorAssignedToMatter(ctx.user!.id, input.clientMatterId))) {
+          return { lead: null, coLawyers: [], all: [] };
+        }
+        return db.getMatterBillableLawyers(input.clientMatterId);
+      }),
 
     // Controlled "Reassign Lead Lawyer" action — restricted to Admin/Partner via
     // the matters:assign_lawyer permission. The name is derived from the user.
@@ -1017,15 +1167,22 @@ export const appRouter = router({
     matterFinancials: protectedProcedure
       .input(z.object({ clientMatterId: z.number() }))
       .query(async ({ input, ctx }) => {
-        const hasFinancialView = authorize(
+        const decision = authorize(
           { id: ctx.user!.id, role: ctx.user!.role, status: ctx.user!.status },
           "financial:view",
-        ).allowed;
+        );
         const isLead = await db.isLeadLawyerOfMatter(ctx.user!.id, input.clientMatterId);
-        if (!hasFinancialView && !isLead) {
+        if (!decision.allowed && !isLead) {
           throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
         }
-        return db.getFinancialRecords({ clientMatterId: input.clientMatterId });
+        // The Lead Lawyer overlay and ALL-scope viewers see every record on THIS
+        // matter. ASSIGNED-scope viewers (Senior Associate) must be filtered to
+        // their own assigned matters: pass the actor so financialScopeWhere yields
+        // this matter's rows only when they are assigned to it (otherwise an empty
+        // set), closing cross-matter financial leakage through this nested endpoint.
+        const actor = (isLead || decision.scope === "ALL") ? undefined : ctx.user!;
+        const rows = await db.getFinancialRecords({ clientMatterId: input.clientMatterId }, actor);
+        return ctx.user!.role === "coordinator" ? rows.map(toPaymentStatusDTO) : rows;
       }),
 
     // Conflict check for a (prospective) matter — by matter name and/or opposing
@@ -1226,16 +1383,25 @@ export const appRouter = router({
 
   // ─── Matter Lawyer Rates ───────────────────────────────────────────────────
 
-  // Hourly rates are financial data: reading them requires financial viewing
-  // authority and writing them the financial mutation authority — independent of
-  // clients:view/manage (the narrowest existing financial capability pair until
-  // the approved permission matrix lands).
+  // Hourly rates are a financial sub-resource with their OWN capabilities
+  // (rates:view/create/edit/delete), separate from financial records and payments.
+  // View is ASSIGNED-scoped (a Senior Associate sees only their matters' rates);
+  // create/edit are OWN_PRACTICE-bound for a Head of Practice (delete is not a
+  // HoP grant — only ALL-scope Finance/Admin). Legacy roles hold these at scope
+  // ALL, so the migration off the deprecated bridge is behavior-preserving.
   matterLawyerRates: router({
-    list: permissionProcedure("financial:view")
+    list: capabilityProcedure("rates:view")
       .input(z.object({ clientMatterId: z.number() }))
-      .query(async ({ input }) => db.getMatterLawyerRates(input.clientMatterId)),
+      .query(async ({ input, ctx }) => {
+        // ASSIGNED-scope viewers may read only a matter they are assigned to.
+        if (authorize({ id: ctx.user!.id, role: ctx.user!.role, status: ctx.user!.status }, "rates:view").scope !== "ALL"
+            && !(await db.isActorAssignedToMatter(ctx.user!.id, input.clientMatterId))) {
+          return [];
+        }
+        return db.getMatterLawyerRates(input.clientMatterId);
+      }),
 
-    create: permissionProcedure("financial:manage")
+    create: capabilityProcedure("rates:create")
       .input(z.object({
         clientMatterId: z.number(),
         // A rate must reference an assigned user. lawyerName is NOT accepted from
@@ -1253,10 +1419,19 @@ export const appRouter = router({
       }))
       .mutation(async ({ input, ctx }) => {
         await db.assertMatterClientNotRejected(input.clientMatterId);
+        // OWN_PRACTICE: a Head of Practice may set rates only on matters in their
+        // own practice; ALL-scope writers (Finance/Admin) are unrestricted; an
+        // unknown/unclassified matter fails closed.
+        const matter = await db.getClientMatterById(input.clientMatterId);
+        await assertOwnPracticeWrite(
+          ctx.user!, "rates:create",
+          matter ? await financialRecordPracticeKey(matter.clientId, input.clientMatterId)
+                 : { location: null, matterType: null },
+        );
         return db.createMatterLawyerRate(input as any, ctx.user!.id);
       }),
 
-    update: permissionProcedure("financial:manage")
+    update: capabilityProcedure("rates:edit")
       .input(z.object({
         id: z.number(),
         // lawyerName is intentionally absent — only the linked user (userId) can
@@ -1275,10 +1450,19 @@ export const appRouter = router({
       .mutation(async ({ input, ctx }) => {
         const { id, ...data } = input;
         await db.assertRateClientNotRejected(id);
+        // OWN_PRACTICE: the rate's matter must be in the actor's practice. The
+        // update never moves the rate to another matter, so existing == proposed.
+        const rate = await db.getMatterLawyerRateById(id);
+        if (!rate) throw new TRPCError({ code: "NOT_FOUND", message: "Rate not found." });
+        const matter = await db.getClientMatterById(rate.clientMatterId);
+        const key = matter
+          ? await financialRecordPracticeKey(matter.clientId, rate.clientMatterId)
+          : { location: null, matterType: null };
+        await assertOwnPracticeWrite(ctx.user!, "rates:edit", key, key);
         return db.updateMatterLawyerRate(id, data as any, ctx.user!.id);
       }),
 
-    delete: permissionProcedure("financial:manage")
+    delete: capabilityProcedure("rates:delete")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await db.assertRateClientNotRejected(input.id);
@@ -1404,9 +1588,19 @@ export const appRouter = router({
         return { success: true };
       }),
 
-    summary: capabilityProcedure("financial:view").query(async ({ ctx }) => db.getFinancialSummary(ctx.user!)),
+    summary: capabilityProcedure("financial:view").query(async ({ ctx }) => {
+      if (ctx.user!.role === "coordinator") {
+        throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
+      }
+      return db.getFinancialSummary(ctx.user!);
+    }),
 
-    toBeBilledBreakdown: capabilityProcedure("financial:view").query(async () => db.getToBeBilledBreakdown()),
+    toBeBilledBreakdown: capabilityProcedure("financial:view").query(async ({ ctx }) => {
+      if (ctx.user!.role === "coordinator") {
+        throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
+      }
+      return db.getToBeBilledBreakdown(ctx.user!);
+    }),
 
     // Read-only audit trail for a specific financial record — only if the caller
     // can see the underlying record (same scope as detail).

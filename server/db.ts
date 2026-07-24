@@ -1,4 +1,4 @@
-import { and, count, desc, eq, getTableColumns, gte, inArray, lt, lte, ne, or, sql, ilike } from "drizzle-orm";
+import { and, count, desc, eq, getTableColumns, gte, inArray, lt, lte, ne, or, sql, ilike, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { TRPCError } from "@trpc/server";
@@ -22,11 +22,12 @@ import { hashPassword } from "./_core/auth";
 import { channelMediumRequired, MATTER_TYPES, isSupportedMatterType } from "../shared/const";
 import {
   type Actor, clientScopeWhere, clientMatterScopeWhere, standaloneMatterScopeWhere,
-  leadScopeWhere, hasAllScope, financialScopeWhere,
+  leadScopeWhere, hasAllScope, financialScopeWhere, actorAssignedToMatter,
 } from "./scoping";
 import { notifyLawyerAssignment } from "./emailNotifications";
 import type { UserRole, UserStatus } from "../shared/const";
 import { ASSIGNMENT_FIELDS, type AssignmentField } from "../shared/assignmentEligibility";
+import { authorize, isLegacyRole, type AccountRole } from "../shared/policy";
 
 /**
  * Validate the two-level communication channel.
@@ -379,7 +380,7 @@ export async function updateUser(id: number, data: Partial<InsertUser>) {
   return user;
 }
 
-export async function updateUserRole(userId: number, role: UserRole) {
+export async function updateUserRole(userId: number, role: AccountRole) {
   const db = getDb();
   await db.update(users).set({ role, updatedAt: new Date() }).where(eq(users.id, userId));
 }
@@ -1015,25 +1016,64 @@ export async function isLeadLawyerOfMatter(actorId: number, clientMatterId: numb
 }
 
 /**
- * SQL WHERE condition restricting tasks to those the viewer may see:
- *   - admin / manager → null (no restriction; see all)
- *   - partner → own (assignee/creator) OR assigned to a lawyer reporting to them
- *   - everyone else (lawyer, staff, …) → own only (assignee or creator)
- * Returns null only for admin/manager.
+ * True when the actor holds ANY of the seven assignment roles on the given matter
+ * (lead/support/attorney-head/attorney1–4). Used to gate ASSIGNED-scope access to
+ * a specific matter's financial sub-resources (rates, billable lawyers) — the
+ * boolean counterpart of `actorAssignedToMatter`'s SQL predicate. Lead lawyers are
+ * a subset (leadLawyerId is one of the assignment fields), so this also covers the
+ * Lead Lawyer overlay's matter.
  */
-export async function taskVisibilityCondition(viewer: TaskViewer) {
-  if (viewer.role === "admin" || viewer.role === "manager") return null;
-  const own = or(eq(tasks.assignedTo, viewer.id), eq(tasks.createdBy, viewer.id));
-  const conds = [own];
-  if (viewer.role === "partner") {
-    const ids = await getReportingUserIds(viewer.id);
-    if (ids.length > 0) conds.push(inArray(tasks.assignedTo, ids));
-  }
-  // Lead Lawyer overlay (Phase 6): additive access to tasks OF matters the viewer
-  // leads — regardless of base role, but only those matters' tasks.
+export async function isActorAssignedToMatter(actorId: number, clientMatterId: number): Promise<boolean> {
+  const db = getDb();
+  const [row] = await db
+    .select({ id: clientMatters.id })
+    .from(clientMatters)
+    .where(and(eq(clientMatters.id, clientMatterId), actorAssignedToMatter({ id: actorId, role: null })))
+    .limit(1);
+  return !!row;
+}
+
+/**
+ * SQL WHERE restricting tasks to those the viewer may see (Phase 8).
+ *
+ * LEGACY roles keep their established behavior verbatim (no premature change):
+ *   - admin / manager → null (all)
+ *   - partner → own(assignee|creator) OR reports' tasks OR led matters
+ *   - lawyer / staff → own(assignee|creator) OR led matters
+ *   - finance / viewer → no task capability (the route gate denies them first)
+ *
+ * TARGET account roles derive from the approved matrix (`tasks:view` scope), where
+ * OWN means ASSIGNEE — never creator (scopes.ts / spec §G):
+ *   - ALL (manager, head_of_practice, coordinator) → null
+ *   - OWN (senior/executive associate, associate tier, paralegal, finance) →
+ *     assignee-only OR led matters
+ * The Lead Lawyer overlay is always additive (tasks OF matters the viewer leads).
+ * Returns null for unrestricted, a predicate for scoped, sql`false` to fail closed.
+ */
+export async function taskVisibilityCondition(viewer: TaskViewer): Promise<SQL | null | undefined> {
+  const role = viewer.role;
   const led = await ledMatterIds(viewer.id);
-  if (led.length > 0) conds.push(inArray(tasks.clientMatterId, led));
-  return conds.length === 1 ? own : or(...conds);
+  const orLed = (base: SQL): SQL => (led.length > 0 ? or(base, inArray(tasks.clientMatterId, led))! : base);
+
+  if (isLegacyRole(role)) {
+    if (role === "admin" || role === "manager") return null;
+    const own = or(eq(tasks.assignedTo, viewer.id), eq(tasks.createdBy, viewer.id))!;
+    const conds: SQL[] = [own];
+    if (role === "partner") {
+      const ids = await getReportingUserIds(viewer.id);
+      if (ids.length > 0) conds.push(inArray(tasks.assignedTo, ids));
+    }
+    if (led.length > 0) conds.push(inArray(tasks.clientMatterId, led));
+    return conds.length === 1 ? own : or(...conds)!;
+  }
+
+  // Target account role — derive the row scope from the approved matrix.
+  const scope = authorize({ id: viewer.id, role, status: "active" }, "tasks:view").scope;
+  if (scope === "ALL") return null;
+  if (scope === "OWN") return orLed(eq(tasks.assignedTo, viewer.id));
+  // No base task view; only the Lead Lawyer overlay (if any) grants matter tasks.
+  if (led.length > 0) return inArray(tasks.clientMatterId, led);
+  return sql`false`;
 }
 
 /** Whether a single task row is visible to the viewer (same rules as the SQL filter). */
@@ -1041,17 +1081,24 @@ export async function isTaskVisibleTo(
   task: { assignedTo: number | null; createdBy: number | null; clientMatterId?: number | null },
   viewer: TaskViewer,
 ): Promise<boolean> {
-  if (viewer.role === "admin" || viewer.role === "manager") return true;
-  if (task.assignedTo === viewer.id || task.createdBy === viewer.id) return true;
-  if (viewer.role === "partner" && task.assignedTo != null) {
-    const ids = await getReportingUserIds(viewer.id);
-    if (ids.includes(task.assignedTo)) return true;
+  const role = viewer.role;
+  const inLedMatter = async () =>
+    task.clientMatterId != null && (await isLeadLawyerOfMatter(viewer.id, task.clientMatterId));
+
+  if (isLegacyRole(role)) {
+    if (role === "admin" || role === "manager") return true;
+    if (task.assignedTo === viewer.id || task.createdBy === viewer.id) return true;
+    if (role === "partner" && task.assignedTo != null) {
+      const ids = await getReportingUserIds(viewer.id);
+      if (ids.includes(task.assignedTo)) return true;
+    }
+    return inLedMatter();
   }
-  // Lead Lawyer overlay: the task belongs to a matter the viewer leads.
-  if (task.clientMatterId != null && (await isLeadLawyerOfMatter(viewer.id, task.clientMatterId))) {
-    return true;
-  }
-  return false;
+
+  const scope = authorize({ id: viewer.id, role, status: "active" }, "tasks:view").scope;
+  if (scope === "ALL") return true;
+  if (scope === "OWN" && task.assignedTo === viewer.id) return true; // assignee-only (§G)
+  return inLedMatter();
 }
 
 /** Throw NOT_FOUND if the task is missing OR not visible to the viewer (used by mutations). */
@@ -1171,6 +1218,95 @@ export async function updateTask(id: number, data: Record<string, unknown>) {
 export async function deleteTask(id: number) {
   const db = getDb();
   await db.delete(tasks).where(eq(tasks.id, id));
+}
+
+// ─── Task assignment validation & audit (Phase 8) ─────────────────────────────
+
+/**
+ * Roles that may operationally receive tasks during legacy/target coexistence.
+ * Read-only Manager, Viewer, and legacy Finance are intentionally excluded.
+ * Target Finance is activated only after the policy-era discriminator lands and
+ * must be added based on that discriminator rather than this ambiguous role name.
+ */
+export const TASK_ASSIGNEE_ROLES: ReadonlySet<string> = new Set([
+  "admin",
+  "partner", "lawyer", "staff",
+  "head_of_practice", "senior_associate", "executive_associate", "associate",
+  "junior_lawyer", "trainee", "paralegal", "coordinator",
+]);
+
+/**
+ * Validate a task assignee against existence, active status, and the explicit
+ * operational-role allowlist. Returns the actor used by target-access validation.
+ */
+export async function resolveTaskAssignee(userId: number): Promise<Actor & { name: string | null }> {
+  const db = getDb();
+  const [u] = await db
+    .select({ id: users.id, name: users.name, role: users.role, status: users.status })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!u) throw new TRPCError({ code: "BAD_REQUEST", message: "Selected assignee does not exist." });
+  if (u.status !== "active") {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Selected assignee is inactive and cannot receive tasks." });
+  }
+  if (!TASK_ASSIGNEE_ROLES.has(u.role)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: `Selected assignee's role (${u.role}) cannot hold tasks.` });
+  }
+  return { id: u.id, role: u.role, status: u.status, name: u.name };
+}
+
+/**
+ * Whether the assignee can access the task's client/matter INDEPENDENTLY of the
+ * task — reuses the established client/matter scope helpers (§D: consume policy
+ * helpers). Used to block assigning a task to a user with no business seeing its
+ * client/matter (§G), unless the assigner is an approved ALL-scope assigning role.
+ */
+export async function assigneeCanAccessTaskTarget(
+  assignee: Actor,
+  clientId: number | null,
+  clientMatterId: number | null,
+): Promise<boolean> {
+  if (clientMatterId != null) return !!(await getClientMatterById(clientMatterId, assignee));
+  if (clientId != null) return !!(await getClientById(clientId, assignee));
+  return true; // no client/matter context to gate
+}
+
+/** Minimal authoritative source row used to validate task provenance. */
+export async function getTaskActionLogSource(id: number) {
+  const db = getDb();
+  const [row] = await db
+    .select({
+      id: clientActionLogs.id,
+      clientId: clientActionLogs.clientId,
+      clientMatterId: clientActionLogs.clientMatterId,
+    })
+    .from(clientActionLogs)
+    .where(eq(clientActionLogs.id, id))
+    .limit(1);
+  return row ?? null;
+}
+
+/** Audit a task assignment / reassignment (§G). */
+export async function auditTaskAssignment(
+  taskId: number,
+  oldAssignee: number | null,
+  newAssignee: number | null,
+  byUserId: number,
+) {
+  await createAuditLog({
+    entityType: "task",
+    entityId: taskId,
+    userId: byUserId,
+    action: "assigned",
+    fieldName: "assignedTo",
+    oldValue: oldAssignee != null ? String(oldAssignee) : undefined,
+    newValue: newAssignee != null ? String(newAssignee) : undefined,
+    description:
+      oldAssignee == null
+        ? `Task ${taskId} assigned to user ${newAssignee ?? "unassigned"}`
+        : `Task ${taskId} reassigned from user ${oldAssignee} to ${newAssignee ?? "unassigned"}`,
+  });
 }
 
 // ─── Notes ────────────────────────────────────────────────────────────────────
@@ -2464,6 +2600,17 @@ export async function getMatterLawyerRates(clientMatterId: number) {
   return rows.map(r => ({ ...r, lawyerName: r.userName ?? r.lawyerName }));
 }
 
+/** A single rate row by id — used to resolve its matter for OWN_PRACTICE checks. */
+export async function getMatterLawyerRateById(id: number) {
+  const db = getDb();
+  const [row] = await db
+    .select({ id: matterLawyerRates.id, clientMatterId: matterLawyerRates.clientMatterId })
+    .from(matterLawyerRates)
+    .where(eq(matterLawyerRates.id, id))
+    .limit(1);
+  return row ?? null;
+}
+
 export async function createMatterLawyerRate(data: Record<string, unknown>, userId: number) {
   const db = getDb();
   // Names cannot be free text: a rate must reference an assignable user, and the
@@ -3058,8 +3205,15 @@ export async function getFinancialSummary(actor?: Actor) {
 
 // ─── To Be Billed Breakdown ───────────────────────────────────────────────────
 
-export async function getToBeBilledBreakdown() {
+export async function getToBeBilledBreakdown(actor?: Actor) {
   const db = getDb();
+
+  // Actor financial scope (Phase 7): identical predicate to the list/summary, so
+  // these grouped aggregates reconcile with the rows the actor can actually see.
+  // ALL → undefined (no restriction); ASSIGNED → assigned-matter rows only
+  // (null-matter records excluded); else fail closed. Passing `undefined` to
+  // `.where()` is a no-op, so ALL-scope callers are unaffected.
+  const scope = actor ? financialScopeWhere(actor) : undefined;
 
   // Reusable SQL expression: MAX(0, netFees - revenue) per row, then SUM.
   // Net Fees (after discount) is the basis; falls back to agreedFees when netFees
@@ -3076,6 +3230,7 @@ export async function getToBeBilledBreakdown() {
     })
     .from(financialRecords)
     .innerJoin(clients, eq(financialRecords.clientId, clients.id))
+    .where(scope)
     .groupBy(financialRecords.clientId, clients.clientName);
 
   // ── By Matter (only records linked to a matter) ────────────────────────────
@@ -3092,6 +3247,7 @@ export async function getToBeBilledBreakdown() {
     .from(financialRecords)
     .innerJoin(clients, eq(financialRecords.clientId, clients.id))
     .innerJoin(clientMatters, eq(financialRecords.clientMatterId, clientMatters.id))
+    .where(scope)
     .groupBy(
       financialRecords.clientId,
       clients.clientName,
