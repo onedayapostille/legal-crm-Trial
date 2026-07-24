@@ -15,11 +15,13 @@
  * Lead Lawyer is NOT a base role here — it is an additive per-matter overlay
  * (see overlay.ts, spec §3/BR-03).
  *
- * Capabilities the approved matrix does not mention (payments Payment-Tracker,
- * notes, companies, client action log, ai) are intentionally OMITTED from target
- * roles — they fail closed pending a later phase rather than being invented here.
- * They remain fully specified for LEGACY roles so the compatibility bridge is
- * faithful. See DEFERRED_TARGET_CAPABILITIES below.
+ * Mutation/ancillary capabilities the approved matrix does not enumerate
+ * (payments create/edit, notes create/delete, companies, client action log, ai)
+ * fail closed for target roles pending a later phase rather than being invented
+ * here. The VIEW of Payment Tracker and Notes is the exception: BR-08's read-only
+ * Manager "views everything", so `payments:view`/`notes:view` ARE granted (to
+ * Manager). Everything stays fully specified for LEGACY roles so the compatibility
+ * bridge is faithful. See DEFERRED_TARGET_CAPABILITIES below.
  */
 import type { DataScope } from "./scopes";
 import type { KnownCapability } from "./capabilities";
@@ -137,12 +139,14 @@ export const LEGACY_POLICY: Record<LegacyRole, RolePolicy> = {
 
 // ─── TARGET_POLICY (approved spec v1.1 — inert until account migration) ────────
 
-// Manager: firm-wide READ-ONLY oversight (BR-08). Views the modules the approved
-// matrix names — clients, matters, financial records + reports, tasks, Enquiries
-// Log, dashboard/activity — and nothing else. Payment Tracker and Notes are NOT
-// target-spec modules (see DEFERRED_TARGET_CAPABILITIES), so they are withheld
-// here rather than granted; `rates:view` mirrors `financial:view` (rates are a
-// financial-records sub-resource the "View financial records = All" cell covers).
+// Manager: firm-wide READ-ONLY oversight (BR-08 — "views everything: clients,
+// matters, financial records, tasks, reports — with no create/edit rights").
+// BR-08's "views everything" rule takes PRECEDENCE over the permission matrix's
+// silence on modules it does not enumerate: a read-only overseer still sees Payment
+// Tracker and Notes, so `payments:view` and `notes:view` are granted (VIEW only),
+// even though those modules have no dedicated matrix row. `rates:view` likewise
+// mirrors `financial:view`. Manager holds NO create/edit/delete/assign/manage
+// capability anywhere — the read grants below are the whole of its authority.
 const TARGET_MANAGER: RolePolicy = {
   "dashboard:view": "ALL",
   "clients:view": "ALL",
@@ -152,6 +156,8 @@ const TARGET_MANAGER: RolePolicy = {
   "financial:view": "ALL",
   "financialReports:view": "ALL",
   "rates:view": "ALL",
+  "payments:view": "ALL",
+  "notes:view": "ALL",
   "audit:view": "ALL",
   "analytics:view": "ALL",
 };
@@ -259,14 +265,16 @@ export const TARGET_POLICY: Record<TargetAccountRole, RolePolicy> = {
 };
 
 /**
- * Capabilities deliberately NOT granted to target roles in this phase because the
- * approved matrix does not address them. They fail closed for target roles until
- * a later phase resolves them with the business owner. Documented here so the gap
- * is explicit rather than an accidental omission.
+ * Capabilities not yet granted to any target role in this phase — MUTATION and
+ * ancillary capabilities the approved matrix does not enumerate, which fail closed
+ * for target roles until a later phase resolves them with the business owner.
+ * NOTE: `payments:view` and `notes:view` are intentionally NOT here — BR-08's
+ * read-only overseer (Manager) sees those modules, so their VIEW grant is live
+ * (their create/edit/delete remain deferred). Documented so the gap is explicit.
  */
 export const DEFERRED_TARGET_CAPABILITIES: readonly KnownCapability[] = [
-  "payments:view", "payments:create", "payments:edit",
-  "notes:view", "notes:create", "notes:delete",
+  "payments:create", "payments:edit",
+  "notes:create", "notes:delete",
   "companies:create", "companies:edit",
   "actions:view", "actions:create", "actions:edit", "actions:delete",
   "ai:use",

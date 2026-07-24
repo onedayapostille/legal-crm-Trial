@@ -37,11 +37,14 @@ const ASSIGNED_LEGAL_TIER: Cells = {
 };
 
 const EXPECTED: Record<string, Cells> = {
-  // Manager — firm-wide READ-ONLY (BR-08); Payment Tracker & Notes are not target modules.
+  // Manager — firm-wide READ-ONLY oversight (BR-08 "views everything"). BR-08 takes
+  // precedence over the matrix's silence on Payment Tracker & Notes: the overseer
+  // sees them, so payments:view + notes:view are granted (view only). No mutations.
   manager: {
     "dashboard:view": "ALL", "analytics:view": "ALL", "audit:view": "ALL",
     "clients:view": "ALL", "leads:view": "ALL", "matters:view": "ALL",
     "tasks:view": "ALL", "financial:view": "ALL", "financialReports:view": "ALL", "rates:view": "ALL",
+    "payments:view": "ALL", "notes:view": "ALL",
   },
   // Head of Practice — views all, OWN_PRACTICE writes, all tasks + assign, reports (BR-02/14).
   head_of_practice: {
@@ -149,9 +152,11 @@ describe("live enforcement — authorize() resolves target-only roles to the mat
 
 describe("era isolation — shared-name roles stay LEGACY until account migration", () => {
   it("admin/manager/finance still resolve to LEGACY_POLICY, not their TARGET cells", () => {
-    // Manager: TARGET withholds payments:view (conflict #1 fix) but LEGACY grants it.
-    expect(TARGET_POLICY.manager["payments:view"]).toBeUndefined();
-    expect(authorize(actor("manager"), "payments:view").allowed).toBe(true); // legacy still on
+    // Manager: LEGACY grants financialReports:export; TARGET does not → authorize
+    // (which resolves the shared name to LEGACY) still grants it. (payments:view is
+    // no longer a discriminator — BR-08 grants it in TARGET too.)
+    expect(TARGET_POLICY.manager["financialReports:export"]).toBeUndefined();
+    expect(authorize(actor("manager"), "financialReports:export").allowed).toBe(true); // legacy still on
     // Finance: TARGET grants audit:view; LEGACY does not.
     expect(TARGET_POLICY.finance["audit:view"]).toBe("ALL");
     expect(authorize(actor("finance"), "audit:view").allowed).toBe(false); // legacy still off
