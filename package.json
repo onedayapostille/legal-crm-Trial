@@ -13,6 +13,7 @@
     "db:push": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx scripts/migrate.ts",
+    "authz:preflight-era": "tsx scripts/preflight-era.ts",
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx server/seed.ts",
     "test:nvidia": "tsx scripts/test-nvidia.ts",

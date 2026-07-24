@@ -98,7 +98,12 @@ export async function assertOwnPracticeWrite(
   proposed: PracticeKey,
   existing?: PracticeKey,
 ): Promise<void> {
-  const scope = authorize({ id: actor.id, role: actor.role, status: actor.status }, capability).scope;
+  const scope = authorize({
+    id: actor.id,
+    role: actor.role,
+    authorizationModel: actor.authorizationModel,
+    status: actor.status,
+  }, capability).scope;
   if (scope === "ALL") return;
   if (scope !== "OWN_PRACTICE") throw FORBIDDEN;
   // Edit: the record as it stands must already be in the actor's practice

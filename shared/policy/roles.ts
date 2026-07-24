@@ -45,6 +45,13 @@ export type TargetRole = (typeof TARGET_ROLES)[number];
 
 export type PolicyRole = LegacyRole | TargetRole;
 
+export const POLICY_ERAS = ["legacy", "target"] as const;
+export type PolicyEra = (typeof POLICY_ERAS)[number];
+
+export function isPolicyEra(value: unknown): value is PolicyEra {
+  return typeof value === "string" && (POLICY_ERAS as readonly string[]).includes(value);
+}
+
 const LEGACY_SET: ReadonlySet<string> = new Set(LEGACY_ROLES);
 const TARGET_SET: ReadonlySet<string> = new Set(TARGET_ROLES);
 
@@ -58,6 +65,13 @@ export function isTargetRole(v: unknown): v is TargetRole {
 /** Target-only roles (present in the target set but never a live legacy value). */
 export function isTargetOnlyRole(v: unknown): v is Exclude<TargetRole, LegacyRole> {
   return isTargetRole(v) && !isLegacyRole(v);
+}
+
+/** Whether a persisted role may be evaluated in the requested policy era. */
+export function isValidRoleEra(role: unknown, era: unknown): role is PolicyRole {
+  if (!isPolicyEra(era) || typeof role !== "string") return false;
+  if (era === "legacy") return isLegacyRole(role);
+  return isTargetRole(role) && role !== "lead_lawyer";
 }
 
 /**
@@ -129,6 +143,25 @@ export const ACCOUNT_ROLE_LABELS: Record<AccountRole, string> = {
   lawyer: "Lawyer (legacy)",
   staff: "Staff (legacy)",
   viewer: "Viewer (legacy)",
+};
+
+/** Concise business-facing responsibility shown in User Management. */
+export const ACCOUNT_ROLE_DESCRIPTIONS: Record<AccountRole, string> = {
+  admin: "Full system access, user management, settings, and all records.",
+  manager: "Firm-wide read-only oversight; cannot create, edit, assign, or delete.",
+  head_of_practice: "Views firm-wide data; manages clients, matters, and finance only within their own practice.",
+  senior_associate: "Works assigned matters and own tasks; may assign tasks; financial records are assigned-matter read-only.",
+  executive_associate: "Works assigned matters and own tasks; may assign tasks; no base financial access.",
+  associate: "Works assigned matters and own tasks; cannot assign tasks or view finance.",
+  junior_lawyer: "Works assigned matters and own tasks; cannot assign tasks or view finance.",
+  trainee: "Works assigned matters and own tasks; cannot lead matters, assign tasks, or view finance.",
+  paralegal: "Views and edits client/matter records firm-wide; own tasks only; no finance.",
+  finance: "Manages clients, matters, financial records, reports, and rates; own tasks only.",
+  coordinator: "Runs intake and registry, manages matters and all tasks, and sees payment-status-only financial data.",
+  partner: "Legacy role retained during controlled migration.",
+  lawyer: "Legacy role awaiting an explicit approved legal grade.",
+  staff: "Legacy role awaiting migration to Coordinator.",
+  viewer: "Legacy role with no approved target equivalent; re-grade before activation.",
 };
 
 /**

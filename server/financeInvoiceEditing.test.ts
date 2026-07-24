@@ -27,6 +27,7 @@ function callerFor(role: string, id = 1000) {
     name: role,
     loginMethod: "manus",
     role: role as any,
+    authorizationModel: (["admin", "manager", "partner", "lawyer", "finance", "staff", "viewer"].includes(role) ? "legacy" : "target") as any,
     status: "active",
     createdAt: new Date(),
     updatedAt: new Date(),

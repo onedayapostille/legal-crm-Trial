@@ -25,7 +25,9 @@ type AuthedUser = NonNullable<TrpcContext["user"]>;
 function callerFor(role: string, id: number) {
   const user: AuthedUser = {
     id, openId: `t-${id}`, email: `u${id}@x.com`, name: `U${id}`,
-    loginMethod: "manus", role: role as any, status: "active",
+    loginMethod: "manus", role: role as any,
+    authorizationModel: (["admin", "manager", "partner", "lawyer", "finance", "staff", "viewer"].includes(role) ? "legacy" : "target") as any,
+    status: "active",
     createdAt: new Date(), updatedAt: new Date(), lastSignedIn: new Date(),
   };
   return appRouter.createCaller({
@@ -54,10 +56,10 @@ beforeAll(async () => {
 
   const a = admin();
   const s = Date.now();
-  const assoc   = await a.users.create({ name: `NAssoc ${s}`,   email: `nassoc-${s}@x.com`,   password: PW, role: "lawyer" });
-  const stranger= await a.users.create({ name: `NStr ${s}`,     email: `nstr-${s}@x.com`,     password: PW, role: "lawyer" });
-  const hop     = await a.users.create({ name: `NHoP ${s}`,     email: `nhop-${s}@x.com`,     password: PW, role: "partner" });
-  const rateU   = await a.users.create({ name: `NRateU ${s}`,   email: `nrateu-${s}@x.com`,   password: PW, role: "lawyer" });
+  const assoc   = await a.users.create({ name: `NAssoc ${s}`,   email: `nassoc-${s}@x.com`,   password: PW, role: "senior_associate" });
+  const stranger= await a.users.create({ name: `NStr ${s}`,     email: `nstr-${s}@x.com`,     password: PW, role: "senior_associate" });
+  const hop     = await a.users.create({ name: `NHoP ${s}`,     email: `nhop-${s}@x.com`,     password: PW, role: "head_of_practice" });
+  const rateU   = await a.users.create({ name: `NRateU ${s}`,   email: `nrateu-${s}@x.com`,   password: PW, role: "associate" });
   assocId = assoc.id; strangerId = stranger.id; hopId = hop.id; rateUserId = rateU.id;
 
   // This file's practice: (Jeddah, Corporate) → hop is its head. Kept distinct

@@ -15,7 +15,12 @@
 import { describe, expect, it } from "vitest";
 import { authorize, CAPABILITIES, LEAD_LAWYER_OVERLAY_GRANTS, TARGET_POLICY, type DataScope, type KnownCapability } from "../shared/policy";
 
-const actor = (role: string) => ({ id: 1, role, status: "active" as const });
+const targetActor = (role: string) => ({
+  id: 1, role, authorizationModel: "target" as const, status: "active" as const,
+});
+const legacyActor = (role: string) => ({
+  id: 1, role, authorizationModel: "legacy" as const, status: "active" as const,
+});
 
 // Names shared by both eras resolve to LEGACY_POLICY until account migration, so
 // their TARGET cells are validated at the DATA level; target-ONLY roles resolve to
@@ -173,7 +178,7 @@ describe("live enforcement — authorize() resolves target-only roles to the mat
   for (const role of TARGET_ONLY_ROLES) {
     it(`authorize(${role}) matches the approved matrix on every capability`, () => {
       for (const cap of CAPABILITIES) {
-        const d = authorize(actor(role), cap);
+        const d = authorize(targetActor(role), cap);
         const exp = EXPECTED[role][cap];
         if (exp) {
           expect(d.allowed, `${role} should hold ${cap}`).toBe(true);
@@ -193,10 +198,10 @@ describe("era isolation — shared-name roles stay LEGACY until account migratio
     // (which resolves the shared name to LEGACY) still grants it. (payments:view is
     // no longer a discriminator — BR-08 grants it in TARGET too.)
     expect(TARGET_POLICY.manager["financialReports:export"]).toBeUndefined();
-    expect(authorize(actor("manager"), "financialReports:export").allowed).toBe(true); // legacy still on
+    expect(authorize(legacyActor("manager"), "financialReports:export").allowed).toBe(true); // legacy still on
     // Finance: TARGET grants audit:view; LEGACY does not.
     expect(TARGET_POLICY.finance["audit:view"]).toBe("ALL");
-    expect(authorize(actor("finance"), "audit:view").allowed).toBe(false); // legacy still off
+    expect(authorize(legacyActor("finance"), "audit:view").allowed).toBe(false); // legacy still off
   });
 });
 
@@ -223,13 +228,13 @@ describe("Lead Lawyer overlay — additive, matter-scoped, financial read-only (
   it("is additive over a base role via authorize(overlayGrants)", () => {
     // A base Executive Associate (no financial) gains matter-scoped financial view
     // ONLY through the overlay, and only at ASSIGNED — never create/edit.
-    const base = authorize(actor("executive_associate"), "financial:view");
+    const base = authorize(targetActor("executive_associate"), "financial:view");
     expect(base.allowed).toBe(false);
-    const withOverlay = authorize(actor("executive_associate"), "financial:view", LEAD_LAWYER_OVERLAY_GRANTS);
+    const withOverlay = authorize(targetActor("executive_associate"), "financial:view", LEAD_LAWYER_OVERLAY_GRANTS);
     expect(withOverlay.allowed).toBe(true);
     expect(withOverlay.scope).toBe("ASSIGNED");
     // The overlay cannot grant a create it does not contain.
-    expect(authorize(actor("executive_associate"), "financial:create", LEAD_LAWYER_OVERLAY_GRANTS).allowed).toBe(false);
+    expect(authorize(targetActor("executive_associate"), "financial:create", LEAD_LAWYER_OVERLAY_GRANTS).allowed).toBe(false);
   });
 });
 
@@ -237,7 +242,7 @@ describe("legacy Lawyer / Staff receive NO accidental target authority (era isol
   it("legacy roles resolve to LEGACY_POLICY — every grant is scope ALL, never a target scope", () => {
     for (const role of ["lawyer", "staff"]) {
       for (const cap of CAPABILITIES) {
-        const d = authorize(actor(role), cap);
+        const d = authorize(legacyActor(role), cap);
         if (d.allowed) {
           expect(d.scope, `${role} ${cap} must be ALL, not a target scope`).toBe("ALL");
         }
@@ -248,13 +253,13 @@ describe("legacy Lawyer / Staff receive NO accidental target authority (era isol
   it("legacy Lawyer does not gain a legal-grade's target profile", () => {
     // Target senior/associate scope tasks OWN and (senior) view finance ASSIGNED;
     // legacy lawyer keeps ALL tasks and NO finance — proving it is not re-graded.
-    expect(authorize(actor("lawyer"), "tasks:view").scope).toBe("ALL");
-    expect(authorize(actor("lawyer"), "financial:view").allowed).toBe(false);
+    expect(authorize(legacyActor("lawyer"), "tasks:view").scope).toBe("ALL");
+    expect(authorize(legacyActor("lawyer"), "financial:view").allowed).toBe(false);
   });
 
   it("legacy Staff does not gain Coordinator's REGISTRY/intake profile", () => {
     // Coordinator is REGISTRY on clients; legacy staff is ALL. Staff has no leads:updateStatus target grant beyond legacy.
-    expect(authorize(actor("staff"), "clients:view").scope).toBe("ALL");
-    expect(authorize(actor("staff"), "financial:view").allowed).toBe(false);
+    expect(authorize(legacyActor("staff"), "clients:view").scope).toBe("ALL");
+    expect(authorize(legacyActor("staff"), "financial:view").allowed).toBe(false);
   });
 });

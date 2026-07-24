@@ -1,5 +1,5 @@
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, router, protectedProcedure, adminProcedure, permissionProcedure, capabilityProcedure } from "./_core/trpc";
+import { publicProcedure, router, protectedProcedure, adminProcedure, capabilityProcedure } from "./_core/trpc";
 import { AUTH_COOKIE, createSessionToken, verifyPassword, hashPassword, isSecureRequest } from "./_core/auth";
 import { TRPCError } from "@trpc/server";
 import type { Request } from "express";
@@ -9,12 +9,18 @@ import { testNvidiaConnection, callNvidiaChat, NVIDIA_UNAVAILABLE_MESSAGE } from
 import {
   gatherCrmData, buildAiMessages, checkAiRateLimit, AI_MODEL_NAME,
 } from "./aiAnalytics";
-import { USER_ROLES, USER_STATUSES, MATTER_TYPES, hasPermission, NOT_ADMIN_ERR_MSG, type UserRole, type UserStatus } from "../shared/const";
+import { USER_ROLES, USER_STATUSES, MATTER_TYPES, NOT_ADMIN_ERR_MSG, type UserRole, type UserStatus } from "../shared/const";
 import { ASSIGNMENT_FIELD_NAMES, type AssignmentField } from "../shared/assignmentEligibility";
 import * as financialReports from "./financialReports";
 import { reportFilterSchema, EXPORT_REPORT_TYPES } from "./financialReports";
 import { assertOwnPracticeWrite, getClientPracticeClassification, financialRecordPracticeKey } from "./practices";
-import { authorize, ACCOUNT_ROLE_VALUES } from "@shared/policy";
+import {
+  authorize,
+  ACCOUNT_ROLE_VALUES,
+  APPROVED_ACCOUNT_ROLES,
+  resolveAuthorizationTransition,
+  type AccountRole,
+} from "@shared/policy";
 
 /**
  * Coordinator payment-status projection (§B/§G).
@@ -70,18 +76,24 @@ const roleSchema = z.enum(ACCOUNT_ROLE_VALUES);
 // the approved target Finance role without the enforcement that implies. An
 // EXISTING Finance account may remain Finance (unchanged) and stays fully editable.
 // Remove this guard once policy convergence lands.
-const FINANCE_TRANSITION_BLOCKED_MSG =
-  "Assigning the Finance role is unavailable pending policy convergence: target " +
-  "Finance activation requires the legacy/target policy-era discriminator, which " +
-  "is not implemented yet. Existing Finance accounts are unaffected.";
-
-/** Reject creating a Finance account or transitioning a non-Finance role into Finance. */
-function assertFinanceAssignmentAllowed(proposedRole: string, currentRole?: string | null) {
-  if (proposedRole === "finance" && currentRole !== "finance") {
-    throw new TRPCError({ code: "CONFLICT", message: FINANCE_TRANSITION_BLOCKED_MSG });
-  }
-}
 const statusSchema = z.enum(USER_STATUSES);
+
+function requestedAuthorizationIdentity(
+  current: { role: AccountRole; authorizationModel: "legacy" | "target" },
+  requestedRole: AccountRole,
+  activateTarget: boolean,
+) {
+  const identity = resolveAuthorizationTransition(current, requestedRole, activateTarget);
+  if (!identity) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message:
+        "That role/authorization-model transition is not approved. Lawyer accounts " +
+        "require an explicit target grade; Viewer has no target mapping.",
+    });
+  }
+  return identity;
+}
 
 // Lead Lawyer overlay — the ONLY client_matters fields a designated Lead Lawyer
 // may edit via the overlay (§G). Derived from the exclusion rule: no assignment
@@ -94,7 +106,28 @@ const LEAD_LAWYER_EDITABLE_FIELDS: readonly string[] = [
 
 // ─── Task authorization helpers (Phase 8) ─────────────────────────────────────
 
-type TaskActor = { id: number; role: string; status: string };
+type TaskActor = {
+  id: number;
+  role: string;
+  authorizationModel: "legacy" | "target" | string | null | undefined;
+  status: string;
+};
+
+function policyActor(actor: TaskActor) {
+  return {
+    id: actor.id,
+    role: actor.role,
+    authorizationModel: actor.authorizationModel,
+    status: actor.status,
+  };
+}
+
+function assertValidPolicyActor(actor: TaskActor) {
+  const decision = authorize(policyActor(actor), "dashboard:view");
+  if (decision.reason === "NO_ERA" || decision.reason === "UNKNOWN_ROLE" || decision.reason === "INACTIVE") {
+    throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
+  }
+}
 
 /**
  * Does the actor hold `capability` for THIS task — via base role, or the Lead
@@ -107,7 +140,7 @@ async function taskCapabilityForMatter(
   capability: "tasks:edit" | "tasks:assign",
   clientMatterId: number | null,
 ): Promise<boolean> {
-  if (authorize({ id: actor.id, role: actor.role, status: actor.status }, capability).allowed) return true;
+  if (authorize(policyActor(actor), capability).allowed) return true;
   if (clientMatterId != null) return db.isLeadLawyerOfMatter(actor.id, clientMatterId);
   return false;
 }
@@ -231,11 +264,11 @@ export const appRouter = router({
   // ─── Dashboard ────────────────────────────────────────────────────────────
 
   dashboard: router({
-    stats: permissionProcedure("dashboard:view").query(async ({ ctx }) => {
+    stats: capabilityProcedure("dashboard:view").query(async ({ ctx }) => {
       const stats = await db.getDashboardStats(ctx.user!);
       // Firm-wide revenue is financial data. Callers without financial viewing
       // authority get 0, which also keeps the revenue KPI card hidden in the UI.
-      if (!hasPermission(ctx.user!.role, "financial:view")) {
+      if (!authorize(policyActor(ctx.user!), "financial:view").allowed) {
         return { ...stats, totalRevenue: 0 };
       }
       return stats;
@@ -270,7 +303,7 @@ export const appRouter = router({
       .input(z.object({ id: z.number() }))
       .query(async ({ input, ctx }) => db.getLeadById(input.id, ctx.user!)),
 
-    create: permissionProcedure("leads:manage")
+    create: capabilityProcedure("leads:create")
       .input(z.object({
         dateOfEnquiry: z.string(),
         clientName: z.string().min(1),
@@ -312,7 +345,7 @@ export const appRouter = router({
         return db.createLead(input, ctx.user!.id);
       }),
 
-    update: permissionProcedure("leads:manage")
+    update: capabilityProcedure("leads:edit")
       .input(z.object({
         id: z.number(),
         dateOfEnquiry: z.string().optional(),
@@ -366,14 +399,14 @@ export const appRouter = router({
         return db.updateLead(id, data);
       }),
 
-    delete: permissionProcedure("leads:manage")
+    delete: capabilityProcedure("leads:delete")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await db.deleteLead(input.id);
         return { success: true };
       }),
 
-    statusSummary: permissionProcedure("analytics:view").query(async () => db.getLeadStatusSummary()),
+    statusSummary: capabilityProcedure("analytics:view").query(async () => db.getLeadStatusSummary()),
   }),
 
   // ─── Matters ──────────────────────────────────────────────────────────────
@@ -385,7 +418,7 @@ export const appRouter = router({
       .input(z.object({ id: z.number() }))
       .query(async ({ input, ctx }) => db.getMatterById(input.id, ctx.user!)),
 
-    create: permissionProcedure("matters:manage")
+    create: capabilityProcedure("matters:create")
       .input(z.object({
         title: z.string().min(1),
         description: z.string().optional(),
@@ -406,7 +439,7 @@ export const appRouter = router({
         return db.createMatter(input, ctx.user!.id);
       }),
 
-    update: permissionProcedure("matters:manage")
+    update: capabilityProcedure("matters:edit")
       .input(z.object({
         id: z.number(),
         title: z.string().optional(),
@@ -431,7 +464,7 @@ export const appRouter = router({
         return db.updateMatter(id, data);
       }),
 
-    delete: permissionProcedure("matters:manage")
+    delete: capabilityProcedure("matters:delete")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await db.deleteMatter(input.id);
@@ -551,8 +584,8 @@ export const appRouter = router({
         const leadsMatter =
           !!existing && existing.clientMatterId != null &&
           (await db.isLeadLawyerOfMatter(ctx.user!.id, existing.clientMatterId));
-        const editOK = authorize({ id: ctx.user!.id, role: ctx.user!.role, status: ctx.user!.status }, "tasks:edit").allowed || leadsMatter;
-        const assignOK = authorize({ id: ctx.user!.id, role: ctx.user!.role, status: ctx.user!.status }, "tasks:assign").allowed || leadsMatter;
+        const editOK = authorize(policyActor(ctx.user!), "tasks:edit").allowed || leadsMatter;
+        const assignOK = authorize(policyActor(ctx.user!), "tasks:assign").allowed || leadsMatter;
         // Authorization is checked BEFORE existence so a role with no mutation
         // authority (e.g. Manager) is denied FORBIDDEN, never NOT_FOUND (§G).
         if (wantsContent && !editOK) throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
@@ -583,11 +616,11 @@ export const appRouter = router({
   // ─── Notes ────────────────────────────────────────────────────────────────
 
   notes: router({
-    byEntity: permissionProcedure("notes:view")
+    byEntity: capabilityProcedure("notes:view")
       .input(z.object({ entityType: z.string(), entityId: z.number() }))
       .query(async ({ input }) => db.getNotesByEntity(input.entityType, input.entityId)),
 
-    create: permissionProcedure("notes:manage")
+    create: capabilityProcedure("notes:create")
       .input(z.object({
         content: z.string().min(1),
         entityType: z.string(),
@@ -600,7 +633,7 @@ export const appRouter = router({
         return db.createNote({ ...input, createdBy: ctx.user!.id });
       }),
 
-    delete: permissionProcedure("notes:manage")
+    delete: capabilityProcedure("notes:delete")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await db.deleteNote(input.id);
@@ -663,11 +696,11 @@ export const appRouter = router({
   // ─── Companies ────────────────────────────────────────────────────────────
 
   companies: router({
-    list: protectedProcedure.query(async () => db.getAllCompanies()),
+    list: capabilityProcedure("clients:view").query(async () => db.getAllCompanies()),
 
     // Companies are client/lead intake records — mutating them requires the same
     // authority as managing clients (read stays broad for form dropdowns).
-    create: permissionProcedure("clients:manage")
+    create: capabilityProcedure("companies:create")
       .input(z.object({
         name: z.string().min(1),
         industry: z.string().optional(),
@@ -681,7 +714,7 @@ export const appRouter = router({
         return db.createCompany({ ...input, createdBy: ctx.user!.id });
       }),
 
-    update: permissionProcedure("clients:manage")
+    update: capabilityProcedure("companies:edit")
       .input(z.object({
         id: z.number(),
         name: z.string().optional(),
@@ -709,19 +742,19 @@ export const appRouter = router({
     // Active users who may be assigned to a matter as lead/co-lawyers. Available
     // to anyone who can view clients so the Hourly Rate section can populate its
     // user pickers (no free-text names).
-    assignableLawyers: permissionProcedure("clients:view")
+    assignableLawyers: capabilityProcedure("clients:view")
       .query(async () => db.getAssignableLawyers()),
 
     // Active Partners/Lawyers for the "Suggested Lead Lawyer" dropdown and the
     // Enquiries Log assignee filter (names/ids only — leads:view is sufficient).
-    leadLawyers: permissionProcedure("leads:view")
+    leadLawyers: capabilityProcedure("leads:view")
       .query(async () => db.getLeadLawyers()),
 
     // Users eligible for a NEW assignment to a specific lawyer field (Matter
     // forms, Financial Records). Active + role-eligible only, filtered
     // server-side per shared/assignmentEligibility.ts. clients:view so every
     // role that can open these forms (incl. finance) can populate dropdowns.
-    eligibleLawyers: permissionProcedure("clients:view")
+    eligibleLawyers: capabilityProcedure("clients:view")
       .input(z.object({
         field: z.enum(ASSIGNMENT_FIELD_NAMES as [AssignmentField, ...AssignmentField[]]),
       }))
@@ -732,14 +765,11 @@ export const appRouter = router({
         name: z.string().trim().min(1, "Name is required").max(120),
         email: emailSchema,
         password: passwordSchema,
-        role: roleSchema.default("staff"),
+        role: z.enum(APPROVED_ACCOUNT_ROLES),
         status: statusSchema.default("active"),
         reportsToId: z.number().nullable().optional(), // supervising partner
       }))
       .mutation(async ({ input, ctx }) => {
-        // No new account may be created as Finance until policy convergence.
-        assertFinanceAssignmentAllowed(input.role);
-
         const existing = await db.getUserByEmail(input.email);
         if (existing) {
           throw new TRPCError({ code: "CONFLICT", message: "A user with this email already exists" });
@@ -751,6 +781,7 @@ export const appRouter = router({
           email: input.email,
           passwordHash,
           role: input.role,
+          authorizationModel: "target",
           status: input.status,
           reportsToId: input.reportsToId ?? null,
         });
@@ -772,6 +803,7 @@ export const appRouter = router({
         name: z.string().trim().min(1, "Name is required").max(120),
         email: emailSchema,
         role: roleSchema,
+        activateTarget: z.boolean().default(false),
         status: statusSchema,
         reportsToId: z.number().nullable().optional(), // supervising partner
       }))
@@ -781,8 +813,11 @@ export const appRouter = router({
           throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
         }
 
-        // Existing Finance may remain Finance; no OTHER role may transition into it.
-        assertFinanceAssignmentAllowed(input.role, target.role);
+        const identity = requestedAuthorizationIdentity(
+          { role: target.role, authorizationModel: target.authorizationModel },
+          input.role,
+          input.activateTarget,
+        );
 
         const emailOwner = await db.getUserByEmail(input.email);
         if (emailOwner && emailOwner.id !== input.userId) {
@@ -792,33 +827,32 @@ export const appRouter = router({
         if (
           target.role === "admin" &&
           target.status === "active" &&
-          (input.role !== "admin" || input.status !== "active")
+          (identity.role !== "admin" || input.status !== "active")
         ) {
           await assertCanRemoveActiveAdmin(input.userId);
         }
 
-        if (input.userId === ctx.user.id && (input.role !== "admin" || input.status !== "active")) {
+        if (input.userId === ctx.user.id && (identity.role !== "admin" || input.status !== "active")) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot remove your own active admin access" });
         }
 
         const updated = await db.updateUser(input.userId, {
           name: input.name,
           email: input.email,
-          role: input.role,
           status: input.status,
           ...(input.reportsToId !== undefined ? { reportsToId: input.reportsToId } : {}),
         });
 
-        if (target.role !== input.role) {
-          await db.createAuditLog({
-            entityType: "user",
-            entityId: input.userId,
-            userId: ctx.user.id,
-            action: "role_changed",
-            fieldName: "role",
-            oldValue: target.role,
-            newValue: input.role,
-            description: `Role changed for ${input.email}`,
+        if (
+          target.role !== identity.role
+          || target.authorizationModel !== identity.authorizationModel
+        ) {
+          await db.transitionUserAuthorization({
+            userId: input.userId,
+            role: identity.role,
+            authorizationModel: identity.authorizationModel,
+            actorUserId: ctx.user.id,
+            email: input.email,
           });
         }
 
@@ -835,29 +869,35 @@ export const appRouter = router({
           });
         }
 
-        return safeUser(updated);
+        return safeUser((await db.getUserById(updated.id))!);
     }),
 
     updateRole: adminProcedure
-      .input(z.object({ userId: z.number(), role: roleSchema }))
+      .input(z.object({
+        userId: z.number(),
+        role: roleSchema,
+        activateTarget: z.boolean().default(false),
+      }))
       .mutation(async ({ input, ctx }) => {
         const target = await assertCanRemoveActiveAdmin(input.userId);
-        // Existing Finance may remain Finance; no OTHER role may transition into it.
-        assertFinanceAssignmentAllowed(input.role, target.role);
-        if (input.userId === ctx.user.id && input.role !== "admin") {
+        const identity = requestedAuthorizationIdentity(
+          { role: target.role, authorizationModel: target.authorizationModel },
+          input.role,
+          input.activateTarget,
+        );
+        if (input.userId === ctx.user.id && identity.role !== "admin") {
           throw new TRPCError({ code: "BAD_REQUEST", message: "You cannot remove your own admin role" });
         }
-        await db.updateUserRole(input.userId, input.role);
-        if (target.role !== input.role) {
-          await db.createAuditLog({
-            entityType: "user",
-            entityId: input.userId,
-            userId: ctx.user.id,
-            action: "role_changed",
-            fieldName: "role",
-            oldValue: target.role,
-            newValue: input.role,
-            description: `Role changed for ${target.email}`,
+        if (
+          target.role !== identity.role
+          || target.authorizationModel !== identity.authorizationModel
+        ) {
+          await db.transitionUserAuthorization({
+            userId: input.userId,
+            role: identity.role,
+            authorizationModel: identity.authorizationModel,
+            actorUserId: ctx.user.id,
+            email: target.email,
           });
         }
         return { success: true };
@@ -943,7 +983,7 @@ export const appRouter = router({
       }),
 
     // Per-user activity metrics are oversight data — not open to every session.
-    activityStats: permissionProcedure("audit:view")
+    activityStats: capabilityProcedure("audit:view")
       .input(z.object({ userId: z.number() }))
       .query(async ({ input }) => db.getUserActivityStats(input.userId)),
   }),
@@ -951,7 +991,7 @@ export const appRouter = router({
   // ─── Audit Logs ───────────────────────────────────────────────────────────
 
   auditLogs: router({
-    byEntity: permissionProcedure("audit:view")
+    byEntity: capabilityProcedure("audit:view")
       .input(z.object({ entityType: z.string(), entityId: z.number() }))
       .query(async ({ input }) => {
         return db.getAuditLogsByEntity(input.entityType, input.entityId);
@@ -1056,26 +1096,26 @@ export const appRouter = router({
         return { success: true };
       }),
 
-    statusCounts: permissionProcedure("dashboard:view").query(async () => db.getClientStatusCounts()),
+    statusCounts: capabilityProcedure("dashboard:view").query(async () => db.getClientStatusCounts()),
 
-    dashboardStats: permissionProcedure("dashboard:view").query(async ({ ctx }) => {
+    dashboardStats: capabilityProcedure("dashboard:view").query(async ({ ctx }) => {
       const stats = await db.getClientDashboardStats();
       // The financial aggregates (from getFinancialSummary) are only for callers
       // with financial viewing authority; everyone else gets zeroed values while
       // keeping the client counts and payload shape.
-      if (!hasPermission(ctx.user!.role, "financial:view")) {
+      if (!authorize(policyActor(ctx.user!), "financial:view").allowed) {
         return { ...stats, totalRevenue: 0, totalOutstanding: 0, overdueCount: 0, totalToBeBilled: 0 };
       }
       return stats;
     }),
 
-    conversionMetrics: permissionProcedure("dashboard:view")
+    conversionMetrics: capabilityProcedure("dashboard:view")
       .input(z.object({ range: z.enum(["month", "quarter", "all"]).default("all") }).optional())
       .query(async ({ input }) => db.getClientConversionMetrics(input?.range ?? "all")),
 
     // Recent Lead-status clients within the last N days (default 30), newest first.
     // Powers the dashboard "Recent Leads" widget; date window uses the DB clock.
-    recentLeads: permissionProcedure("clients:view")
+    recentLeads: capabilityProcedure("clients:view")
       .input(z.object({
         days: z.number().int().positive().max(365).default(30),
         limit: z.number().int().positive().max(50).default(5),
@@ -1083,11 +1123,11 @@ export const appRouter = router({
       .query(async ({ input }) => db.getRecentLeads(input?.days ?? 30, input?.limit ?? 5)),
 
     // Lead details sub-resource
-    getLeadDetail: permissionProcedure("clients:view")
+    getLeadDetail: capabilityProcedure("clients:view")
       .input(z.object({ clientId: z.number() }))
       .query(async ({ input }) => db.getClientLeadDetail(input.clientId)),
 
-    upsertLeadDetail: permissionProcedure("clients:manage")
+    upsertLeadDetail: capabilityProcedure("clients:edit")
       .input(z.object({
         clientId: z.number(),
         clientSource: z.string().optional(),
@@ -1108,11 +1148,11 @@ export const appRouter = router({
       }),
 
     // Rejected details sub-resource
-    getRejectedDetail: permissionProcedure("clients:view")
+    getRejectedDetail: capabilityProcedure("clients:view")
       .input(z.object({ clientId: z.number() }))
       .query(async ({ input }) => db.getRejectedClientDetail(input.clientId)),
 
-    upsertRejectedDetail: permissionProcedure("clients:manage")
+    upsertRejectedDetail: capabilityProcedure("clients:edit")
       .input(z.object({
         clientId: z.number(),
         rejectionReasonSource: z.enum(["Client", "Us"]).optional(),
@@ -1143,7 +1183,7 @@ export const appRouter = router({
     billableLawyers: capabilityProcedure("rates:view")
       .input(z.object({ clientMatterId: z.number() }))
       .query(async ({ input, ctx }) => {
-        if (authorize({ id: ctx.user!.id, role: ctx.user!.role, status: ctx.user!.status }, "rates:view").scope !== "ALL"
+        if (authorize(policyActor(ctx.user!), "rates:view").scope !== "ALL"
             && !(await db.isActorAssignedToMatter(ctx.user!.id, input.clientMatterId))) {
           return { lead: null, coLawyers: [], all: [] };
         }
@@ -1152,7 +1192,7 @@ export const appRouter = router({
 
     // Controlled "Reassign Lead Lawyer" action — restricted to Admin/Partner via
     // the matters:assign_lawyer permission. The name is derived from the user.
-    reassignLeadLawyer: permissionProcedure("matters:assign_lawyer")
+    reassignLeadLawyer: capabilityProcedure("matters:assign")
       .input(z.object({ clientMatterId: z.number(), userId: z.number() }))
       .mutation(async ({ input, ctx }) => {
         await db.assertMatterClientNotRejected(input.clientMatterId);
@@ -1167,8 +1207,9 @@ export const appRouter = router({
     matterFinancials: protectedProcedure
       .input(z.object({ clientMatterId: z.number() }))
       .query(async ({ input, ctx }) => {
+        assertValidPolicyActor(ctx.user!);
         const decision = authorize(
-          { id: ctx.user!.id, role: ctx.user!.role, status: ctx.user!.status },
+          policyActor(ctx.user!),
           "financial:view",
         );
         const isLead = await db.isLeadLawyerOfMatter(ctx.user!.id, input.clientMatterId);
@@ -1211,7 +1252,7 @@ export const appRouter = router({
       .input(z.object({ id: z.number() }))
       .query(async ({ input, ctx }) => db.getClientMatterById(input.id, ctx.user!)),
 
-    create: permissionProcedure("clients:manage")
+    create: capabilityProcedure("matters:create")
       .input(z.object({
         clientId: z.number(),
         originalSerial: z.string().max(50).optional(),
@@ -1263,9 +1304,18 @@ export const appRouter = router({
         // Lead Lawyer designation on CREATE is a privileged assignment
         // (matters:assign_lawyer) — it must NOT be self-granted through the
         // generic create input (§G: prevent self-designation).
-        if (matterInput.leadLawyerId != null && !hasPermission(ctx.user!.role, "matters:assign_lawyer")) {
+        if (
+          matterInput.leadLawyerId != null
+          && !authorize(policyActor(ctx.user!), "matters:assign").allowed
+        ) {
           throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
         }
+        const createPractice = await financialRecordPracticeKey(matterInput.clientId, null);
+        await assertOwnPracticeWrite(
+          ctx.user!,
+          "matters:create",
+          { ...createPractice, matterType: matterInput.matterType ?? createPractice.matterType },
+        );
         // Rejected clients are locked: no new matters.
         await db.assertClientNotRejected(matterInput.clientId);
         // Backend enforcement (defense in depth): re-run the conflict check and
@@ -1326,24 +1376,36 @@ export const appRouter = router({
         priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
       }))
       .mutation(async ({ input, ctx }) => {
+        assertValidPolicyActor(ctx.user!);
         const { id, ...data } = input;
         // Authorization FIRST (before any record lookup, so a caller with no edit
         // authority gets a consistent FORBIDDEN, not a NOT_FOUND). Base matter/
         // client managers edit freely; otherwise the ONLY path is the Lead Lawyer
         // overlay — the actor must be THIS matter's designated Lead Lawyer and may
         // change ONLY allowlisted detail fields.
-        const canBaseEdit =
-          hasPermission(ctx.user!.role, "clients:manage") || hasPermission(ctx.user!.role, "matters:manage");
+        const matterEdit = authorize(policyActor(ctx.user!), "matters:edit");
+        const clientEdit = authorize(policyActor(ctx.user!), "clients:edit");
+        const canBaseEdit = matterEdit.allowed || clientEdit.allowed;
+        const changedFields = Object.keys(data).filter(
+          k => (data as Record<string, unknown>)[k] !== undefined,
+        );
         if (!canBaseEdit) {
           if (!(await db.isLeadLawyerOfMatter(ctx.user!.id, id))) {
             throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
           }
-          const changed = Object.keys(data).filter(k => (data as Record<string, unknown>)[k] !== undefined);
-          const disallowed = changed.filter(k => !LEAD_LAWYER_EDITABLE_FIELDS.includes(k));
+          const disallowed = changedFields.filter(k => !LEAD_LAWYER_EDITABLE_FIELDS.includes(k));
           if (disallowed.length > 0) {
             throw new TRPCError({
               code: "FORBIDDEN",
               message: `Lead Lawyer may edit only matter details; not: ${disallowed.join(", ")}.`,
+            });
+          }
+        } else if (matterEdit.scope === "ASSIGNED" && clientEdit.scope !== "ALL") {
+          const disallowed = changedFields.filter(k => !LEAD_LAWYER_EDITABLE_FIELDS.includes(k));
+          if (disallowed.length > 0) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: `Assigned lawyers may edit only matter details; not: ${disallowed.join(", ")}.`,
             });
           }
         }
@@ -1356,20 +1418,29 @@ export const appRouter = router({
         if (!existing) {
           throw new TRPCError({ code: "NOT_FOUND", message: "Matter not found." });
         }
+        if (matterEdit.scope === "ALL" || matterEdit.scope === "OWN_PRACTICE") {
+          const existingPractice = await financialRecordPracticeKey(existing.clientId, id);
+          await assertOwnPracticeWrite(
+            ctx.user!,
+            "matters:edit",
+            { ...existingPractice, matterType: data.matterType ?? existingPractice.matterType },
+            existingPractice,
+          );
+        }
         // Lead Lawyer assignment is a separately privileged action
         // (matters:assign_lawyer). The generic update may re-submit the UNCHANGED
         // value (forms send every field), but a change — including unlinking via
         // null — is rejected unless the actor holds the assignment capability.
         if (data.leadLawyerId !== undefined) {
           const changed = (data.leadLawyerId ?? null) !== (existing.leadLawyerId ?? null);
-          if (changed && !hasPermission(ctx.user!.role, "matters:assign_lawyer")) {
+          if (changed && !authorize(policyActor(ctx.user!), "matters:assign").allowed) {
             throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
           }
         }
         return db.updateClientMatter(id, data as any, ctx.user!.id);
       }),
 
-    delete: permissionProcedure("clients:manage")
+    delete: capabilityProcedure("matters:delete")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input, ctx }) => {
         await db.assertMatterClientNotRejected(input.id);
@@ -1394,7 +1465,7 @@ export const appRouter = router({
       .input(z.object({ clientMatterId: z.number() }))
       .query(async ({ input, ctx }) => {
         // ASSIGNED-scope viewers may read only a matter they are assigned to.
-        if (authorize({ id: ctx.user!.id, role: ctx.user!.role, status: ctx.user!.status }, "rates:view").scope !== "ALL"
+        if (authorize(policyActor(ctx.user!), "rates:view").scope !== "ALL"
             && !(await db.isActorAssignedToMatter(ctx.user!.id, input.clientMatterId))) {
           return [];
         }
@@ -1703,7 +1774,7 @@ export const appRouter = router({
   // update: admin-only to prevent non-admins from changing business thresholds.
 
   settings: router({
-    getOverdueDays: permissionProcedure("financial:view")
+    getOverdueDays: capabilityProcedure("financial:view")
       .query(async () => db.getOverdueDays()),
 
     update: adminProcedure
@@ -1728,11 +1799,11 @@ export const appRouter = router({
   // ─── Client Action Logs ────────────────────────────────────────────────────
 
   clientActions: router({
-    list: permissionProcedure("actions:view")
+    list: capabilityProcedure("actions:view")
       .input(z.object({ clientId: z.number().optional() }).optional())
       .query(async ({ input }) => db.getClientActionLogs(input?.clientId)),
 
-    create: permissionProcedure("actions:manage")
+    create: capabilityProcedure("actions:create")
       .input(z.object({
         clientId: z.number(),
         clientMatterId: z.number().optional(),
@@ -1748,7 +1819,7 @@ export const appRouter = router({
         return db.createClientActionLog(input as any, ctx.user!.id);
       }),
 
-    update: permissionProcedure("actions:manage")
+    update: capabilityProcedure("actions:edit")
       .input(z.object({
         id: z.number(),
         actionOwner: z.string().optional(),
@@ -1763,7 +1834,7 @@ export const appRouter = router({
         return db.updateClientActionLog(id, data as any, ctx.user!.id);
       }),
 
-    delete: permissionProcedure("actions:manage")
+    delete: capabilityProcedure("actions:delete")
       .input(z.object({ id: z.number() }))
       .mutation(async ({ input }) => {
         await db.assertActionClientNotRejected(input.id);
@@ -1775,7 +1846,7 @@ export const appRouter = router({
   // ─── Excel Import ──────────────────────────────────────────────────────────
 
   import: router({
-    clients: permissionProcedure("clients:manage")
+    clients: capabilityProcedure("clients:create")
       .input(z.object({
         rows: z.array(z.object({
           clientNumber: z.string().optional(),
@@ -1794,7 +1865,7 @@ export const appRouter = router({
   // Chat submissions are inbound enquiries: reading follows lead visibility and
   // working them (status changes) follows lead management.
   chat: router({
-    list: permissionProcedure("leads:view").query(async () => db.getAllChatSubmissions()),
+    list: capabilityProcedure("leads:view").query(async () => db.getAllChatSubmissions()),
 
     submit: publicProcedure
       .input(z.object({
@@ -1808,7 +1879,7 @@ export const appRouter = router({
         return db.createChatSubmission(input);
       }),
 
-    updateStatus: permissionProcedure("leads:manage")
+    updateStatus: capabilityProcedure("leads:updateStatus")
       .input(z.object({
         id: z.number(),
         status: z.enum(["new", "read", "replied", "converted"]),
@@ -1834,7 +1905,7 @@ export const appRouter = router({
     // "ai:assistant" (admin/manager/partner/lawyer/finance). The model receives
     // ONLY role-scoped structured JSON from safe read-only analytics — never the
     // database, never SQL, never the API key.
-    ask: permissionProcedure("ai:assistant")
+    ask: capabilityProcedure("ai:use")
       .input(z.object({
         question: z.string().trim().min(1).max(2000),
         period: z.enum(["month", "quarter", "year", "all"]).default("month"),
@@ -1852,7 +1923,11 @@ export const appRouter = router({
         }
 
         // Gather only the data this role may use. The AI cannot reach anything else.
-        const { data, scope } = await gatherCrmData({ id: user.id, role: user.role }, input.period);
+        const { data, scope } = await gatherCrmData({
+          id: user.id,
+          role: user.role,
+          authorizationModel: user.authorizationModel,
+        }, input.period);
 
         // Audit the question + scope used (NOT the answer, NOT the raw payload).
         await db.createAiAuditLog({

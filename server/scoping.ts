@@ -23,12 +23,13 @@
  * final task policy (Phase 8).
  */
 import { and, eq, or, sql, type SQL } from "drizzle-orm";
-import { authorize, type DataScope } from "@shared/policy";
+import { authorize, type DataScope, type PolicyEra } from "@shared/policy";
 import { clientMatters, leads, matters, financialRecords } from "../drizzle/schema";
 
 export interface Actor {
   id: number;
   role: string | null | undefined;
+  authorizationModel: PolicyEra | string | null | undefined;
   status?: string | null;
 }
 
@@ -36,14 +37,19 @@ export interface Actor {
 const DENY: SQL = sql`false`;
 
 function scopeOf(actor: Actor, capability: string): DataScope {
-  return authorize({ id: actor.id, role: actor.role, status: actor.status }, capability).scope;
+  return authorize({
+    id: actor.id,
+    role: actor.role,
+    authorizationModel: actor.authorizationModel,
+    status: actor.status,
+  }, capability).scope;
 }
 
 /**
  * A clientMatters row is "assigned" to the actor if they hold any of the seven
  * assignment roles on it. Used directly when querying clientMatters.
  */
-export function actorAssignedToMatter(actor: Actor): SQL {
+export function actorAssignedToMatter(actor: Pick<Actor, "id">): SQL {
   return or(
     eq(clientMatters.leadLawyerId, actor.id),
     eq(clientMatters.supportLeadId, actor.id),

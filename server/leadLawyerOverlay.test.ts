@@ -22,7 +22,9 @@ type AuthedUser = NonNullable<TrpcContext["user"]>;
 function callerFor(role: string, id: number) {
   const user: AuthedUser = {
     id, openId: `t-${id}`, email: `u${id}@x.com`, name: `U${id}`,
-    loginMethod: "manus", role: role as any, status: "active",
+    loginMethod: "manus", role: role as any,
+    authorizationModel: (["admin", "manager", "partner", "lawyer", "finance", "staff", "viewer"].includes(role) ? "legacy" : "target") as any,
+    status: "active",
     createdAt: new Date(), updatedAt: new Date(), lastSignedIn: new Date(),
   };
   return appRouter.createCaller({
@@ -44,8 +46,8 @@ async function setLead(matterId: number, userId: number | null) {
 beforeAll(async () => {
   const a = admin();
   const s = Date.now();
-  const lead = await a.users.create({ name: `Lead ${s}`, email: `lead-${s}@x.com`, password: PW, role: "lawyer" });
-  const other = await a.users.create({ name: `Other ${s}`, email: `other-${s}@x.com`, password: PW, role: "lawyer" });
+  const lead = await a.users.create({ name: `Lead ${s}`, email: `lead-${s}@x.com`, password: PW, role: "executive_associate" });
+  const other = await a.users.create({ name: `Other ${s}`, email: `other-${s}@x.com`, password: PW, role: "executive_associate" });
   leadId = lead.id; otherUserId = other.id;
 
   const c = await a.clients.create({ clientName: `LLClient ${s}`, clientStatus: "Existing Client" });

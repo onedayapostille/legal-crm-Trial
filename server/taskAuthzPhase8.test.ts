@@ -19,7 +19,9 @@ type AuthedUser = NonNullable<TrpcContext["user"]>;
 function callerFor(role: string, id: number) {
   const user: AuthedUser = {
     id, openId: `t-${id}`, email: `u${id}@x.com`, name: `U${id}`,
-    loginMethod: "manus", role: role as any, status: "active",
+    loginMethod: "manus", role: role as any,
+    authorizationModel: (["admin", "manager", "partner", "lawyer", "finance", "staff", "viewer"].includes(role) ? "legacy" : "target") as any,
+    status: "active",
     createdAt: new Date(), updatedAt: new Date(), lastSignedIn: new Date(),
   };
   return appRouter.createCaller({
@@ -39,7 +41,7 @@ beforeAll(async () => {
   const a = admin();
   const s = Date.now();
   const mk = async (label: string) =>
-    (await a.users.create({ name: `${label} ${s}`, email: `${label}-${s}@x.com`, password: PW, role: "lawyer" })).id;
+    (await a.users.create({ name: `${label} ${s}`, email: `${label}-${s}@x.com`, password: PW, role: "associate" })).id;
   ownerId = await mk("owner");
   otherId = await mk("other");
   leadId = await mk("lead");
@@ -47,19 +49,27 @@ beforeAll(async () => {
   scopedId = await mk("scoped");
   managerId = await mk("manager");
   financeId = await mk("finance");
-  viewerId = (await a.users.create({ name: `vw ${s}`, email: `vw-${s}@x.com`, password: PW, role: "viewer" })).id;
+  viewerId = (await a.users.create({ name: `vw ${s}`, email: `vw-${s}@x.com`, password: PW, role: "paralegal" })).id;
 
   // Model states the create-user API does not expose.
   await getDb().update(users).set({ status: "inactive" }).where(eq(users.id, inactiveId));
   await getDb().update(users).set({ role: "senior_associate" as any }).where(eq(users.id, scopedId));
   await getDb().update(users).set({ role: "manager" }).where(eq(users.id, managerId));
   await getDb().update(users).set({ role: "finance" }).where(eq(users.id, financeId));
+  await getDb().update(users).set({
+    role: "viewer",
+    authorizationModel: "legacy",
+  }).where(eq(users.id, viewerId));
 
   const c = await a.clients.create({ clientName: `TClient ${s}`, clientStatus: "Existing Client" });
   clientId = c.id;
   const m = await a.clientMatters.create({ clientId, matterType: "Litigation", matterReference: `TL-${s}`, acknowledgeConflicts: true });
   matterLed = m.id;
-  await getDb().update(clientMatters).set({ leadLawyerId: leadId }).where(eq(clientMatters.id, matterLed));
+  await getDb().update(clientMatters).set({
+    leadLawyerId: leadId,
+    attorney1Id: ownerId,
+    attorney2Id: otherId,
+  }).where(eq(clientMatters.id, matterLed));
 
   tOwned = (await a.tasks.create({ title: `owned ${s}`, clientId, assignedTo: ownerId })).id;
   tOther = (await a.tasks.create({ title: `other ${s}`, clientId, assignedTo: otherId })).id;
@@ -129,13 +139,15 @@ describe("own status update vs reassignment escalation", () => {
 });
 
 describe("assignee validation (§G)", () => {
-  it("rejects a nonexistent, inactive, or ineligible-role assignee", async () => {
+  it("rejects nonexistent, inactive, and ineligible assignees; target Finance may receive tasks", async () => {
     const a = admin();
     await expect(a.tasks.create({ title: "x", clientId, assignedTo: 99999999 })).rejects.toMatchObject({ code: "BAD_REQUEST" });
     await expect(a.tasks.create({ title: "x", clientId, assignedTo: inactiveId })).rejects.toMatchObject({ code: "BAD_REQUEST" });
     await expect(a.tasks.create({ title: "x", clientId, assignedTo: viewerId })).rejects.toMatchObject({ code: "BAD_REQUEST" });
     await expect(a.tasks.create({ title: "x", clientId, assignedTo: managerId })).rejects.toMatchObject({ code: "BAD_REQUEST" });
-    await expect(a.tasks.create({ title: "x", clientId, assignedTo: financeId })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    const financeTask = await a.tasks.create({ title: "target finance task", clientId, assignedTo: financeId });
+    expect(financeTask.assignedTo).toBe(financeId);
+    await a.tasks.delete({ id: financeTask.id });
   });
 
   it("ALL and non-ALL assigners cannot grant target access through assignment", async () => {
@@ -145,12 +157,12 @@ describe("assignee validation (§G)", () => {
     await expect(admin().tasks.update({ id: tLed, assignedTo: scopedId })).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(leadCaller.tasks.update({ id: tLed, assignedTo: scopedId })).rejects.toMatchObject({ code: "FORBIDDEN" });
     // Put scopedId on the matter → now reachable.
-    await getDb().update(clientMatters).set({ attorney1Id: scopedId }).where(eq(clientMatters.id, matterLed));
+    await getDb().update(clientMatters).set({ attorney3Id: scopedId }).where(eq(clientMatters.id, matterLed));
     try {
       const upd = await leadCaller.tasks.update({ id: tLed, assignedTo: scopedId });
       expect(upd.assignedTo).toBe(scopedId);
     } finally {
-      await getDb().update(clientMatters).set({ attorney1Id: null }).where(eq(clientMatters.id, matterLed));
+      await getDb().update(clientMatters).set({ attorney3Id: null }).where(eq(clientMatters.id, matterLed));
       await admin().tasks.update({ id: tLed, assignedTo: otherId });
     }
   });

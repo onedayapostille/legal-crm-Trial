@@ -29,6 +29,7 @@ export const userRoleEnum = pgEnum("user_role", [
   "junior_lawyer", "trainee", "paralegal", "coordinator",
 ]);
 export const userStatusEnum = pgEnum("user_status", ["active", "inactive", "suspended"]);
+export const authorizationModelEnum = pgEnum("authorization_model", ["legacy", "target"]);
 
 export const leadStatusEnum = pgEnum("lead_status", [
   "New",
@@ -89,6 +90,7 @@ export const users = pgTable("users", {
   name: text("name"),
   passwordHash: text("password_hash"),
   role: userRoleEnum("role").default("staff").notNull(),
+  authorizationModel: authorizationModelEnum("authorization_model").default("legacy").notNull(),
   status: userStatusEnum("status").default("active").notNull(),
   // Supervising partner (self-reference). Drives partner task-visibility:
   // a partner sees tasks of lawyers whose reportsToId = the partner's id.

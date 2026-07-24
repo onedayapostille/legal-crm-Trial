@@ -16,9 +16,66 @@
  * Unknown roles fail closed (disposition "unknown"), surfaced for human review.
  */
 import type { TargetAccountRole } from "./matrix";
-import { TARGET_ACCOUNT_ROLE_VALUES } from "./roles";
+import {
+  APPROVED_ACCOUNT_ROLES,
+  TARGET_ACCOUNT_ROLE_VALUES,
+  isLegacyRole,
+  isValidRoleEra,
+  type AccountRole,
+  type PolicyEra,
+} from "./roles";
 
 const TARGET_ACCOUNT_SET: ReadonlySet<string> = new Set(TARGET_ACCOUNT_ROLE_VALUES);
+const APPROVED_ACCOUNT_SET: ReadonlySet<string> = new Set(APPROVED_ACCOUNT_ROLES);
+
+export interface AuthorizationIdentity {
+  role: AccountRole;
+  authorizationModel: PolicyEra;
+}
+
+const LAWYER_TARGET_GRADES: ReadonlySet<string> = new Set([
+  "senior_associate",
+  "executive_associate",
+  "associate",
+  "junior_lawyer",
+  "trainee",
+]);
+
+/**
+ * Validate an administrator-requested role/era transition.
+ *
+ * Existing legacy identities may stay unchanged. Target identities may be
+ * reassigned only among approved target account roles. Legacy-to-target moves
+ * follow the approved mapping; Lawyer requires an explicit grade and Viewer has
+ * no approved target.
+ */
+export function resolveAuthorizationTransition(
+  current: AuthorizationIdentity,
+  requestedRole: AccountRole,
+  activateTarget = false,
+): AuthorizationIdentity | null {
+  if (!isValidRoleEra(current.role, current.authorizationModel)) return null;
+
+  if (current.authorizationModel === "target") {
+    return APPROVED_ACCOUNT_SET.has(requestedRole)
+      ? { role: requestedRole, authorizationModel: "target" }
+      : null;
+  }
+
+  if (!activateTarget && requestedRole === current.role && isLegacyRole(requestedRole)) {
+    return { role: requestedRole, authorizationModel: "legacy" };
+  }
+
+  const allowed =
+    (current.role === "admin" && requestedRole === "admin")
+    || (current.role === "manager" && requestedRole === "manager")
+    || (current.role === "finance" && requestedRole === "finance")
+    || (current.role === "partner" && requestedRole === "head_of_practice")
+    || (current.role === "staff" && requestedRole === "coordinator")
+    || (current.role === "lawyer" && LAWYER_TARGET_GRADES.has(requestedRole));
+
+  return allowed ? { role: requestedRole, authorizationModel: "target" } : null;
+}
 
 export type MappingDisposition =
   | "auto" // deterministic, approved 1:1 mapping

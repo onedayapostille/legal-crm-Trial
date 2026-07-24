@@ -24,7 +24,9 @@ type AuthedUser = NonNullable<TrpcContext["user"]>;
 function callerFor(role: string, id: number) {
   const user: AuthedUser = {
     id, openId: `t-${id}`, email: `u${id}@x.com`, name: `U${id}`,
-    loginMethod: "manus", role: role as any, status: "active",
+    loginMethod: "manus", role: role as any,
+    authorizationModel: (["admin", "manager", "partner", "lawyer", "finance", "staff", "viewer"].includes(role) ? "legacy" : "target") as any,
+    status: "active",
     createdAt: new Date(), updatedAt: new Date(), lastSignedIn: new Date(),
   };
   return appRouter.createCaller({
@@ -46,8 +48,8 @@ beforeAll(async () => {
   const stamp = Date.now();
   nameA = `ScopeA ${stamp}`;
   nameB = `ScopeB ${stamp}`;
-  const la = await a.users.create({ name: `LawA ${stamp}`, email: `lawa-${stamp}@x.com`, password: PW, role: "lawyer" });
-  const lb = await a.users.create({ name: `LawB ${stamp}`, email: `lawb-${stamp}@x.com`, password: PW, role: "lawyer" });
+  const la = await a.users.create({ name: `LawA ${stamp}`, email: `lawa-${stamp}@x.com`, password: PW, role: "senior_associate" });
+  const lb = await a.users.create({ name: `LawB ${stamp}`, email: `lawb-${stamp}@x.com`, password: PW, role: "senior_associate" });
   lawyerAId = la.id; lawyerBId = lb.id;
 
   const ca = await a.clients.create({ clientName: nameA, clientStatus: "Existing Client" });
@@ -128,7 +130,12 @@ describe("search / conflict-check leakage (ASSIGNED scope)", () => {
 
 describe("mutation scope guard (IDOR primitive)", () => {
   it("re-fetch under scope hides an inaccessible record, so a mutation guard would NOT_FOUND", async () => {
-    const scopedActor = { id: lawyerAId, role: "senior_associate", status: "active" };
+    const scopedActor = {
+      id: lawyerAId,
+      role: "senior_associate",
+      authorizationModel: "target" as const,
+      status: "active",
+    };
     // The router mutation path calls these under the caller's scope; a null result
     // becomes a NOT_FOUND before any write.
     expect(await db.getClientById(clientBId, scopedActor)).toBeNull();
@@ -142,7 +149,12 @@ describe("mutation scope guard (IDOR primitive)", () => {
 describe("fail-closed for scopes that cannot yet be derived", () => {
   it("a role without matters:view gets zero matters (DENY), never a leak", async () => {
     // viewer has no matters:view → scope resolves to none → empty, not everything.
-    const viewerActor = { id: 999999, role: "viewer", status: "active" };
+    const viewerActor = {
+      id: 999999,
+      role: "viewer",
+      authorizationModel: "legacy" as const,
+      status: "active",
+    };
     expect(await db.getAllMatters(viewerActor)).toEqual([]);
   });
 

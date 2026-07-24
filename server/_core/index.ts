@@ -39,7 +39,12 @@ import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
-import { ensureAdminExists, getRawClient, runMigrations } from "../db";
+import {
+  assertAuthorizationModelReady,
+  ensureAdminExists,
+  getRawClient,
+  runMigrations,
+} from "../db";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -92,6 +97,14 @@ async function startServer() {
       "[Server] WARNING: JWT_SECRET (or AUTH_SECRET) is not set — sessions use an " +
       "insecure dev fallback. Set JWT_SECRET in .env (generate: openssl rand -hex 32).",
     );
+  }
+
+  // Migration-first authorization rollout. The server never begins accepting
+  // API traffic against a schema that lacks the explicit policy-era column.
+  if (process.env.DATABASE_URL) {
+    await runMigrations();
+    await assertAuthorizationModelReady();
+    await ensureAdminExists();
   }
 
   const app = express();
@@ -184,9 +197,6 @@ async function startServer() {
     console.log(`[Server] Running on http://0.0.0.0:${port}`);
   });
 
-  runMigrations()
-    .then(() => ensureAdminExists())
-    .catch(err => console.warn("[Server] DB setup warning:", (err as Error).message));
 }
 
 startServer().catch(console.error);

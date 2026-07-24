@@ -23,7 +23,9 @@ type AuthedUser = NonNullable<TrpcContext["user"]>;
 function callerFor(role: string, id: number) {
   const user: AuthedUser = {
     id, openId: `t-${id}`, email: `u${id}@x.com`, name: `U${id}`,
-    loginMethod: "manus", role: role as any, status: "active",
+    loginMethod: "manus", role: role as any,
+    authorizationModel: (["admin", "manager", "partner", "lawyer", "finance", "staff", "viewer"].includes(role) ? "legacy" : "target") as any,
+    status: "active",
     createdAt: new Date(), updatedAt: new Date(), lastSignedIn: new Date(),
   };
   return appRouter.createCaller({
@@ -55,7 +57,7 @@ beforeAll(async () => {
 
   const a = admin();
   const stamp = Date.now();
-  const hop = await a.users.create({ name: `HoP ${stamp}`, email: `hop-${stamp}@x.com`, password: PW, role: "partner" });
+  const hop = await a.users.create({ name: `HoP ${stamp}`, email: `hop-${stamp}@x.com`, password: PW, role: "head_of_practice" });
   hopId = hop.id;
 
   // Appoint HoP over (Riyadh, Litigation).

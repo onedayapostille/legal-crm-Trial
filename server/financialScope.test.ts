@@ -18,7 +18,9 @@ type AuthedUser = NonNullable<TrpcContext["user"]>;
 function callerFor(role: string, id: number) {
   const user: AuthedUser = {
     id, openId: `t-${id}`, email: `u${id}@x.com`, name: `U${id}`,
-    loginMethod: "manus", role: role as any, status: "active",
+    loginMethod: "manus", role: role as any,
+    authorizationModel: (["admin", "manager", "partner", "lawyer", "finance", "staff", "viewer"].includes(role) ? "legacy" : "target") as any,
+    status: "active",
     createdAt: new Date(), updatedAt: new Date(), lastSignedIn: new Date(),
   };
   return appRouter.createCaller({
@@ -45,8 +47,8 @@ beforeAll(async () => {
 
   const a = admin();
   const s = Date.now();
-  const assoc = await a.users.create({ name: `Assoc ${s}`, email: `assoc-${s}@x.com`, password: PW, role: "lawyer" });
-  const hop = await a.users.create({ name: `HoP ${s}`, email: `fhop-${s}@x.com`, password: PW, role: "partner" });
+  const assoc = await a.users.create({ name: `Assoc ${s}`, email: `assoc-${s}@x.com`, password: PW, role: "senior_associate" });
+  const hop = await a.users.create({ name: `HoP ${s}`, email: `fhop-${s}@x.com`, password: PW, role: "head_of_practice" });
   assocId = assoc.id; hopId = hop.id;
   await getDb().insert(practices)
     .values({ location: "Riyadh", matterType: "Litigation", headOfPracticeId: hopId })

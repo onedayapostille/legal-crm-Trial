@@ -26,8 +26,12 @@ import {
 } from "./scoping";
 import { notifyLawyerAssignment } from "./emailNotifications";
 import type { UserRole, UserStatus } from "../shared/const";
-import { ASSIGNMENT_FIELDS, type AssignmentField } from "../shared/assignmentEligibility";
-import { authorize, isLegacyRole, type AccountRole } from "../shared/policy";
+import {
+  ASSIGNMENT_FIELDS,
+  LEGAL_TEAM_ASSIGNMENT_ROLES,
+  type AssignmentField,
+} from "../shared/assignmentEligibility";
+import { authorize, isLegacyRole, type AccountRole, type PolicyEra } from "../shared/policy";
 
 /**
  * Validate the two-level communication channel.
@@ -343,6 +347,53 @@ export async function runMigrations() {
   }
 }
 
+export const AUTHORIZATION_MODEL_MIGRATION = "0026_user_authorization_model.sql";
+
+/**
+ * Refuse to serve authenticated traffic unless migration 0026 is actually
+ * present and every user row carries a valid role/era pair. The column probe is
+ * authoritative even when a legacy environment has no migration-ledger row.
+ */
+export async function assertAuthorizationModelReady() {
+  const client = getRawClient();
+  const columns = (await client.unsafe(
+    `SELECT 1
+       FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'users'
+        AND column_name = 'authorization_model'
+      LIMIT 1`,
+  )) as unknown as Array<Record<string, unknown>>;
+  if (columns.length === 0) {
+    throw new Error(
+      `[DB] Required migration ${AUTHORIZATION_MODEL_MIGRATION} is missing: ` +
+      `users.authorization_model does not exist.`,
+    );
+  }
+
+  const invalid = (await client.unsafe(
+    `SELECT count(*)::int AS count
+       FROM "users"
+      WHERE "authorization_model" IS NULL
+         OR NOT (
+           ("authorization_model"::text = 'legacy'
+             AND "role"::text IN ('admin','manager','partner','lawyer','finance','staff','viewer'))
+           OR
+           ("authorization_model"::text = 'target'
+             AND "role"::text IN (
+               'admin','manager','head_of_practice','senior_associate',
+               'executive_associate','associate','junior_lawyer','trainee',
+               'paralegal','finance','coordinator'
+             ))
+         )`,
+  )) as unknown as Array<{ count: number }>;
+  if ((invalid[0]?.count ?? 0) > 0) {
+    throw new Error(
+      `[DB] Authorization startup gate rejected ${invalid[0]!.count} invalid user role/era pair(s).`,
+    );
+  }
+}
+
 export async function getUserById(id: number) {
   const db = getDb();
   const result = await db.select().from(users).where(eq(users.id, id)).limit(1);
@@ -365,6 +416,13 @@ export async function createUser(data: InsertUser) {
   const [user] = await db.insert(users).values({
     ...data,
     email: normalizeEmail(data.email),
+    // Target-only role names cannot legally coexist with the DB default
+    // authorization_model=legacy. Production callers pass the model explicitly,
+    // but internal seeds/tests also use this helper; infer only where the role
+    // makes the era unambiguous. Shared names (admin/manager/finance) continue to
+    // default to legacy until an explicit audited transition activates target.
+    authorizationModel:
+      data.authorizationModel ?? (isLegacyRole(data.role) ? "legacy" : "target"),
   }).returning();
   return user;
 }
@@ -383,6 +441,62 @@ export async function updateUser(id: number, data: Partial<InsertUser>) {
 export async function updateUserRole(userId: number, role: AccountRole) {
   const db = getDb();
   await db.update(users).set({ role, updatedAt: new Date() }).where(eq(users.id, userId));
+}
+
+/**
+ * Atomically update a user's role + policy era and write the matching audit
+ * rows. This is the only production path for an authorization identity change.
+ */
+export async function transitionUserAuthorization(input: {
+  userId: number;
+  role: AccountRole;
+  authorizationModel: PolicyEra;
+  actorUserId: number;
+  email: string;
+}) {
+  const db = getDb();
+  return db.transaction(async tx => {
+    const [current] = await tx.select().from(users).where(eq(users.id, input.userId)).limit(1);
+    if (!current) return null;
+
+    const [updated] = await tx
+      .update(users)
+      .set({
+        role: input.role,
+        authorizationModel: input.authorizationModel,
+        updatedAt: new Date(),
+      })
+      .where(eq(users.id, input.userId))
+      .returning();
+
+    if (current.role !== input.role) {
+      await tx.insert(auditLogs).values({
+        entityType: "user",
+        entityId: input.userId,
+        userId: input.actorUserId,
+        action: "role_changed",
+        fieldName: "role",
+        oldValue: current.role,
+        newValue: input.role,
+        description: `Role changed for ${input.email}`,
+      });
+    }
+
+    if (current.authorizationModel !== input.authorizationModel) {
+      await tx.insert(auditLogs).values({
+        entityType: "user",
+        entityId: input.userId,
+        userId: input.actorUserId,
+        action: "role_changed",
+        fieldName: "authorization_model",
+        oldValue: current.authorizationModel,
+        newValue: input.authorizationModel,
+        description: `Authorization model changed for ${input.email}`,
+      });
+    }
+
+    return updated;
+  });
 }
 
 export async function updateUserStatus(userId: number, status: UserStatus) {
@@ -978,7 +1092,11 @@ export async function deleteMatter(id: number) {
 
 // ─── Role-based task visibility (backend enforced) ────────────────────────────
 
-export type TaskViewer = { id: number; role: string };
+export type TaskViewer = {
+  id: number;
+  role: string;
+  authorizationModel: "legacy" | "target" | string | null | undefined;
+};
 
 /** Active user ids whose supervisor (reports_to_id) is the given partner. */
 export async function getReportingUserIds(partnerId: number): Promise<number[]> {
@@ -1028,7 +1146,7 @@ export async function isActorAssignedToMatter(actorId: number, clientMatterId: n
   const [row] = await db
     .select({ id: clientMatters.id })
     .from(clientMatters)
-    .where(and(eq(clientMatters.id, clientMatterId), actorAssignedToMatter({ id: actorId, role: null })))
+    .where(and(eq(clientMatters.id, clientMatterId), actorAssignedToMatter({ id: actorId })))
     .limit(1);
   return !!row;
 }
@@ -1055,7 +1173,7 @@ export async function taskVisibilityCondition(viewer: TaskViewer): Promise<SQL |
   const led = await ledMatterIds(viewer.id);
   const orLed = (base: SQL): SQL => (led.length > 0 ? or(base, inArray(tasks.clientMatterId, led))! : base);
 
-  if (isLegacyRole(role)) {
+  if (viewer.authorizationModel === "legacy" && isLegacyRole(role)) {
     if (role === "admin" || role === "manager") return null;
     const own = or(eq(tasks.assignedTo, viewer.id), eq(tasks.createdBy, viewer.id))!;
     const conds: SQL[] = [own];
@@ -1068,7 +1186,12 @@ export async function taskVisibilityCondition(viewer: TaskViewer): Promise<SQL |
   }
 
   // Target account role — derive the row scope from the approved matrix.
-  const scope = authorize({ id: viewer.id, role, status: "active" }, "tasks:view").scope;
+  const scope = authorize({
+    id: viewer.id,
+    role,
+    authorizationModel: viewer.authorizationModel,
+    status: "active",
+  }, "tasks:view").scope;
   if (scope === "ALL") return null;
   if (scope === "OWN") return orLed(eq(tasks.assignedTo, viewer.id));
   // No base task view; only the Lead Lawyer overlay (if any) grants matter tasks.
@@ -1085,7 +1208,7 @@ export async function isTaskVisibleTo(
   const inLedMatter = async () =>
     task.clientMatterId != null && (await isLeadLawyerOfMatter(viewer.id, task.clientMatterId));
 
-  if (isLegacyRole(role)) {
+  if (viewer.authorizationModel === "legacy" && isLegacyRole(role)) {
     if (role === "admin" || role === "manager") return true;
     if (task.assignedTo === viewer.id || task.createdBy === viewer.id) return true;
     if (role === "partner" && task.assignedTo != null) {
@@ -1095,7 +1218,12 @@ export async function isTaskVisibleTo(
     return inLedMatter();
   }
 
-  const scope = authorize({ id: viewer.id, role, status: "active" }, "tasks:view").scope;
+  const scope = authorize({
+    id: viewer.id,
+    role,
+    authorizationModel: viewer.authorizationModel,
+    status: "active",
+  }, "tasks:view").scope;
   if (scope === "ALL") return true;
   if (scope === "OWN" && task.assignedTo === viewer.id) return true; // assignee-only (§G)
   return inLedMatter();
@@ -1232,7 +1360,7 @@ export const TASK_ASSIGNEE_ROLES: ReadonlySet<string> = new Set([
   "admin",
   "partner", "lawyer", "staff",
   "head_of_practice", "senior_associate", "executive_associate", "associate",
-  "junior_lawyer", "trainee", "paralegal", "coordinator",
+  "junior_lawyer", "trainee", "paralegal", "finance", "coordinator",
 ]);
 
 /**
@@ -1242,7 +1370,13 @@ export const TASK_ASSIGNEE_ROLES: ReadonlySet<string> = new Set([
 export async function resolveTaskAssignee(userId: number): Promise<Actor & { name: string | null }> {
   const db = getDb();
   const [u] = await db
-    .select({ id: users.id, name: users.name, role: users.role, status: users.status })
+    .select({
+      id: users.id,
+      name: users.name,
+      role: users.role,
+      authorizationModel: users.authorizationModel,
+      status: users.status,
+    })
     .from(users)
     .where(eq(users.id, userId))
     .limit(1);
@@ -1250,10 +1384,16 @@ export async function resolveTaskAssignee(userId: number): Promise<Actor & { nam
   if (u.status !== "active") {
     throw new TRPCError({ code: "BAD_REQUEST", message: "Selected assignee is inactive and cannot receive tasks." });
   }
-  if (!TASK_ASSIGNEE_ROLES.has(u.role)) {
+  if (!TASK_ASSIGNEE_ROLES.has(u.role) || (u.role === "finance" && u.authorizationModel !== "target")) {
     throw new TRPCError({ code: "BAD_REQUEST", message: `Selected assignee's role (${u.role}) cannot hold tasks.` });
   }
-  return { id: u.id, role: u.role, status: u.status, name: u.name };
+  return {
+    id: u.id,
+    role: u.role,
+    authorizationModel: u.authorizationModel,
+    status: u.status,
+    name: u.name,
+  };
 }
 
 /**
@@ -2545,7 +2685,7 @@ async function applyMatterAssignments(
 // ─── Matter Lawyer Rates ──────────────────────────────────────────────────────
 
 // Roles that may be assigned as a matter's lead/co-lawyer.
-export const ASSIGNABLE_LAWYER_ROLES = ["admin", "manager", "partner", "lawyer"] as const;
+export const ASSIGNABLE_LAWYER_ROLES = LEGAL_TEAM_ASSIGNMENT_ROLES;
 
 /** Active users who may be assigned to a matter as lead/co-lawyers. */
 export async function getAssignableLawyers() {

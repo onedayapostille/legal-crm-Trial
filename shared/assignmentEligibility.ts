@@ -1,4 +1,4 @@
-import type { UserRole } from "./const";
+import type { AccountRole } from "./policy";
 
 // ─── Lawyer-assignment eligibility (single source of truth) ───────────────────
 //
@@ -20,10 +20,27 @@ import type { UserRole } from "./const";
 // re-selected (enforced server-side, change-only validation).
 
 /** Roles that may lead a matter (existing Lead Partner dropdown set). */
-export const LEADERSHIP_ASSIGNMENT_ROLES: readonly UserRole[] = ["partner", "lawyer"];
+export const LEADERSHIP_ASSIGNMENT_ROLES: readonly AccountRole[] = [
+  "head_of_practice",
+  "senior_associate",
+  "executive_associate",
+  "associate",
+  "junior_lawyer",
+  "partner",
+  "lawyer",
+];
 
 /** Roles that may work on / own a matter (existing hourly-rates set). */
-export const LEGAL_TEAM_ASSIGNMENT_ROLES: readonly UserRole[] = ["admin", "manager", "partner", "lawyer"];
+export const LEGAL_TEAM_ASSIGNMENT_ROLES: readonly AccountRole[] = [
+  "head_of_practice",
+  "senior_associate",
+  "executive_associate",
+  "associate",
+  "junior_lawyer",
+  "trainee",
+  "partner",
+  "lawyer",
+];
 
 export const ASSIGNMENT_FIELDS = {
   leadPartner:       { label: "Lead Partner",       roles: LEADERSHIP_ASSIGNMENT_ROLES },
