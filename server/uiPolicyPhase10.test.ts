@@ -12,7 +12,10 @@
  * by the router integration suites; the UI is advisory and validated here.)
  */
 import { describe, expect, it } from "vitest";
-import { userCan, isActiveSession, ROUTE_CAPABILITIES, assignableRoleOptions } from "@/lib/permissions";
+import {
+  userCan, isActiveSession, isPaymentStatusOnly, ROUTE_CAPABILITIES,
+  assignableRoleOptions,
+} from "@/lib/permissions";
 import {
   authorize, isCapability, APPROVED_ACCOUNT_ROLES, ACCOUNT_ROLE_LABELS,
   ACCOUNT_ROLE_VALUES, isLegacyOnlyAccountRole, TARGET_ROLES,
@@ -69,13 +72,28 @@ describe("representative role UI gating", () => {
   it("Paralegal may edit clients/matters but not create them, and has no finance", () => {
     expect(userCan(active("paralegal"), "clients:edit")).toBe(true);
     expect(userCan(active("paralegal"), "clients:create")).toBe(false);
+    expect(userCan(active("paralegal"), "clients:delete")).toBe(false);
+    expect(userCan(active("paralegal"), "matters:delete")).toBe(false);
     expect(userCan(active("paralegal"), "financial:view")).toBe(false);
+  });
+  it("Head of Practice edit authority never implies delete authority", () => {
+    const hop = active("head_of_practice");
+    expect(userCan(hop, "matters:edit")).toBe(true);
+    expect(userCan(hop, "matters:delete")).toBe(false);
+    expect(userCan(hop, "financial:edit")).toBe(true);
+    expect(userCan(hop, "financial:delete")).toBe(false);
+    expect(userCan(hop, "rates:edit")).toBe(true);
+    expect(userCan(hop, "rates:delete")).toBe(false);
+    expect(userCan(hop, "tasks:edit")).toBe(true);
+    expect(userCan(hop, "tasks:delete")).toBe(false);
   });
   it("Coordinator manages intake, sees financial (read-only), assigns tasks", () => {
     expect(userCan(active("coordinator"), "leads:create")).toBe(true);
     expect(userCan(active("coordinator"), "financial:view")).toBe(true);
     expect(userCan(active("coordinator"), "financial:create")).toBe(false);
     expect(userCan(active("coordinator"), "tasks:assign")).toBe(true);
+    expect(isPaymentStatusOnly(active("coordinator"))).toBe(true);
+    expect(isPaymentStatusOnly(active("finance"))).toBe(false);
   });
   it("only Admin sees the User Management route", () => {
     const cap = ROUTE_CAPABILITIES["/user-management"];

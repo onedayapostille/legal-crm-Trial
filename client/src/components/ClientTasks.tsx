@@ -39,9 +39,10 @@ function isOpenMatter(m: any): boolean {
 
 /** Tasks tab inside the client profile: filterable, client-scoped task list. */
 export function ClientTasksSection({
-  clientId, clientName, matters, canManage, initialTaskId,
+  clientId, clientName, matters, canCreate, canEdit, canDelete, initialTaskId,
 }: {
-  clientId: number; clientName: string; matters: any[]; canManage: boolean;
+  clientId: number; clientName: string; matters: any[];
+  canCreate: boolean; canEdit: boolean; canDelete: boolean;
   /** When provided (e.g. from ?taskId= in the URL), auto-opens that task's details. */
   initialTaskId?: number | null;
 }) {
@@ -82,7 +83,7 @@ export function ClientTasksSection({
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="font-semibold">Client Tasks</h3>
-        {canManage && (
+        {canCreate && (
           <Button size="sm" onClick={() => setDialogOpen(true)}>
             <Plus className="h-4 w-4 mr-1" /> Add Task
           </Button>
@@ -154,7 +155,7 @@ export function ClientTasksSection({
                       <TableCell className="text-sm text-muted-foreground">{t.matterReference ?? "—"}</TableCell>
                       <TableCell className="text-sm">{t.assigneeName ?? "—"}</TableCell>
                       <TableCell onClick={e => e.stopPropagation()}>
-                        {canManage ? (
+                        {canEdit ? (
                           <Select value={t.status} onValueChange={v => updateTask.mutate({ id: t.id, status: v })}>
                             <SelectTrigger className="h-7 w-32 text-xs"><SelectValue /></SelectTrigger>
                             <SelectContent>
@@ -175,9 +176,9 @@ export function ClientTasksSection({
                             onClick={() => setDetailTaskId(t.id)}>
                             <Eye className="h-4 w-4" />
                           </Button>
-                          {/* Delete only with manage permission (and disabled for Rejected
-                              clients, where canManage is already false → read-only history). */}
-                          {canManage && (
+                          {/* Deletion is a distinct capability and is also disabled
+                              for Rejected clients by the parent. */}
+                          {canDelete && (
                             <Button variant="ghost" size="sm" className="text-destructive"
                               onClick={() => deleteTask.mutate({ id: t.id })} disabled={deleteTask.isPending}>
                               <Trash2 className="h-4 w-4" />

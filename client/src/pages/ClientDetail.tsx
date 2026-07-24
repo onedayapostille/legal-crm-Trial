@@ -41,7 +41,7 @@ import { ClientTasksSection, RelatedTasks } from "@/components/ClientTasks";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { CHANNEL_TYPES, DIGITAL_MEDIUMS, channelMediumLabel, MATTER_TYPES, isSupportedMatterType } from "@shared/const";
-import { userCan } from "@/lib/permissions";
+import { isPaymentStatusOnly, userCan } from "@/lib/permissions";
 
 const STATUS_COLORS: Record<string, string> = {
   "Existing Client": "bg-green-100 text-green-800 border-green-200",
@@ -53,7 +53,18 @@ export default function ClientDetail({ id }: { id: number }) {
   const [, navigate] = useLocation();
   const goBack = useGoBack("/clients");
   const { user } = useAuth();
-  const canManage = userCan(user, "clients:edit");
+  const canEditClient = userCan(user, "clients:edit");
+  const canDeleteClient = userCan(user, "clients:delete");
+  const canViewMatters = userCan(user, "matters:view");
+  const canCreateMatter = userCan(user, "matters:create");
+  const canEditMatter = userCan(user, "matters:edit");
+  const canDeleteMatter = userCan(user, "matters:delete");
+  const canViewActions = userCan(user, "actions:view");
+  const canCreateAction = userCan(user, "actions:create");
+  const canDeleteAction = userCan(user, "actions:delete");
+  const canCreateTask = userCan(user, "tasks:create");
+  const canEditTask = userCan(user, "tasks:edit");
+  const canDeleteTask = userCan(user, "tasks:delete");
   const canViewFinancial = userCan(user, "financial:view");
   const canViewTasks = userCan(user, "tasks:view");
   const utils = trpc.useUtils();
@@ -65,8 +76,14 @@ export default function ClientDetail({ id }: { id: number }) {
   const initialTaskId = taskIdParam ? Number(taskIdParam) : null;
 
   const { data: client, isLoading } = trpc.clients.get.useQuery({ id });
-  const { data: matters = [] } = trpc.clientMatters.list.useQuery({ clientId: id });
-  const { data: actions = [] } = trpc.clientActions.list.useQuery({ clientId: id });
+  const { data: matters = [] } = trpc.clientMatters.list.useQuery(
+    { clientId: id },
+    { enabled: canViewMatters },
+  );
+  const { data: actions = [] } = trpc.clientActions.list.useQuery(
+    { clientId: id },
+    { enabled: canViewActions },
+  );
   const { data: leadDetail } = trpc.clients.getLeadDetail.useQuery(
     { clientId: id },
     { enabled: client?.clientStatus === "Leads" }
@@ -85,10 +102,18 @@ export default function ClientDetail({ id }: { id: number }) {
   );
 
   // Rejected clients are locked: read-only, no new matters/financials/actions/edits.
-  // The status control itself stays available (gated by canManage) so an admin can
+  // The status control itself stays available (gated by clients:edit) so an admin can
   // reactivate the client.
   const isRejected = client?.clientStatus === "Rejected";
-  const canManageActive = canManage && !isRejected;
+  const canEditClientActive = canEditClient && !isRejected;
+  const canCreateMatterActive = canCreateMatter && !isRejected;
+  const canEditMatterActive = canEditMatter && !isRejected;
+  const canDeleteMatterActive = canDeleteMatter && !isRejected;
+  const canCreateActionActive = canCreateAction && !isRejected;
+  const canDeleteActionActive = canDeleteAction && !isRejected;
+  const canCreateTaskActive = canCreateTask && !isRejected;
+  const canEditTaskActive = canEditTask && !isRejected;
+  const canDeleteTaskActive = canDeleteTask && !isRejected;
 
   // Edit client status inline
   const [editingStatus, setEditingStatus] = useState(false);
@@ -211,7 +236,7 @@ export default function ClientDetail({ id }: { id: number }) {
                 >
                   {client.clientStatus}
                 </Badge>
-                {canManage && (
+                {canEditClient && (
                   <Button
                     variant="ghost"
                     size="sm"
@@ -226,7 +251,7 @@ export default function ClientDetail({ id }: { id: number }) {
               </div>
             )}
 
-            {canManage && (
+            {canDeleteClient && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -258,8 +283,8 @@ export default function ClientDetail({ id }: { id: number }) {
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList>
             <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="matters">Matters ({matters.length})</TabsTrigger>
-            <TabsTrigger value="actions">Actions ({actions.length})</TabsTrigger>
+            {canViewMatters && <TabsTrigger value="matters">Matters ({matters.length})</TabsTrigger>}
+            {canViewActions && <TabsTrigger value="actions">Actions ({actions.length})</TabsTrigger>}
             {canViewTasks && (
               <TabsTrigger value="tasks">Tasks ({clientTasks.length})</TabsTrigger>
             )}
@@ -270,20 +295,20 @@ export default function ClientDetail({ id }: { id: number }) {
 
           {/* Overview */}
           <TabsContent value="overview" className="space-y-4 mt-4">
-            <ClientInfoCard client={client} canManage={canManageActive} onUpdated={() => utils.clients.get.invalidate({ id })} />
+            <ClientInfoCard client={client} canManage={canEditClientActive} onUpdated={() => utils.clients.get.invalidate({ id })} />
 
             {client.clientStatus === "Leads" && (
               <LeadDetailCard
                 clientId={id}
                 detail={leadDetail ?? null}
-                canManage={canManage}
+                canManage={canEditClient}
               />
             )}
             {client.clientStatus === "Rejected" && (
               <RejectedDetailCard
                 clientId={id}
                 detail={rejectedDetail ?? null}
-                canManage={canManage}
+                canManage={canEditClient}
               />
             )}
 
@@ -292,44 +317,50 @@ export default function ClientDetail({ id }: { id: number }) {
           </TabsContent>
 
           {/* Matters */}
-          <TabsContent value="matters" className="mt-4">
+          {canViewMatters && <TabsContent value="matters" className="mt-4">
             <div className="flex justify-between items-center mb-3">
               <h3 className="font-semibold">Client Matters</h3>
-              {canManageActive && (
+              {canCreateMatterActive && (
                 <Button size="sm" onClick={() => setMatterDialogOpen(true)}>
                   <Plus className="h-4 w-4 mr-1" />
                   Add Matter
                 </Button>
               )}
             </div>
-            <MattersTable matters={matters} clientId={id} canManage={canManageActive} inheritedSerial={inheritedSerial} />
+            <MattersTable
+              matters={matters}
+              clientId={id}
+              canEdit={canEditMatterActive}
+              canDelete={canDeleteMatterActive}
+              inheritedSerial={inheritedSerial}
+            />
             <MatterDialog
               open={matterDialogOpen}
               onClose={() => setMatterDialogOpen(false)}
               clientId={id}
               inheritedSerial={inheritedSerial}
             />
-          </TabsContent>
+          </TabsContent>}
 
           {/* Action Log */}
-          <TabsContent value="actions" className="mt-4">
+          {canViewActions && <TabsContent value="actions" className="mt-4">
             <div className="flex justify-between items-center mb-3">
               <h3 className="font-semibold">Client Action Log</h3>
-              {canManageActive && (
+              {canCreateActionActive && (
                 <Button size="sm" onClick={() => setActionDialogOpen(true)}>
                   <Plus className="h-4 w-4 mr-1" />
                   Log Action
                 </Button>
               )}
             </div>
-            <ActionsTable actions={actions} canManage={canManageActive} />
+            <ActionsTable actions={actions} canDelete={canDeleteActionActive} />
             <ActionDialog
               open={actionDialogOpen}
               onClose={() => setActionDialogOpen(false)}
               clientId={id}
               matters={matters}
             />
-          </TabsContent>
+          </TabsContent>}
 
           {/* Tasks */}
           {canViewTasks && (
@@ -338,7 +369,9 @@ export default function ClientDetail({ id }: { id: number }) {
                 clientId={id}
                 clientName={client.clientName}
                 matters={matters}
-                canManage={canManageActive}
+                canCreate={canCreateTaskActive}
+                canEdit={canEditTaskActive}
+                canDelete={canDeleteTaskActive}
                 initialTaskId={initialTaskId}
               />
             </TabsContent>
@@ -724,7 +757,11 @@ function AuditTrailCard({ entityType, entityId }: { entityType: string; entityId
   );
 }
 
-function MattersTable({ matters, clientId, canManage, inheritedSerial }: { matters: any[]; clientId: number; canManage: boolean; inheritedSerial: string }) {
+function MattersTable({
+  matters, clientId, canEdit, canDelete, inheritedSerial,
+}: {
+  matters: any[]; clientId: number; canEdit: boolean; canDelete: boolean; inheritedSerial: string;
+}) {
   const utils = trpc.useUtils();
   const { user } = useAuth();
   // Hourly rates are financial data (financial:view server-side).
@@ -806,19 +843,23 @@ function MattersTable({ matters, clientId, canManage, inheritedSerial }: { matte
                           <Clock className="h-4 w-4 text-blue-500" />
                         </Button>
                       )}
-                      {canManage && (
+                      {(canEdit || canDelete) && (
                         <>
-                          <Button variant="ghost" size="sm" onClick={() => setEditingMatter(m)}>
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="text-destructive"
-                            onClick={() => deleteMatter.mutate({ id: m.id })}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+                          {canEdit && (
+                            <Button variant="ghost" size="sm" onClick={() => setEditingMatter(m)}>
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                          )}
+                          {canDelete && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-destructive"
+                              onClick={() => deleteMatter.mutate({ id: m.id })}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          )}
                         </>
                       )}
                     </div>
@@ -1333,7 +1374,7 @@ function MatterEditDialog({
   );
 }
 
-function ActionsTable({ actions, canManage }: { actions: any[]; canManage: boolean }) {
+function ActionsTable({ actions, canDelete }: { actions: any[]; canDelete: boolean }) {
   const utils = trpc.useUtils();
   const deleteAction = trpc.clientActions.delete.useMutation({
     onSuccess: () => { toast.success("Action deleted"); utils.clientActions.list.invalidate(); },
@@ -1361,7 +1402,7 @@ function ActionsTable({ actions, canManage }: { actions: any[]; canManage: boole
               <TableHead>Owner</TableHead>
               <TableHead>Details</TableHead>
               <TableHead>Next Step</TableHead>
-              {canManage && <TableHead />}
+              {canDelete && <TableHead />}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -1372,7 +1413,7 @@ function ActionsTable({ actions, canManage }: { actions: any[]; canManage: boole
                 <TableCell>{a.actionOwner ?? "—"}</TableCell>
                 <TableCell className="max-w-xs truncate">{a.actionDetails ?? "—"}</TableCell>
                 <TableCell className="max-w-xs truncate">{a.nextStep ?? "—"}</TableCell>
-                {canManage && (
+                {canDelete && (
                   <TableCell>
                     <Button variant="ghost" size="sm" className="text-destructive" onClick={() => deleteAction.mutate({ id: a.id })}>
                       <Trash2 className="h-4 w-4" />
@@ -1499,7 +1540,10 @@ function FinancialSection({
   const [auditRecord, setAuditRecord] = useState<any | null>(null);
   const [matterFilter, setMatterFilter] = useState("all");
   // Rejected clients lock create/edit/delete; viewing + audit stay available.
-  const canManage = (userCan(user, "financial:create") || userCan(user, "financial:edit")) && !locked;
+  const canCreate = userCan(user, "financial:create") && !locked;
+  const canEdit = userCan(user, "financial:edit") && !locked;
+  const canDelete = userCan(user, "financial:delete") && !locked;
+  const canViewAudit = userCan(user, "financial:view") && !isPaymentStatusOnly(user);
 
   const deleteRecord = trpc.financial.delete.useMutation({
     onSuccess: () => {
@@ -1575,7 +1619,7 @@ function FinancialSection({
           )}
         </div>
 
-        {canManage && (
+        {canCreate && (
           <Button size="sm" onClick={() => setCreateOpen(true)}>
             <Plus className="h-4 w-4 mr-1" />Add Financial Record
           </Button>
@@ -1650,33 +1694,39 @@ function FinancialSection({
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setAuditRecord(r)}
-                            title="View change history"
-                          >
-                            <History className="h-4 w-4 text-muted-foreground" />
-                          </Button>
-                          {canManage && (
+                          {canViewAudit && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setAuditRecord(r)}
+                              title="View change history"
+                            >
+                              <History className="h-4 w-4 text-muted-foreground" />
+                            </Button>
+                          )}
+                          {(canEdit || canDelete) && (
                             <>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setEditingRecord(r)}
-                                title="Edit record"
-                              >
-                                <Edit2 className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="text-destructive"
-                                onClick={() => deleteRecord.mutate({ id: r.id })}
-                                title="Delete record"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
+                              {canEdit && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setEditingRecord(r)}
+                                  title="Edit record"
+                                >
+                                  <Edit2 className="h-4 w-4" />
+                                </Button>
+                              )}
+                              {canDelete && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="text-destructive"
+                                  onClick={() => deleteRecord.mutate({ id: r.id })}
+                                  title="Delete record"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              )}
                             </>
                           )}
                         </div>

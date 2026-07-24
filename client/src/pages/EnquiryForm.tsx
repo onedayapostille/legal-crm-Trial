@@ -74,7 +74,9 @@ export default function EnquiryForm({ id }: EnquiryFormProps) {
   const utils = trpc.useUtils();
   const { user } = useAuth();
   // leads:view (e.g. Manager) may open an enquiry read-only; saving needs leads:manage.
-  const canManageLeads = userCan(user, "leads:create") || userCan(user, "leads:edit");
+  const canManageLeads = id
+    ? userCan(user, "leads:edit")
+    : userCan(user, "leads:create");
 
   const { data: enquiry, isLoading: loadingEnquiry } = trpc.leads.get.useQuery(
     { id: id! },

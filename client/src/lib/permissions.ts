@@ -27,6 +27,11 @@ export function userCan(user: SessionUser, capability: KnownCapability): boolean
   return can({ id: user!.id, role: user!.role, status: "active" }, capability);
 }
 
+/** Coordinator receives only the strict payment-status financial projection. */
+export function isPaymentStatusOnly(user: SessionUser): boolean {
+  return isActiveSession(user) && user!.role === "coordinator";
+}
+
 /**
  * Single source of truth for route/navigation gating: path → the capability
  * required to open it. Both `ProtectedRoute` (App.tsx) and the sidebar
@@ -42,6 +47,12 @@ export const ROUTE_CAPABILITIES = {
   "/clients/rejected": "clients:view",
   "/clients/:id": "clients:view",
   "/enquiries/log": "leads:view",
+  "/enquiries/new": "leads:create",
+  "/enquiries/:id": "leads:view",
+  "/enquiries/:id/edit": "leads:view",
+  "/leads/new": "leads:create",
+  "/leads/:id": "leads:view",
+  "/leads/:id/edit": "leads:view",
   "/client-actions": "actions:view",
   "/financial": "financial:view",
   "/financial-reports": "financialReports:view",

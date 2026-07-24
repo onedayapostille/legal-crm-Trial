@@ -58,21 +58,21 @@ function Router() {
         <Redirect to="/clients/leads" />
       </Route>
       <Route path="/leads/new">
-        <ProtectedRoute>
+        <ProtectedRoute capability="leads:create">
           <DashboardLayout><EnquiryForm /></DashboardLayout>
         </ProtectedRoute>
       </Route>
       {/* Explicit edit alias (kept alongside /leads/:id for deep-link compat). */}
       <Route path="/leads/:id/edit">
         {(params) => (
-          <ProtectedRoute>
+          <ProtectedRoute capability="leads:view">
             <DashboardLayout><EnquiryForm id={parseInt(params.id)} /></DashboardLayout>
           </ProtectedRoute>
         )}
       </Route>
       <Route path="/leads/:id">
         {(params) => (
-          <ProtectedRoute>
+          <ProtectedRoute capability="leads:view">
             <DashboardLayout><EnquiryForm id={parseInt(params.id)} /></DashboardLayout>
           </ProtectedRoute>
         )}
@@ -87,7 +87,7 @@ function Router() {
         <ProtectedRoute capability="leads:view"><EnquiriesLog /></ProtectedRoute>
       </Route>
       <Route path="/enquiries/new">
-        <ProtectedRoute>
+        <ProtectedRoute capability="leads:create">
           <DashboardLayout><EnquiryForm /></DashboardLayout>
         </ProtectedRoute>
       </Route>
@@ -95,14 +95,14 @@ function Router() {
           404 on /enquiries/:id/edit deep links). */}
       <Route path="/enquiries/:id/edit">
         {(params) => (
-          <ProtectedRoute>
+          <ProtectedRoute capability="leads:view">
             <DashboardLayout><EnquiryForm id={parseInt(params.id)} /></DashboardLayout>
           </ProtectedRoute>
         )}
       </Route>
       <Route path="/enquiries/:id">
         {(params) => (
-          <ProtectedRoute>
+          <ProtectedRoute capability="leads:view">
             <DashboardLayout><EnquiryForm id={parseInt(params.id)} /></DashboardLayout>
           </ProtectedRoute>
         )}

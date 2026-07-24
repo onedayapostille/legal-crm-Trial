@@ -57,7 +57,9 @@ export function LawyerRatesDialog({ open, onClose, matter }: LawyerRatesDialogPr
   const { user } = useAuth();
   const canAssignLead = userCan(user, "matters:assign");
   // Creating/editing/removing rates is a financial mutation (financial:manage).
-  const canManageRates = userCan(user, "rates:create") || userCan(user, "rates:edit");
+  const canCreateRates = userCan(user, "rates:create");
+  const canEditRates = userCan(user, "rates:edit");
+  const canDeleteRates = userCan(user, "rates:delete");
 
   // ── Data ─────────────────────────────────────────────────────────────────
   const { data: billable, isLoading } = trpc.clientMatters.billableLawyers.useQuery(
@@ -303,10 +305,14 @@ export function LawyerRatesDialog({ open, onClose, matter }: LawyerRatesDialogPr
                               <Badge variant={co.isActive ? "default" : "secondary"}>{co.isActive ? "Active" : "Inactive"}</Badge>
                             </TableCell>
                             <TableCell>
-                              {canManageRates && (
+                              {(canEditRates || canDeleteRates) && (
                                 <div className="flex items-center gap-1">
-                                  <Button variant="ghost" size="sm" onClick={() => startEdit(co)} disabled={deleteRate.isPending}><Pencil className="h-4 w-4" /></Button>
-                                  <Button variant="ghost" size="sm" className="text-destructive" onClick={() => co.rateId != null && deleteRate.mutate({ id: co.rateId })} disabled={deleteRate.isPending}><Trash2 className="h-4 w-4" /></Button>
+                                  {canEditRates && (
+                                    <Button variant="ghost" size="sm" onClick={() => startEdit(co)} disabled={deleteRate.isPending}><Pencil className="h-4 w-4" /></Button>
+                                  )}
+                                  {canDeleteRates && (
+                                    <Button variant="ghost" size="sm" className="text-destructive" onClick={() => co.rateId != null && deleteRate.mutate({ id: co.rateId })} disabled={deleteRate.isPending}><Trash2 className="h-4 w-4" /></Button>
+                                  )}
                                 </div>
                               )}
                             </TableCell>
@@ -363,7 +369,7 @@ export function LawyerRatesDialog({ open, onClose, matter }: LawyerRatesDialogPr
                     <Button size="sm" onClick={handleAdd} disabled={createRate.isPending || !addUserId}><Check className="h-3 w-3 mr-1" />Add Co-Lawyer</Button>
                   </div>
                 </div>
-              ) : canManageRates ? (
+              ) : canCreateRates ? (
                 <Button variant="outline" size="sm" onClick={() => { setAddingNew(true); setEditingId(null); }} disabled={addableUsers.length === 0}>
                   <Plus className="h-4 w-4 mr-1" /> Add Co-Lawyer
                 </Button>
