@@ -8,8 +8,11 @@
  * only CREATE/EDIT are OWN_PRACTICE and enforced here.
  *
  * Fail-closed rules (§G):
- *   - Any write capability whose resolved scope is neither ALL nor OWN_PRACTICE
- *     is denied.
+ *   - ALL and REGISTRY writes are unrestricted by practice. REGISTRY is the
+ *     Coordinator's authority over the complete client registry; it is not a
+ *     practice boundary.
+ *   - Any other write capability whose resolved scope is not OWN_PRACTICE is
+ *     denied.
  *   - Under OWN_PRACTICE, a record is writable only if its (location, matter_type)
  *     maps to a practice this actor heads. Null/legacy/unmapped → denied.
  *   - On EDIT, BOTH the current and the proposed (location, matter_type) must be
@@ -87,6 +90,7 @@ async function assertInActorPractice(actor: Actor, key: PracticeKey): Promise<vo
 /**
  * Enforce a create/edit against the actor's write scope for `capability`.
  *   - ALL           → unrestricted (Admin, legacy firm-wide writers).
+ *   - REGISTRY      → unrestricted by practice for Coordinator client writes.
  *   - OWN_PRACTICE   → proposed (and, for edits, existing) practice must be the
  *                      actor's own; otherwise FORBIDDEN.
  *   - anything else  → FORBIDDEN (fail closed).
@@ -104,7 +108,10 @@ export async function assertOwnPracticeWrite(
     authorizationModel: actor.authorizationModel,
     status: actor.status,
   }, capability).scope;
-  if (scope === "ALL") return;
+  // REGISTRY is a resource boundary, not a practice boundary. Coordinators own
+  // the client registry and must be able to create/edit clients even when the
+  // client has no city or matter type yet.
+  if (scope === "ALL" || scope === "REGISTRY") return;
   if (scope !== "OWN_PRACTICE") throw FORBIDDEN;
   // Edit: the record as it stands must already be in the actor's practice
   // (cannot edit — or self-claim — a record you don't own).
