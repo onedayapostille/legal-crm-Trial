@@ -42,6 +42,11 @@ import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { CHANNEL_TYPES, DIGITAL_MEDIUMS, channelMediumLabel, MATTER_TYPES, isSupportedMatterType } from "@shared/const";
 import { isPaymentStatusOnly, userCan } from "@/lib/permissions";
+import {
+  canEditLeadPipelineDetails,
+  shouldLoadLeadPipelineDetails,
+  shouldShowLeadPipelineDetails,
+} from "@/lib/leadPipeline";
 
 const STATUS_COLORS: Record<string, string> = {
   "Existing Client": "bg-green-100 text-green-800 border-green-200",
@@ -76,6 +81,7 @@ export default function ClientDetail({ id }: { id: number }) {
   const initialTaskId = taskIdParam ? Number(taskIdParam) : null;
 
   const { data: client, isLoading } = trpc.clients.get.useQuery({ id });
+  const loadLeadPipelineDetails = shouldLoadLeadPipelineDetails(client);
   const { data: matters = [] } = trpc.clientMatters.list.useQuery(
     { clientId: id },
     { enabled: canViewMatters },
@@ -86,7 +92,11 @@ export default function ClientDetail({ id }: { id: number }) {
   );
   const { data: leadDetail } = trpc.clients.getLeadDetail.useQuery(
     { clientId: id },
-    { enabled: client?.clientStatus === "Leads" }
+    { enabled: loadLeadPipelineDetails }
+  );
+  const showLeadPipelineDetails = shouldShowLeadPipelineDetails(
+    client,
+    leadDetail != null,
   );
   const { data: rejectedDetail } = trpc.clients.getRejectedDetail.useQuery(
     { clientId: id },
@@ -297,11 +307,11 @@ export default function ClientDetail({ id }: { id: number }) {
           <TabsContent value="overview" className="space-y-4 mt-4">
             <ClientInfoCard client={client} canManage={canEditClientActive} onUpdated={() => utils.clients.get.invalidate({ id })} />
 
-            {client.clientStatus === "Leads" && (
+            {showLeadPipelineDetails && (
               <LeadDetailCard
                 clientId={id}
                 detail={leadDetail ?? null}
-                canManage={canEditClient}
+                canManage={canEditClient && canEditLeadPipelineDetails(client)}
               />
             )}
             {client.clientStatus === "Rejected" && (
@@ -529,7 +539,9 @@ function LeadDetailCard({ clientId, detail, canManage }: { clientId: number; det
     leadStatus: detail?.leadStatus ?? "",
   });
   const assignedLawyerName =
-    lawyers.find(l => l.id === detail?.assignedLawyerId)?.name ?? null;
+    detail?.assignedLawyerName
+    ?? lawyers.find(l => l.id === detail?.assignedLawyerId)?.name
+    ?? null;
   const upsert = trpc.clients.upsertLeadDetail.useMutation({
     onSuccess: () => {
       toast.success("Lead details saved");

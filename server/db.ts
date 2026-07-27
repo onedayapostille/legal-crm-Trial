@@ -1,4 +1,4 @@
-import { and, count, desc, eq, getTableColumns, gte, inArray, lt, lte, ne, or, sql, ilike, type SQL } from "drizzle-orm";
+import { and, count, desc, eq, getTableColumns, gte, inArray, isNull, lt, lte, ne, or, sql, ilike, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { TRPCError } from "@trpc/server";
@@ -788,6 +788,25 @@ export function mapLeadStatusToClientStatus(
     default:
       // New / Contacted / Meeting Scheduled / Proposal Sent / On Hold → still in pipeline
       return "Leads";
+  }
+}
+
+/** Map the legacy enquiry urgency labels onto the canonical pipeline priority. */
+export function mapLeadUrgencyToPriority(
+  urgencyLevel: string | null | undefined,
+): "low" | "medium" | "high" | "urgent" | null {
+  switch (urgencyLevel?.trim().toLowerCase()) {
+    case "low":
+      return "low";
+    case "medium":
+      return "medium";
+    case "high":
+      return "high";
+    case "critical":
+    case "urgent":
+      return "urgent";
+    default:
+      return null;
   }
 }
 
@@ -2960,14 +2979,110 @@ export async function getMatterBillableLawyers(clientMatterId: number) {
 
 // ─── Client Lead Details ──────────────────────────────────────────────────────
 
-export async function getClientLeadDetail(clientId: number) {
+/**
+ * Return pipeline details for a client the actor may see.
+ *
+ * A converted, source-linked client reads the original enquiry fields through
+ * clients.source_lead_id instead of relying on a second copied snapshot. Access
+ * to that source row is also checked with the Lead scope, so clients:view alone
+ * cannot be used to disclose a restricted enquiry.
+ */
+export async function getClientLeadDetail(clientId: number, actor?: Actor) {
   const db = getDb();
-  const result = await db
-    .select()
-    .from(clientLeadDetails)
-    .where(eq(clientLeadDetails.clientId, clientId))
+  const clientScope = actor ? clientScopeWhere(actor) : undefined;
+  const sourceLeadScope = actor ? leadScopeWhere(actor) : undefined;
+  const conditions: SQL[] = [eq(clients.id, clientId)];
+  if (clientScope) conditions.push(clientScope);
+  if (sourceLeadScope) {
+    // A direct client has no source Lead and may still use its own canonical
+    // detail row. A linked client must also pass the Lead visibility predicate.
+    conditions.push(or(isNull(clients.sourceLeadId), sourceLeadScope)!);
+  }
+
+  const [row] = await db
+    .select({
+      clientId: clients.id,
+      clientStatus: clients.clientStatus,
+      sourceLeadId: clients.sourceLeadId,
+      detailId: clientLeadDetails.id,
+      clientSource: clientLeadDetails.clientSource,
+      channelType: clientLeadDetails.channelType,
+      channelMedium: clientLeadDetails.channelMedium,
+      nextActionDate: clientLeadDetails.nextActionDate,
+      nextActionDate2: clientLeadDetails.nextActionDate2,
+      nextActionOwner: clientLeadDetails.nextActionOwner,
+      assignedLawyerId: clientLeadDetails.assignedLawyerId,
+      nextAction: clientLeadDetails.nextAction,
+      priority: clientLeadDetails.priority,
+      leadStatus: clientLeadDetails.leadStatus,
+      detailCreatedAt: clientLeadDetails.createdAt,
+      detailUpdatedAt: clientLeadDetails.updatedAt,
+      sourceClientSource: leads.referralSourceName,
+      sourceChannelType: leads.channelType,
+      sourceChannelMedium: leads.channelMedium,
+      sourceNextActionDate: leads.deadline,
+      sourceNextActionOwner: leads.receivedBy,
+      sourceAssignedLawyerId: leads.assignedTo,
+      sourceAssignedLawyerName: users.name,
+      sourceNextAction: leads.nextAction,
+      sourceUrgencyLevel: leads.urgencyLevel,
+      sourceLeadStatus: leads.currentStatus,
+    })
+    .from(clients)
+    .leftJoin(clientLeadDetails, eq(clientLeadDetails.clientId, clients.id))
+    .leftJoin(leads, eq(leads.id, clients.sourceLeadId))
+    .leftJoin(users, eq(users.id, leads.assignedTo))
+    .where(and(...conditions))
     .limit(1);
-  return result[0] ?? null;
+  if (!row) return null;
+
+  const useSourceLead =
+    row.clientStatus === "Existing Client" &&
+    row.sourceLeadId != null &&
+    row.sourceLeadStatus != null;
+
+  if (!useSourceLead) {
+    if (row.detailId == null) return null;
+    return {
+      id: row.detailId,
+      clientId: row.clientId,
+      sourceLeadId: row.sourceLeadId,
+      clientSource: row.clientSource,
+      channelType: row.channelType,
+      channelMedium: row.channelMedium,
+      nextActionDate: row.nextActionDate,
+      nextActionDate2: row.nextActionDate2,
+      nextActionOwner: row.nextActionOwner,
+      assignedLawyerId: row.assignedLawyerId,
+      assignedLawyerName: null,
+      nextAction: row.nextAction,
+      priority: row.priority,
+      leadStatus: row.leadStatus,
+      createdAt: row.detailCreatedAt,
+      updatedAt: row.detailUpdatedAt,
+      readOnly: row.clientStatus !== "Leads",
+    };
+  }
+
+  return {
+    id: row.detailId,
+    clientId: row.clientId,
+    sourceLeadId: row.sourceLeadId,
+    clientSource: row.clientSource ?? row.sourceClientSource,
+    channelType: row.channelType ?? row.sourceChannelType,
+    channelMedium: row.channelMedium ?? row.sourceChannelMedium,
+    nextActionDate: row.nextActionDate ?? row.sourceNextActionDate,
+    nextActionDate2: null,
+    nextActionOwner: row.nextActionOwner ?? row.sourceNextActionOwner,
+    assignedLawyerId: row.assignedLawyerId ?? row.sourceAssignedLawyerId,
+    assignedLawyerName: row.sourceAssignedLawyerName,
+    nextAction: row.nextAction ?? row.sourceNextAction,
+    priority: mapLeadUrgencyToPriority(row.sourceUrgencyLevel) ?? row.priority,
+    leadStatus: row.sourceLeadStatus,
+    createdAt: row.detailCreatedAt,
+    updatedAt: row.detailUpdatedAt,
+    readOnly: true,
+  };
 }
 
 export function normalizeClientLeadDetailData(data: Partial<InsertClientLeadDetail>) {

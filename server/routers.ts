@@ -1125,7 +1125,7 @@ export const appRouter = router({
     // Lead details sub-resource
     getLeadDetail: capabilityProcedure("clients:view")
       .input(z.object({ clientId: z.number() }))
-      .query(async ({ input }) => db.getClientLeadDetail(input.clientId)),
+      .query(async ({ input, ctx }) => db.getClientLeadDetail(input.clientId, ctx.user!)),
 
     upsertLeadDetail: capabilityProcedure("clients:edit")
       .input(z.object({
@@ -1141,8 +1141,24 @@ export const appRouter = router({
         priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
         leadStatus: z.string().optional(),
       }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
         const { clientId, ...data } = input;
+        const client = await db.getClientById(clientId, ctx.user!);
+        if (!client) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Client not found" });
+        }
+        await assertOwnPracticeWrite(
+          ctx.user!,
+          "clients:edit",
+          { location: client.city, matterType: client.matterType },
+          { location: client.city, matterType: client.matterType },
+        );
+        if (client.clientStatus !== "Leads") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Lead Pipeline Details are read-only after conversion.",
+          });
+        }
         db.validateChannel(data.channelType, data.channelMedium, { requireType: false });
         try {
           return await db.upsertClientLeadDetail(clientId, data as any);
