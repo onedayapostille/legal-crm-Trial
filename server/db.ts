@@ -2970,22 +2970,48 @@ export async function getClientLeadDetail(clientId: number) {
   return result[0] ?? null;
 }
 
-export async function upsertClientLeadDetail(clientId: number, data: Partial<InsertClientLeadDetail>) {
-  const db = getDb();
-  const existing = await getClientLeadDetail(clientId);
-  if (existing) {
-    const [updated] = await db
-      .update(clientLeadDetails)
-      .set({ ...data, updatedAt: new Date() })
-      .where(eq(clientLeadDetails.clientId, clientId))
-      .returning();
-    return updated;
+export function normalizeClientLeadDetailData(data: Partial<InsertClientLeadDetail>) {
+  const normalized = { ...data };
+  for (const key of ["nextActionDate", "nextActionDate2"] as const) {
+    const value = normalized[key];
+    if (typeof value === "string" && value.trim() === "") {
+      normalized[key] = null;
+    }
   }
-  const [created] = await db
+  // These fields are controlled by the route/function arguments and database
+  // defaults, not by a partial update payload.
+  delete normalized.id;
+  delete normalized.clientId;
+  delete normalized.createdAt;
+  delete normalized.updatedAt;
+  return normalized;
+}
+
+/**
+ * One-statement PostgreSQL upsert. The previous SELECT-then-INSERT sequence
+ * allowed two near-simultaneous saves to both observe no row; the second then
+ * failed the unique(client_id) constraint after the first inserted.
+ */
+export async function upsertClientLeadDetailWithDb(
+  database: ReturnType<typeof getDb>,
+  clientId: number,
+  data: Partial<InsertClientLeadDetail>,
+) {
+  const normalized = normalizeClientLeadDetailData(data);
+  const updatedAt = new Date();
+  const [saved] = await database
     .insert(clientLeadDetails)
-    .values({ ...data, clientId } as InsertClientLeadDetail)
+    .values({ ...normalized, clientId, updatedAt } as InsertClientLeadDetail)
+    .onConflictDoUpdate({
+      target: clientLeadDetails.clientId,
+      set: { ...normalized, updatedAt },
+    })
     .returning();
-  return created;
+  return saved;
+}
+
+export async function upsertClientLeadDetail(clientId: number, data: Partial<InsertClientLeadDetail>) {
+  return upsertClientLeadDetailWithDb(getDb(), clientId, data);
 }
 
 export async function getLeadsWithActionsDueThisWeek() {

@@ -1144,7 +1144,20 @@ export const appRouter = router({
       .mutation(async ({ input }) => {
         const { clientId, ...data } = input;
         db.validateChannel(data.channelType, data.channelMedium, { requireType: false });
-        return db.upsertClientLeadDetail(clientId, data as any);
+        try {
+          return await db.upsertClientLeadDetail(clientId, data as any);
+        } catch (error) {
+          // Do not expose SQL text or bound lead data in the browser toast.
+          const databaseCode = (error as any)?.cause?.code ?? (error as any)?.code;
+          console.error(
+            `[ClientLeadDetail] Save failed${databaseCode ? ` (database code ${databaseCode})` : ""}`,
+          );
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Lead details could not be saved. Please try again.",
+            cause: error,
+          });
+        }
       }),
 
     // Rejected details sub-resource
